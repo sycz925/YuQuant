@@ -3,6 +3,12 @@ FactorService — 因子业务逻辑服务层
 
 将 factors.py 中的数据访问、后台任务调度、聚合计算等
 业务逻辑集中到此类，路由层只负责接收请求并调用本服务。
+
+缓存策略：
+- config_cache: 指数基础配置，容量 16，TTL 600s（10分钟）
+- index_data_cache: 指数历史数据/归一化数据，容量 128，TTL 300s（5分钟）
+- 缓存失效：同步操作完成后自动清除相关缓存
+- 强制绕过：调用 _clear_*_cache() 方法可手动清除
 """
 import io
 import logging
@@ -12,6 +18,7 @@ from typing import Optional, List, Dict, Any
 
 import pandas as pd
 from pymongo import UpdateOne
+from cachetools import cached, TTLCache
 
 from app.engine.factor_engine import FactorEngine
 from app.data.manager import get_data_manager
@@ -51,6 +58,12 @@ class FactorService:
         self._factor_engine: Optional[FactorEngine] = None
         self._engine_lock = threading.Lock()
 
+        # ------- TTL 缓存 -------
+        # config_cache: 指数基础配置（code/name/tdx_code/market），变化不频繁
+        self.config_cache: TTLCache = TTLCache(maxsize=16, ttl=600)
+        # index_data_cache: 指数历史 K 线 / 归一化数据，高频查询
+        self.index_data_cache: TTLCache = TTLCache(maxsize=128, ttl=300)
+
     # ------------------------------------------------------------------
     # 内部：FactorEngine 单例
     # ------------------------------------------------------------------
@@ -64,18 +77,46 @@ class FactorService:
         return self._factor_engine
 
     # ------------------------------------------------------------------
-    # 内部：指数配置
+    # 缓存管理
+    # ------------------------------------------------------------------
+
+    def clear_config_cache(self):
+        """手动清除指数配置缓存（强制绕过缓存，保证最终一致性）"""
+        self.config_cache.clear()
+        logger.info("[缓存] config_cache 已清除")
+
+    def clear_index_data_cache(self):
+        """手动清除指数数据缓存"""
+        self.index_data_cache.clear()
+        logger.info("[缓存] index_data_cache 已清除")
+
+    def clear_all_caches(self):
+        """清除全部缓存"""
+        self.config_cache.clear()
+        self.index_data_cache.clear()
+        logger.info("[缓存] 全部缓存已清除")
+
+    # ------------------------------------------------------------------
+    # 内部：指数配置（带 config_cache）
     # ------------------------------------------------------------------
 
     def _get_index_config_from_db(self) -> List[Dict[str, Any]]:
+        # 缓存命中直接返回
+        cache_key = 'index_config'
+        if cache_key in self.config_cache:
+            return self.config_cache[cache_key]
+
+        # 缓存未命中，查询数据库
         try:
             db = get_db()
             cursor = db['index_basics'].find({}, {'_id': 0}).sort('code', 1)
             results = list(cursor)
             if results:
+                self.config_cache[cache_key] = results
                 return results
         except Exception as e:
             logger.warning(f"从数据库读取指数列表失败: {e}")
+        # 回退：用种子数据初始化数据库，同时写入数据库
         try:
             db = get_db()
             for cfg in INDEX_CONFIG_SEED:
@@ -87,9 +128,11 @@ class FactorService:
                 )
         except Exception as e:
             logger.warning(f"初始化指数种子数据失败: {e}")
-        return [{'code': c['code'], 'name': c['name'],
-                 'tdx_code': c['tdx_code'], 'market': c['market']}
-                for c in INDEX_CONFIG_SEED]
+        fallback = [{'code': c['code'], 'name': c['name'],
+                     'tdx_code': c['tdx_code'], 'market': c['market']}
+                    for c in INDEX_CONFIG_SEED]
+        self.config_cache[cache_key] = fallback
+        return fallback
 
     def _get_sync_index_config(self) -> List[Dict[str, Any]]:
         cfgs = self._get_index_config_from_db()
@@ -124,6 +167,11 @@ class FactorService:
         return result
 
     def _get_index_data(self, index_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        # 缓存 key: "code|start|end"
+        cache_key = f"{index_code}|{start_date}|{end_date}"
+        if cache_key in self.index_data_cache:
+            return self.index_data_cache[cache_key]
+
         db = get_db()
         pipeline = [
             {'$match': {
@@ -136,7 +184,9 @@ class FactorService:
                 'open': 1, 'high': 1, 'low': 1
             }}
         ]
-        return list(db.index_daily.aggregate(pipeline))
+        result = list(db.index_daily.aggregate(pipeline))
+        self.index_data_cache[cache_key] = result
+        return result
 
     def _normalize_index_data(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not data:
@@ -655,6 +705,7 @@ class FactorService:
             msg = f"指数数据同步完成，成功 {success_count} 个，失败 {fail_count} 个"
             logger.info(msg)
             tm.complete_task(task_id, msg)
+            self.clear_index_data_cache()
             try:
                 from app.server.cache import refresh_trade_dates
                 refresh_trade_dates()
@@ -761,6 +812,7 @@ class FactorService:
     def clear_all_tasks(self) -> Dict[str, Any]:
         db = get_db()
         result = db['sync_tasks'].delete_many({})
+        self.clear_all_caches()
         return {"success": True, "message": f"已清除 {result.deleted_count} 条任务状态"}
 
     # -------------------- 清除 RPS --------------------
@@ -839,6 +891,7 @@ class FactorService:
                 logger.error(f"计算板块冗余字段失败: {e}")
 
             tm.complete_task(task_id, msg)
+            self.clear_index_data_cache()
             try:
                 from app.server.cache import refresh_trade_dates
                 refresh_trade_dates()
