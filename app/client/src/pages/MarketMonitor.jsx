@@ -104,8 +104,8 @@ function MarketMonitor() {
         factorApi.getIndices({ filter_mode: 'enabled' }),
         healthApi.check()
       ])
-      const indices = idxRes.data.indices || []
-      const latest = healthRes.data?.latest_trade_date || null
+      const indices = idxRes.indices || []
+      const latest = healthRes?.latest_trade_date || null
 
       if (indices.length > 0) {
         setIndexConfig(indices)
