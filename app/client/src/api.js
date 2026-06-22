@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { message } from 'antd'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
@@ -7,11 +8,33 @@ const api = axios.create({
   timeout: 30000
 })
 
+// ---- 错误 Toast 防抖 ----
+let _lastToastTime = 0
+const TOAST_DEBOUNCE_MS = 2000
+
+function showErrorToast(msg) {
+  const now = Date.now()
+  if (now - _lastToastTime < TOAST_DEBOUNCE_MS) return
+  _lastToastTime = now
+  message.error(msg)
+}
+
+// ---- 响应拦截器 ----
 api.interceptors.response.use(
-  res => res,
+  res => res.data,
   err => {
+    const url = err.config?.url || ''
+    const isHealthCheck = url.includes('/health')
+
     const msg = err.response?.data?.detail || err.message || '请求失败'
-    console.error('[API Error]', msg)
+
+    if (isHealthCheck) {
+      console.warn('[Health Check]', msg)
+    } else {
+      console.error('[API Error]', msg)
+      showErrorToast(msg)
+    }
+
     return Promise.reject(err)
   }
 )
@@ -21,7 +44,7 @@ export const stockApi = {
   searchStocks: (keyword) => api.get('/stocks/search', { params: { keyword } }),
   scanNewStocks: () => api.post('/stocks/scan'),
   getStockDetail: (code) => api.get(`/stocks/${code}`),
-  getDailyData: (code, startDate, endDate, limit) => 
+  getDailyData: (code, startDate, endDate, limit) =>
     api.get(`/stocks/${code}/daily`, { params: { startDate, endDate, limit } })
 }
 

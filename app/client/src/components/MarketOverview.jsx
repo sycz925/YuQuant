@@ -16,7 +16,7 @@ function MarketOverview({ date }) {
     setError(null)
     try {
       const res = await marketReviewApi.getOverview(date)
-      setData(res.data)
+      setData(res)
     } catch (e) {
       console.error('加载市场概览失败:', e)
       setError(e.response?.data?.detail || '加载失败')

@@ -130,14 +130,14 @@ function MarketMonitor() {
       const res = await factorApi.getCr5(params)
       if (myId !== requestIdRef.current) return
 
-      if (res.data.index_config && res.data.index_config.length > 0) {
-        setIndexConfig(res.data.index_config)
+      if (res.index_config && res.index_config.length > 0) {
+        setIndexConfig(res.index_config)
       }
-      setTotalStocks(res.data.total_stocks || 0)
+      setTotalStocks(res.total_stocks || 0)
 
-      const cr5List = res.data.data
-      const sectorCrList = res.data.sector_cr_data || []
-      const indexList = res.data.index_data?.[targetIndex] || []
+      const cr5List = res.data
+      const sectorCrList = res.sector_cr_data || []
+      const indexList = res.index_data?.[targetIndex] || []
 
       const indexMap = {}
       const indexRawMap = {}

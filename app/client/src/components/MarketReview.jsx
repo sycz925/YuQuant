@@ -20,7 +20,7 @@ function MarketReview() {
     setError(null)
     try {
       const res = await marketReviewApi.getReview()
-      setData(res.data)
+      setData(res)
     } catch (e) {
       console.error('加载复盘数据失败:', e)
       setError(e.response?.data?.detail || '加载失败')

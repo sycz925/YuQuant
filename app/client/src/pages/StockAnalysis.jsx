@@ -51,7 +51,7 @@ function StockAnalysis() {
     setSearching(true)
     try {
       const res = await stockApi.searchStocks(keyword)
-      setSearchOptions(res.data.data || [])
+      setSearchOptions(res.data || [])
     } catch (e) {
       console.error('搜索股票失败:', e)
       setSearchOptions([])
@@ -266,13 +266,13 @@ function StockAnalysis() {
       // 并行加载日线数据和RPS数据
       const [dailyRes, rpsRes] = await Promise.all([
         stockApi.getDailyData(selectedCode, undefined, undefined, 200),
-        factorApi.getStockRPS(selectedCode, { period: 'day' }).catch(() => ({ data: { data: [] } }))
+        factorApi.getStockRPS(selectedCode, { period: 'day' }).catch(() => ({ data: [] }))
       ])
 
       // 构建RPS日期索引
       const rpsMap = {}
-      if (rpsRes.data && rpsRes.data.data) {
-        rpsRes.data.data.forEach(item => {
+      if (rpsRes && rpsRes.data) {
+        rpsRes.data.forEach(item => {
           rpsMap[item.date] = {
             rps_10: item.rps_10,
             rps_20: item.rps_20,
@@ -283,7 +283,7 @@ function StockAnalysis() {
         })
       }
 
-      let data = dailyRes.data.data.map(item => {
+      let data = dailyRes.data.map(item => {
         const rps = rpsMap[item.trade_date] || {}
         return {
           date: item.trade_date,
@@ -335,13 +335,13 @@ function StockAnalysis() {
       // 并行加载日线和RPS数据
       const [dailyRes, rpsRes] = await Promise.all([
         stockApi.getDailyData(selectedCode, startDate, earliestDate, 200),
-        factorApi.getStockRPS(selectedCode, { period: 'day' }).catch(() => ({ data: { data: [] } }))
+        factorApi.getStockRPS(selectedCode, { period: 'day' }).catch(() => ({ data: [] }))
       ])
 
       // 构建RPS日期索引
       const rpsMap = {}
-      if (rpsRes.data && rpsRes.data.data) {
-        rpsRes.data.data.forEach(item => {
+      if (rpsRes && rpsRes.data) {
+        rpsRes.data.forEach(item => {
           rpsMap[item.date] = {
             rps_10: item.rps_10,
             rps_20: item.rps_20,
@@ -352,7 +352,7 @@ function StockAnalysis() {
         })
       }
 
-      let newData = dailyRes.data.data.map(item => {
+      let newData = dailyRes.data.map(item => {
         const rps = rpsMap[item.trade_date] || {}
         return {
           date: item.trade_date,

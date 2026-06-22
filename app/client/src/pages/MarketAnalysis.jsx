@@ -72,7 +72,7 @@ export default function MarketAnalysis() {
       const params = { rps_period: rps }
       if (queryDate) params.date = queryDate
       const res = await marketAnalysisApi.getBubble(params)
-      setBubbleData(res.data)
+      setBubbleData(res)
     } catch (e) {
       setBubbleError(e.response?.data?.detail || '获取气泡数据失败')
     } finally {
@@ -89,7 +89,7 @@ export default function MarketAnalysis() {
       if (queryDate) params.date = queryDate
       if (rpsGroup) params.rps_period = rpsGroup
       const res = await marketAnalysisApi.getAnalysis(params)
-      const data = res.data
+      const data = res
       setData(data)
       // 首次加载时同步日期
       if (!queryDate && data?.date) {

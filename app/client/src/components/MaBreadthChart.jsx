@@ -63,7 +63,7 @@ function MaBreadthChart() {
   const loadIndices = async () => {
     try {
       const res = await factorApi.getIndices({ filter_mode: 'enabled' })
-      const indices = res.data.indices || []
+      const indices = res.indices || []
       if (indices.length > 0) {
         setIndexConfig(indices)
         setSelectedIndex(indices[0].code)
@@ -79,7 +79,7 @@ function MaBreadthChart() {
     setLoading(true)
     try {
       const res = await marketReviewApi.getMaBreadth({ period, index_code: selectedIndex || undefined })
-      setData(res.data.data || [])
+      setData(res.data || [])
     } catch (e) {
       console.error('加载MA占比数据失败:', e)
     } finally {

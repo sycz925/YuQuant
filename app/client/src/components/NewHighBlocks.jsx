@@ -19,7 +19,7 @@ function NewHighBlocks({ date }) {
     setError(null)
     try {
       const res = await marketReviewApi.getNewHighBlocks(date)
-      setData(res.data)
+      setData(res)
     } catch (e) {
       console.error('加载新高板块分析失败:', e)
       setError(e.response?.data?.detail || '加载失败')

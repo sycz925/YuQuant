@@ -54,21 +54,21 @@ export default function ManagementDialog({ open, onClose, category, title, fetch
       let items = []
       let serverTotal = 0
       if (category === 'index') {
-        items = res.data?.indices || []
-        serverTotal = res.data?.total || items.length
+        items = res?.indices || []
+        serverTotal = res?.total || items.length
       } else if (category === 'sector') {
-        items = res.data?.items || []
-        serverTotal = res.data?.total || items.length
+        items = res?.items || []
+        serverTotal = res?.total || items.length
       } else {
-        items = res.data?.data || []
-        serverTotal = res.data?.total || items.length
+        items = res?.data || []
+        serverTotal = res?.total || items.length
       }
       setData(items)
       setTotal(serverTotal)
 
       const exclRes = await exclusionApi.getExclusions({ category })
       const exclMap = {}
-      ;(exclRes.data?.items || []).forEach(item => {
+      ;(exclRes?.items || []).forEach(item => {
         if (!item.code) return
         exclMap[item.code] = {
           code: item.code,
@@ -92,11 +92,11 @@ export default function ManagementDialog({ open, onClose, category, title, fetch
       const formData = new FormData()
       formData.append('file', file)
       const res = await factorApi.importSectorCodes(formData)
-      if (res.data?.success) {
-        message.success(res.data.message)
+      if (res?.success) {
+        message.success(res.message)
         loadData(currentPage, pageSize, committedKeyword, committedFilter)
       } else {
-        message.error(res.data?.message || '导入失败')
+        message.error(res?.message || '导入失败')
       }
     } catch (e) {
       console.error('导入失败:', e)
@@ -110,8 +110,8 @@ export default function ManagementDialog({ open, onClose, category, title, fetch
     setScanLoading(true)
     try {
       const res = await stockApi.scanNewStocks()
-      if (res.data?.success) {
-        const count = res.data.new_count || 0
+      if (res?.success) {
+        const count = res.new_count || 0
         if (count > 0) {
           message.success(`发现 ${count} 只新股票`)
           loadData(currentPage, pageSize, committedKeyword, committedFilter)
@@ -119,7 +119,7 @@ export default function ManagementDialog({ open, onClose, category, title, fetch
           message.info('没有发现新股票')
         }
       } else {
-        message.error(res.data?.message || '扫描失败')
+        message.error(res?.message || '扫描失败')
       }
     } catch (e) {
       console.error('扫描失败:', e)
@@ -188,15 +188,15 @@ export default function ManagementDialog({ open, onClose, category, title, fetch
       let results = []
       if (category === 'stock') {
         const res = await stockApi.searchStocks(addKeyword.trim())
-        results = (res.data?.data || res.data?.items || []).map(s => ({
+        results = (res?.data || res?.items || []).map(s => ({
           code: s.code || s.stock_code, name: s.name || s.stock_name
         }))
       } else if (category === 'index') {
         const res = await factorApi.searchIndices(addKeyword.trim())
-        results = (res.data?.data || []).map(i => ({ code: i.code, name: i.name }))
+        results = (res?.data || []).map(i => ({ code: i.code, name: i.name }))
       } else if (category === 'sector') {
         const res = await factorApi.getSectors({ keyword: addKeyword.trim(), limit: 500 })
-        results = (res.data?.items || []).map(s => ({ code: s.code, name: s.name }))
+        results = (res?.items || []).map(s => ({ code: s.code, name: s.name }))
       }
       setAddResults(results.filter(r => r.code))
     } catch (e) {

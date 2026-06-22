@@ -52,13 +52,13 @@ function Settings() {
   const pollTaskStatus = useCallback(async (taskId, type, onFinish) => {
     try {
       const res = await syncApi.getTaskStatus(taskId)
-      setTaskProgress(prev => ({ ...prev, [type]: res.data }))
-      if (res.data.status === 'completed' || res.data.status === 'failed' || res.data.status === 'cancelled') {
+      setTaskProgress(prev => ({ ...prev, [type]: res }))
+      if (res.status === 'completed' || res.status === 'failed' || res.status === 'cancelled') {
         if (pollRefs.current[type]) {
           clearInterval(pollRefs.current[type])
           delete pollRefs.current[type]
         }
-        if (onFinish) onFinish(res.data.status)
+        if (onFinish) onFinish(res.status)
       }
     } catch (e) {
       console.error(`轮询任务 ${type} 失败:`, e)
@@ -80,7 +80,7 @@ function Settings() {
     setTaskStartTimes(prev => ({ ...prev, [type]: Date.now() }))
     try {
       const res = await apiCall()
-      const taskId = res.data.task_id
+      const taskId = res.task_id
       if (taskId) {
         pollRefs.current[type] = setInterval(() => {
           pollTaskStatus(taskId, type, () => {
@@ -94,7 +94,7 @@ function Settings() {
       } else {
         // 直接完成（如同步指数）
         if (type === 'indices') {
-          setIndicesResult({ success: true, message: res.data.message })
+          setIndicesResult({ success: true, message: res.message })
         }
         setActiveTasks(prev => {
           const next = { ...prev }
@@ -164,7 +164,7 @@ function Settings() {
       icon: <HistoryOutlined />,
       onClick: async () => {
         const res = await syncApi.patchIsFinal()
-        alert(`完成：${res.data.message}`)
+        alert(`完成：${res.message}`)
       }
     },
     { type: 'divider' },

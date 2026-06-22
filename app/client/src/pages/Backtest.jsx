@@ -35,7 +35,7 @@ function Backtest() {
       }
 
       const res = await backtestApi.runBacktest(params)
-      setResult(res.data)
+      setResult(res)
     } catch (e) {
       console.error('回测失败:', e)
     } finally {

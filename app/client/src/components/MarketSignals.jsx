@@ -23,8 +23,8 @@ function MarketSignals({ date }) {
         marketReviewApi.getSignals(date),
         marketReviewApi.getNewHighBlocks(date)
       ])
-      setSignalsData(signalsRes.data)
-      setBlocksData(blocksRes.data)
+      setSignalsData(signalsRes)
+      setBlocksData(blocksRes)
     } catch (e) {
       console.error('加载市场数据失败:', e)
       setError(e.response?.data?.detail || '加载失败')

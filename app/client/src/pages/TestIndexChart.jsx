@@ -30,17 +30,17 @@ const TestIndexChart = () => {
       try {
         const res = await factorApi.getCr5({ include_index: true })
         
-        const cr5List = res.data.data
+        const cr5List = res.data
         
         // 保存指数配置和数据
-        if (res.data.index_config) {
-          setIndexConfig(res.data.index_config)
+        if (res.index_config) {
+          setIndexConfig(res.index_config)
         }
-        if (res.data.index_data) {
-          setIndexData(res.data.index_data)
+        if (res.index_data) {
+          setIndexData(res.index_data)
         }
         
-        const indexList = res.data.index_data?.[selectedIndex] || []
+        const indexList = res.index_data?.[selectedIndex] || []
         
         console.log('=== 调试信息 ===')
         console.log('CR5数据:', cr5List.length, '条')
