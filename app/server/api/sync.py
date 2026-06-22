@@ -131,9 +131,7 @@ def _run_sync_task(task_id: str, start_date: str, end_date: str, max_workers: in
             pass
 
     except Exception as e:
-        logger.error(f"同步所有股票日线数据失败: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"同步所有股票日线数据失败: {e}")
         tm = get_task_manager()
         tm.fail_task(task_id, f"同步失败: {str(e)}")
 
@@ -191,7 +189,7 @@ def sync_all_daily_data(request: SyncRequest = SyncRequest()):
                         days_listed = (end_date_obj - list_date_obj).days
                         if days_listed >= min_days:
                             filtered_codes.append(code)
-                    except:
+                    except Exception:
                         filtered_codes.append(code)
                 else:
                     # 没有上市日期的股票也加入
@@ -308,9 +306,7 @@ def sync_derived_fields(target: str = "all", trade_date: Optional[str] = None, b
             "sector": sector_result
         }
     except Exception as e:
-        logger.error(f"计算冗余字段失败: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"计算冗余字段失败: {e}")
         return {
             "success": False,
             "message": f"计算冗余字段失败: {str(e)}"

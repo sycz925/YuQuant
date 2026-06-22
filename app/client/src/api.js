@@ -7,6 +7,15 @@ const api = axios.create({
   timeout: 30000
 })
 
+api.interceptors.response.use(
+  res => res,
+  err => {
+    const msg = err.response?.data?.detail || err.message || '请求失败'
+    console.error('[API Error]', msg)
+    return Promise.reject(err)
+  }
+)
+
 export const stockApi = {
   getStockList: (params = {}) => api.get('/stocks', { params }),
   searchStocks: (keyword) => api.get('/stocks/search', { params: { keyword } }),

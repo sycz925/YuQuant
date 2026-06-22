@@ -277,7 +277,7 @@ def get_market_bubble(
         logger.error(f"bubble 失败: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
 def _bubble_stock_mode(db, date, prev_date, rps_period=20) -> list:
@@ -483,4 +483,4 @@ def get_active_stock_pool(
         raise
     except Exception as e:
         logger.error(f"获取活跃股池失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务器内部错误")

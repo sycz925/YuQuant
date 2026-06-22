@@ -25,7 +25,7 @@ def get_pinyin_initials(name: str) -> str:
     try:
         initials = lazy_pinyin(name, style=Style.FIRST_LETTER)
         return ''.join(initials).lower()
-    except:
+    except Exception:
         return ''
 
 

@@ -57,30 +57,39 @@ class CR5FactorResponse(BaseModel):
 
 class BacktestRequest(BaseModel):
     """回测请求"""
-    initial_capital: float = Field(100000, description="初始资金")
-    start_date: str = Field(..., description="开始日期 YYYYMMDD")
-    end_date: str = Field(..., description="结束日期 YYYYMMDD")
-    stock_codes: Optional[List[str]] = Field(None, description="股票列表")
-    max_workers: Optional[int] = Field(16, description="最大线程数（默认16）")
+    initial_capital: float = Field(100000, alias="initialCapital", description="初始资金")
+    start_date: str = Field(..., alias="startDate", description="开始日期 YYYYMMDD")
+    end_date: str = Field(..., alias="endDate", description="结束日期 YYYYMMDD")
+    stock_codes: Optional[List[str]] = Field(None, alias="stockCodes", description="股票列表")
+    max_workers: Optional[int] = Field(16, alias="maxWorkers", description="最大线程数（默认16）")
+
+    class Config:
+        populate_by_name = True
 
 
 class BacktestResult(BaseModel):
     """回测结果"""
-    total_return: float = Field(..., description="总收益率")
-    annual_return: float = Field(..., description="年化收益率")
-    max_drawdown: float = Field(..., description="最大回撤")
-    sharpe_ratio: float = Field(..., description="夏普比率")
-    equity_curve: List[Dict[str, Any]] = Field(..., description="资金曲线")
+    total_return: float = Field(..., alias="totalReturn", description="总收益率")
+    annual_return: float = Field(..., alias="annualReturn", description="年化收益率")
+    max_drawdown: float = Field(..., alias="maxDrawdown", description="最大回撤")
+    sharpe_ratio: float = Field(..., alias="sharpeRatio", description="夏普比率")
+    equity_curve: List[Dict[str, Any]] = Field(..., alias="equityCurve", description="资金曲线")
     trades: List[Dict[str, Any]] = Field(..., description="交易记录")
+
+    class Config:
+        populate_by_name = True
 
 
 class SyncRequest(BaseModel):
     """数据同步请求"""
-    stock_codes: Optional[List[str]] = Field(None, description="股票列表（可选，为空则同步全部）")
-    start_date: Optional[str] = Field(None, description="开始日期（可选）")
-    end_date: Optional[str] = Field(None, description="结束日期（可选）")
-    max_workers: Optional[int] = Field(16, description="最大线程数（默认16）")
-    min_days: Optional[int] = Field(None, description="最小上市天数（可选，过滤不满足条件的股票）")
+    stock_codes: Optional[List[str]] = Field(None, alias="stockCodes", description="股票列表（可选，为空则同步全部）")
+    start_date: Optional[str] = Field(None, alias="startDate", description="开始日期（可选）")
+    end_date: Optional[str] = Field(None, alias="endDate", description="结束日期（可选）")
+    max_workers: Optional[int] = Field(16, alias="maxWorkers", description="最大线程数（默认16）")
+    min_days: Optional[int] = Field(None, alias="minDays", description="最小上市天数（可选，过滤不满足条件的股票）")
+
+    class Config:
+        populate_by_name = True
 
 
 class SyncResponse(BaseModel):

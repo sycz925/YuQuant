@@ -56,7 +56,7 @@ def get_exclusions(
         return {'items': items, 'total': len(items)}
     except Exception as e:
         logger.error(f"获取排除配置失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
 @router.post("")
@@ -84,7 +84,7 @@ def update_exclusions(update: ExclusionUpdate):
         return {'success': True, 'message': f'更新了 {len(update.items)} 项配置'}
     except Exception as e:
         logger.error(f"更新排除配置失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
 @router.delete("/{code}")
@@ -96,7 +96,7 @@ def delete_exclusion(code: str):
         return {'success': True, 'deleted': result.deleted_count}
     except Exception as e:
         logger.error(f"删除排除配置失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
 @router.get("/check/{code}")
@@ -110,7 +110,7 @@ def check_exclusion(code: str):
         return {'code': code, 'exclude_sync': False, 'exclude_rps': False, 'exclude_display': False}
     except Exception as e:
         logger.error(f"检查排除配置失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
 def get_excluded_codes_helper(category: str, exclude_type: str) -> list:
@@ -148,4 +148,4 @@ def get_excluded_codes(
         return {'codes': [item['code'] for item in items], 'total': len(items)}
     except Exception as e:
         logger.error(f"获取排除列表失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务器内部错误")

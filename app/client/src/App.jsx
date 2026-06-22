@@ -6,6 +6,7 @@ import Backtest from './pages/Backtest'
 import TestIndexChart from './pages/TestIndexChart'
 import Settings from './pages/Settings'
 import MarketAnalysis from './pages/MarketAnalysis'
+import ErrorBoundary from './components/ErrorBoundary'
 import { healthApi } from './api'
 
 function App() {
@@ -14,6 +15,8 @@ function App() {
 
   useEffect(() => {
     checkHealth()
+    const timer = setInterval(checkHealth, 30000)
+    return () => clearInterval(timer)
   }, [])
 
   const checkHealth = async () => {
@@ -75,14 +78,16 @@ function App() {
 
       {/* 主内容区 - 给顶部导航留出空间 */}
       <main className="max-w-7xl mx-auto px-4 pt-24 pb-8">
-        <Routes>
-          <Route path="/" element={<MarketMonitor />} />
-          <Route path="/market-analysis" element={<MarketAnalysis />} />
-          <Route path="/analysis" element={<StockAnalysis />} />
-          <Route path="/backtest" element={<Backtest />} />
-          <Route path="/test-index" element={<TestIndexChart />} />
-          <Route path="/settings" element={<Settings />} />
-        </Routes>
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/" element={<MarketMonitor />} />
+            <Route path="/market-analysis" element={<MarketAnalysis />} />
+            <Route path="/analysis" element={<StockAnalysis />} />
+            <Route path="/backtest" element={<Backtest />} />
+            <Route path="/test-index" element={<TestIndexChart />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   )

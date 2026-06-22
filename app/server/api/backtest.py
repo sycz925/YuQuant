@@ -2,6 +2,7 @@
 回测API
 """
 import logging
+import threading
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 
@@ -14,16 +15,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
 
 _backtest_engine: Optional[BacktestEngine] = None
+_engine_lock = threading.Lock()
 
 
 def get_backtest_engine():
-    """获取BacktestEngine单例"""
+    """获取BacktestEngine单例（线程安全）"""
     global _backtest_engine
     if _backtest_engine is None:
-        from app.engine.factor_engine import FactorEngine
-        dm = get_data_manager()
-        fe = FactorEngine(dm)
-        _backtest_engine = BacktestEngine(dm, fe, initial_capital=100000)
+        with _engine_lock:
+            if _backtest_engine is None:
+                from app.engine.factor_engine import FactorEngine
+                dm = get_data_manager()
+                fe = FactorEngine(dm)
+                _backtest_engine = BacktestEngine(dm, fe, initial_capital=100000)
     return _backtest_engine
 
 

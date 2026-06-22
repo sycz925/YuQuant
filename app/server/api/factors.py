@@ -24,14 +24,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
 _factor_engine: Optional[FactorEngine] = None
+_engine_lock = threading.Lock()
 
 
 def get_factor_engine():
-    """获取FactorEngine单例"""
+    """获取FactorEngine单例（线程安全）"""
     global _factor_engine
     if _factor_engine is None:
-        dm = get_data_manager()
-        _factor_engine = FactorEngine(dm)
+        with _engine_lock:
+            if _factor_engine is None:
+                dm = get_data_manager()
+                _factor_engine = FactorEngine(dm)
     return _factor_engine
 
 
