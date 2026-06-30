@@ -320,6 +320,7 @@ class FactorService:
         include_index: bool,
         period: str,
     ) -> Dict[str, Any]:
+        from app.data.db import get_db
         now = datetime.now()
         if not start_date or not end_date:
             period_days = {"day": 120, "week": 365, "month": 365 * 3,
@@ -330,23 +331,32 @@ class FactorService:
             if not end_date:
                 end_date = now.strftime("%Y%m%d")
 
-        fe = self._get_factor_engine()
-        cr5_series = fe.get_all_cr5_history(start_date, end_date)
-        sector_cr_series = fe.get_sector_cr_history(start_date, end_date, percentile=10)
+        # 优先从 base_data_daily 读取（秒开）
+        db = get_db()
+        cached = list(db['base_data_daily'].find(
+            {'date': {'$gte': start_date, '$lte': end_date}, 'cr5_pct': {'$exists': True}},
+            {'_id': 0, 'date': 1, 'cr5_pct': 1, 'cr10_pct': 1}
+        ).sort('date', 1))
 
-        if len(cr5_series) == 0 and len(sector_cr_series) == 0:
-            return None
-
-        daily_data = [
-            {'trade_date': str(idx), 'value': float(value)}
-            for idx, value in cr5_series.items()
-            if start_date <= str(idx) <= end_date
-        ]
-        sector_daily_data = [
-            {'trade_date': str(idx), 'value': float(value)}
-            for idx, value in sector_cr_series.items()
-            if start_date <= str(idx) <= end_date
-        ]
+        if cached:
+            daily_data = [{'trade_date': d['date'], 'value': d['cr5_pct']} for d in cached]
+            sector_daily_data = [{'trade_date': d['date'], 'value': d.get('cr10_pct', 0)} for d in cached]
+        else:
+            fe = self._get_factor_engine()
+            cr5_series = fe.get_all_cr5_history(start_date, end_date)
+            sector_cr_series = fe.get_sector_cr_history(start_date, end_date, percentile=10)
+            if len(cr5_series) == 0 and len(sector_cr_series) == 0:
+                return None
+            daily_data = [
+                {'trade_date': str(idx), 'value': float(value)}
+                for idx, value in cr5_series.items()
+                if start_date <= str(idx) <= end_date
+            ]
+            sector_daily_data = [
+                {'trade_date': str(idx), 'value': float(value)}
+                for idx, value in sector_cr_series.items()
+                if start_date <= str(idx) <= end_date
+            ]
 
         data = self._aggregate_by_period(daily_data, period)
         sector_data = self._aggregate_by_period(sector_daily_data, period)
@@ -696,6 +706,93 @@ class FactorService:
                             continue
 
                     if not records_saved:
+                        # pytdx K线失败，先尝试 pytdx 实时行情获取当天数据
+                        today_str = datetime.now().strftime('%Y%m%d')
+                        if end_date >= today_str:
+                            try:
+                                from pytdx.hq import TdxHq_API as TdxRealtime
+                                for rt_server in TDX_SERVERS:
+                                    try:
+                                        rt_api = TdxRealtime()
+                                        if rt_server and rt_api.connect(*rt_server):
+                                            market = idx_config.get('market', 1)
+                                            rt_data = rt_api.get_security_quotes([(market, idx_config['tdx_code'])])
+                                            if rt_data and rt_data[0].get('price', 0) > 0:
+                                                d = rt_data[0]
+                                                doc = {
+                                                    'stock_code': idx_config['code'],
+                                                    'trade_date': today_str,
+                                                    'open': float(d['open']),
+                                                    'high': float(d['high']),
+                                                    'low': float(d['low']),
+                                                    'close': float(d['price']),
+                                                    'volume': float(d.get('vol', 0)),
+                                                    'amount': float(d.get('amount', 0)),
+                                                    'data_type': 'index',
+                                                    'data_source': 'pytdx_realtime',
+                                                    'update_time': datetime.utcnow(),
+                                                }
+                                                db.index_daily.update_one(
+                                                    {'stock_code': doc['stock_code'], 'trade_date': doc['trade_date']},
+                                                    {'$set': doc}, upsert=True,
+                                                )
+                                                success_count += 1
+                                                records_saved = True
+                                                logger.info(f"[pytdx实时] 成功获取 {idx_config['name']} 今日数据 price={d['price']}")
+                                            rt_api.disconnect()
+                                            break
+                                    except Exception:
+                                        continue
+                            except Exception as e:
+                                logger.warning(f"[pytdx实时] {idx_config['name']} 失败: {e}")
+
+                        # pytdx 实时也失败，尝试 akshare 兜底（历史数据）
+                        if not records_saved:
+                            try:
+                                import akshare as ak
+                                symbol = f"sh{idx_config['tdx_code']}" if idx_config.get('market', 1) == 1 else f"sz{idx_config['tdx_code']}"
+                                df = ak.stock_zh_index_daily(symbol=symbol)
+                                if df is not None and not df.empty:
+                                    records = []
+                                    for _, row in df.iterrows():
+                                        try:
+                                            date_str = row['date'].strftime('%Y%m%d') if hasattr(row['date'], 'strftime') else str(row['date']).replace('-', '')
+                                            if not (start_date <= date_str <= end_date):
+                                                continue
+                                            close_val = float(row['close'])
+                                            if close_val <= 0 or close_val > 100000:
+                                                continue
+                                            records.append({
+                                                'stock_code': idx_config['code'],
+                                                'trade_date': date_str,
+                                                'open': float(row['open']),
+                                                'high': float(row['high']),
+                                                'low': float(row['low']),
+                                                'close': close_val,
+                                                'volume': float(row.get('volume', 0)),
+                                                'amount': 0,
+                                            })
+                                        except Exception:
+                                            continue
+                                    if records:
+                                        ops = []
+                                        for rec in records:
+                                            doc = dict(rec)
+                                            doc['data_type'] = 'index'
+                                            doc['data_source'] = 'akshare'
+                                            doc['update_time'] = datetime.utcnow()
+                                            ops.append(UpdateOne(
+                                                {'stock_code': doc['stock_code'], 'trade_date': doc['trade_date']},
+                                                {'$set': doc}, upsert=True,
+                                            ))
+                                        db.index_daily.bulk_write(ops, ordered=False)
+                                        success_count += 1
+                                        records_saved = True
+                                        logger.info(f"[akshare兜底] 成功同步 {idx_config['name']} {len(records)} 条数据")
+                            except Exception as e:
+                                logger.warning(f"[akshare兜底] {idx_config['name']} 失败: {e}")
+
+                    if not records_saved:
                         fail_count += 1
                         logger.error(f"所有服务器获取 {idx_config['name']} 都失败")
                 except Exception as e:
@@ -711,6 +808,16 @@ class FactorService:
                 refresh_trade_dates()
             except Exception:
                 pass
+            # 刷新 market_daily 预计算缓存（指数涨跌幅依赖此缓存）
+            try:
+                from app.server.api.market_review import precompute_market_daily
+                from app.server.cache import get_latest_trade_date
+                latest_date = get_latest_trade_date()
+                if latest_date:
+                    precompute_market_daily(latest_date)
+                    logger.info(f"[指数同步] 已刷新 {latest_date} 的 market_daily 缓存")
+            except Exception as e:
+                logger.warning(f"[指数同步] 刷新 market_daily 缓存失败: {e}")
         except Exception as e:
             logger.error(f"指数同步失败: {e}")
             tm = get_task_manager()
@@ -777,7 +884,12 @@ class FactorService:
                 excluded_codes=excluded_codes or [],
             )
 
-            message = f"RPS-{target} 完成: 日期={result.get('dates', 0)}, 品种={result.get('codes', 0)}, 更新={result.get('updates', 0)}"
+            dates = result.get('dates', 0)
+            updates = result.get('updates', 0)
+            if dates == 0:
+                message = f"RPS-{target} 数据已完整，无需更新"
+            else:
+                message = f"RPS-{target} 完成: 日期={dates}, 更新={updates} 条"
             logger.info(message)
 
             logger.info("RPS计算完成，开始计算涨幅字段...")
@@ -836,31 +948,25 @@ class FactorService:
 
     def sync_sectors(
         self,
-        start_date: Optional[str],
-        end_date: Optional[str],
         max_workers: int,
         min_days: Optional[int],
     ) -> Dict[str, Any]:
-        if not end_date:
-            end_date = datetime.now().strftime("%Y%m%d")
-        if not start_date:
-            start_date = "20180101"
-
+        """同步板块数据 — 逐天回溯模式"""
         tm = get_task_manager()
         task_id = tm.create_task(100)
         excluded_sectors = get_excluded_set('sector', 'sync')
 
         thread = threading.Thread(
             target=self._run_sync_sectors,
-            args=(task_id, start_date, end_date, max_workers, min_days, excluded_sectors),
+            args=(task_id, max_workers, min_days, excluded_sectors),
         )
         thread.daemon = True
         thread.start()
         return {"success": True, "task_id": task_id, "message": "板块同步任务已启动"}
 
-    def _run_sync_sectors(self, task_id, start_date, end_date, max_workers, min_days, excluded_sectors):
+    def _run_sync_sectors(self, task_id, max_workers, min_days, excluded_sectors):
         try:
-            logger.info(f"启动板块同步任务: {start_date} ~ {end_date}，线程数: {max_workers}，最小天数: {min_days}")
+            logger.info(f"启动板块逐天同步任务，线程数: {max_workers}")
             if excluded_sectors:
                 logger.info(f"排除 {len(excluded_sectors)} 个板块")
             tm = get_task_manager()
@@ -877,8 +983,8 @@ class FactorService:
                 )
 
             result = dm.sync_sector_indices(
-                start_date=start_date, end_date=end_date,
-                progress_callback=_progress, excluded_codes=excluded_sectors,
+                task_id=task_id,
+                excluded_codes=excluded_sectors,
             )
             msg = f"完成: 共 {result.get('block_count', 0)} 个板块，{result.get('sector_daily_count', 0)} 条日线聚合"
             logger.info(msg)
@@ -947,8 +1053,19 @@ class FactorService:
                 items = [i for i in items if i.get('code') not in disabled_codes]
 
         if keyword:
+            from pypinyin import lazy_pinyin, Style
             kw = keyword.lower()
-            items = [i for i in items if kw in i.get('code', '').lower() or kw in i.get('name', '').lower()]
+
+            def get_pinyin(name: str) -> str:
+                try:
+                    return ''.join(lazy_pinyin(name, style=Style.FIRST_LETTER)).lower()
+                except Exception:
+                    return ''
+
+            items = [i for i in items if
+                     kw in i.get('code', '').lower() or
+                     kw in i.get('name', '').lower() or
+                     kw in get_pinyin(i.get('name', ''))]
 
         total = len(items)
         if limit and page is None:

@@ -53,6 +53,10 @@ export const factorApi = {
     api.get('/factors/cr5', { params }),
   syncIndices: (params = {}) =>
     api.post('/factors/sync-indices', {}, { params }),
+  syncIndexPE: (token) =>
+    api.post('/factors/sync-index-pe', {}, { params: { token } }),
+  precomputeBase: () =>
+    api.post('/factors/precompute-base'),
   getIndices: (params = {}) =>
     api.get('/factors/indices', { params }),
   searchIndices: (keyword) =>
@@ -61,6 +65,8 @@ export const factorApi = {
     api.post('/factors/sync-sectors', {}, { params }),
   getSectors: (params = {}) =>
     api.get('/factors/sectors', { params: { min_stock_count: 5, ...params } }),
+  getSectorDaily: (code, startDate, endDate, limit) =>
+    api.get(`/factors/sectors/${code}/daily`, { params: { start_date: startDate, end_date: endDate, limit } }),
   importSectorCodes: (formData) =>
     api.post('/factors/sectors/import-codes', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
@@ -75,10 +81,6 @@ export const factorApi = {
     api.get(`/factors/rps/${code}`, { params }),
   getRPSByDate: (date, params = {}) =>
     api.get('/factors/rps', { params: { trade_date: date, ...params } })
-}
-
-export const backtestApi = {
-  runBacktest: (data) => api.post('/backtest/run', data)
 }
 
 export const syncApi = {
@@ -104,7 +106,11 @@ export const marketReviewApi = {
   getOverview: (date) => api.get('/market-review/overview', { params: { date } }),
   getSignals: (date) => api.get('/market-review/signals', { params: { date } }),
   getNewHighBlocks: (date) => api.get('/market-review/new-high-blocks', { params: { date } }),
-  getMaBreadth: (params = {}) => api.get('/market-review/ma-breadth', { params }),
+  getLowPositionSectors: (date) => api.get('/market-review/low-position-sectors', { params: { date } }),
+  getBaseData: (params = {}) => api.get('/market-review/base-data', { params }),
+  getAiAnalysis: (date) => api.get('/market-review/ai-analysis', { params: { date } }),
+  generateAiAnalysis: (date) => api.post('/market-review/ai-analysis/generate', null, { params: { date } }),
+  getAiAnalysisTask: (taskId) => api.get(`/market-review/ai-analysis/task/${taskId}`),
   getReview: () => api.get('/market-review')
 }
 

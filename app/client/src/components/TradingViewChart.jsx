@@ -104,7 +104,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
   // 从data中提取RPS数据（与K线使用相同周期的日期）
   const rpsData = useMemo(() => {
     if (!data || data.length === 0) return [];
-    return data.filter(d => d.rps_20 !== undefined || d.rps_50 !== undefined);
+    return data.filter(d => d.rps_10 !== undefined || d.rps_20 !== undefined || d.rps_50 !== undefined);
   }, [data]);
 
   // 格式化数据
@@ -190,13 +190,14 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
         fixRightEdge: true,
       },
       handleScroll: {
-        mouseWheel: false,
-        pressedMouseMove: false,
+        mouseWheel: true,
+        pressedMouseMove: true,
+        vertTouchDrag: true,
       },
       handleScale: {
-        axisPressedMouseMove: false,
-        mouseWheel: false,
-        pinch: false,
+        axisPressedMouseMove: true,
+        mouseWheel: true,
+        pinch: true,
       },
     };
 
@@ -346,6 +347,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
         return Array.from(map.values()).sort((a, b) => a.time.localeCompare(b.time));
       };
       rpsFormatted = {
+        rps10: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_10 })).filter(d => d.value !== null && d.value !== undefined)),
         rps20: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_20 })).filter(d => d.value !== null && d.value !== undefined)),
         rps50: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_50 })).filter(d => d.value !== null && d.value !== undefined)),
         rps120: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_120 })).filter(d => d.value !== null && d.value !== undefined)),
@@ -353,11 +355,13 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       };
     }
 
+    const rpsSeries10 = rpsChart.addLineSeries({ color: '#e066ff', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     const rpsSeries20 = rpsChart.addLineSeries({ color: '#ff6b6b', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     const rpsSeries50 = rpsChart.addLineSeries({ color: '#ffcc00', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     const rpsSeries120 = rpsChart.addLineSeries({ color: '#4ecdc4', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     const rpsSeries250 = rpsChart.addLineSeries({ color: '#95a5a6', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
 
+    if (rpsFormatted.rps10?.length > 0) rpsSeries10.setData(rpsFormatted.rps10);
     if (rpsFormatted.rps20?.length > 0) rpsSeries20.setData(rpsFormatted.rps20);
     if (rpsFormatted.rps50?.length > 0) rpsSeries50.setData(rpsFormatted.rps50);
     if (rpsFormatted.rps120?.length > 0) rpsSeries120.setData(rpsFormatted.rps120);
@@ -392,11 +396,13 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       `;
 
       // RPS标签
+      const rps10 = rpsFormatted.rps10?.find(d => d.time === time);
       const rps20 = rpsFormatted.rps20?.find(d => d.time === time);
       const rps50 = rpsFormatted.rps50?.find(d => d.time === time);
       const rps120 = rpsFormatted.rps120?.find(d => d.time === time);
       const rps250 = rpsFormatted.rps250?.find(d => d.time === time);
       rpsLabel.innerHTML = `
+        <span style="color:#e066ff">RPS10:${rps10?.value ?? '-'}</span>
         <span style="color:#ff6b6b">RPS20:${rps20?.value ?? '-'}</span>
         <span style="color:#ffcc00">RPS50:${rps50?.value ?? '-'}</span>
         <span style="color:#4ecdc4">RPS120:${rps120?.value ?? '-'}</span>
@@ -446,6 +452,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       const ma10 = ma10Data.find(d => d.time === param.time);
       const ma20 = ma20Data.find(d => d.time === param.time);
       const ma120 = ma120Data.find(d => d.time === param.time);
+      const rps10 = rpsFormatted.rps10?.find(d => d.time === param.time);
       const rps20 = rpsFormatted.rps20?.find(d => d.time === param.time);
       const rps50 = rpsFormatted.rps50?.find(d => d.time === param.time);
       const rps120 = rpsFormatted.rps120?.find(d => d.time === param.time);
@@ -465,7 +472,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
           volume: v?.value,
           dif: m?.dif, dea: m?.dea, macd: m?.macd,
           ma10: ma10?.value, ma20: ma20?.value, ma120: ma120?.value,
-          rps20: rps20?.value, rps50: rps50?.value, rps120: rps120?.value, rps250: rps250?.value,
+          rps10: rps10?.value, rps20: rps20?.value, rps50: rps50?.value, rps120: rps120?.value, rps250: rps250?.value,
         });
       }
     };
@@ -594,9 +601,10 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
             </div>
 
             {/* RPS指标 */}
-            <div style={{ gridColumn: '1 / -1', marginTop: '6px', borderTop: '1px solid #444', paddingTop: '6px', display: 'flex', gap: '8px', justifyContent: 'space-between' }}>
+            <div style={{ gridColumn: '1 / -1', marginTop: '6px', borderTop: '1px solid #444', paddingTop: '6px', display: 'flex', gap: '6px', justifyContent: 'space-between' }}>
               {(() => {
                 const rpsItems = [
+                  { label: 'RPS10', value: hoverData.rps10, color: '#e066ff' },
                   { label: 'RPS20', value: hoverData.rps20, color: '#ff6b6b' },
                   { label: 'RPS50', value: hoverData.rps50, color: '#ffcc00' },
                   { label: 'RPS120', value: hoverData.rps120, color: '#4ecdc4' },

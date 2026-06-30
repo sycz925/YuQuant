@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { Select, Card, Typography, Spin, Button, Space } from 'antd'
+import { Select, Card, Typography, Spin, Button, Space, Segmented } from 'antd'
 import {
   SearchOutlined,
   BarChartOutlined,
@@ -29,6 +29,7 @@ const debounce = (fn, delay) => {
 }
 
 function StockAnalysis() {
+  const [marketType, setMarketType] = useState('stock') // stock: 个股, sector: 板块
   const [selectedCode, setSelectedCode] = useState('688279')
   const [allData, setAllData] = useState([]) // 全部数据
   const [loading, setLoading] = useState(false)
@@ -37,30 +38,35 @@ function StockAnalysis() {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
 
-  // 股票搜索相关
+  // 搜索相关
   const [searchOptions, setSearchOptions] = useState([])
   const [searching, setSearching] = useState(false)
   const [searchValue, setSearchValue] = useState('')
 
-  // 搜索股票
-  const searchStocks = useCallback(async (keyword) => {
+  // 搜索
+  const searchItems = useCallback(async (keyword) => {
     if (!keyword || keyword.length < 1) {
       setSearchOptions([])
       return
     }
     setSearching(true)
     try {
-      const res = await stockApi.searchStocks(keyword)
-      setSearchOptions(res.data || [])
+      if (marketType === 'stock') {
+        const res = await stockApi.searchStocks(keyword)
+        setSearchOptions(res.data || [])
+      } else {
+        const res = await factorApi.getSectors({ keyword, limit: 20 })
+        setSearchOptions(res.items || [])
+      }
     } catch (e) {
-      console.error('搜索股票失败:', e)
+      console.error('搜索失败:', e)
       setSearchOptions([])
     } finally {
       setSearching(false)
     }
-  }, [])
+  }, [marketType])
 
-  const debouncedSearch = useMemo(() => debounce(searchStocks, 300), [searchStocks])
+  const debouncedSearch = useMemo(() => debounce(searchItems, 300), [searchItems])
 
   const handleSearch = (value) => {
     setSearchValue(value)
@@ -72,6 +78,12 @@ function StockAnalysis() {
     setSearchValue('')
     setCurrentIndex(0) // 重置索引
   }
+
+  // 切换市场类型时清空搜索和选中
+  useEffect(() => {
+    setSearchOptions([])
+    setSearchValue('')
+  }, [marketType])
 
   // 当选中股票改变时加载数据
   useEffect(() => {
@@ -257,46 +269,68 @@ function StockAnalysis() {
     return monthlyData
   }
 
-  // 初始加载（最近200条 + RPS数据合并）
+  // 初始加载（最近200条）
   const loadInitialData = async () => {
     setLoading(true)
     setError('')
     setCurrentIndex(0)
     try {
-      // 并行加载日线数据和RPS数据
-      const [dailyRes, rpsRes] = await Promise.all([
-        stockApi.getDailyData(selectedCode, undefined, undefined, 200),
-        factorApi.getStockRPS(selectedCode, { period: 'day' }).catch(() => ({ data: [] }))
-      ])
+      let dailyRes
+      let rpsMap = {}
+      if (marketType === 'stock') {
+        // 个股：加载日线 + RPS
+        const [stockDaily, rpsRes] = await Promise.all([
+          stockApi.getDailyData(selectedCode, undefined, undefined, 200),
+          factorApi.getStockRPS(selectedCode, { period: 'day' }).catch(() => ({ data: [] }))
+        ])
+        dailyRes = stockDaily
 
-      // 构建RPS日期索引
-      const rpsMap = {}
-      if (rpsRes && rpsRes.data) {
-        rpsRes.data.forEach(item => {
-          rpsMap[item.date] = {
-            rps_10: item.rps_10,
-            rps_20: item.rps_20,
-            rps_50: item.rps_50,
-            rps_120: item.rps_120,
-            rps_250: item.rps_250
-          }
-        })
+        // 构建RPS日期索引
+        if (rpsRes && rpsRes.data) {
+          rpsRes.data.forEach(item => {
+            rpsMap[item.date] = {
+              rps_10: item.rps_10,
+              rps_20: item.rps_20,
+              rps_50: item.rps_50,
+              rps_120: item.rps_120,
+              rps_250: item.rps_250
+            }
+          })
+        }
+      } else {
+        // 板块：日线已包含 RPS 数据
+        dailyRes = await factorApi.getSectorDaily(selectedCode, undefined, undefined, 200)
       }
 
       let data = dailyRes.data.map(item => {
-        const rps = rpsMap[item.trade_date] || {}
-        return {
-          date: item.trade_date,
-          open: item.open,
-          high: item.high,
-          low: item.low,
-          close: item.close,
-          volume: item.volume,
-          rps_10: rps.rps_10,
-          rps_20: rps.rps_20,
-          rps_50: rps.rps_50,
-          rps_120: rps.rps_120,
-          rps_250: rps.rps_250
+        if (marketType === 'stock') {
+          const rps = rpsMap[item.trade_date] || {}
+          return {
+            date: item.trade_date,
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close,
+            volume: item.volume,
+            rps_10: rps.rps_10,
+            rps_20: rps.rps_20,
+            rps_50: rps.rps_50,
+            rps_120: rps.rps_120,
+            rps_250: rps.rps_250
+          }
+        } else {
+          // 板块：RPS 已在数据中
+          return {
+            date: item.trade_date,
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close,
+            volume: item.volume,
+            rps_10: item.rps_10,
+            rps_20: item.rps_20,
+            rps_50: item.rps_50
+          }
         }
       })
 
@@ -332,40 +366,62 @@ function StockAnalysis() {
       const year = parseInt(earliestDate.slice(0, 4)) - 1
       const startDate = `${year}${earliestDate.slice(4)}`
 
-      // 并行加载日线和RPS数据
-      const [dailyRes, rpsRes] = await Promise.all([
-        stockApi.getDailyData(selectedCode, startDate, earliestDate, 200),
-        factorApi.getStockRPS(selectedCode, { period: 'day' }).catch(() => ({ data: [] }))
-      ])
+      let dailyRes
+      let rpsMap = {}
+      if (marketType === 'stock') {
+        // 个股：加载日线 + RPS
+        const [stockDaily, rpsRes] = await Promise.all([
+          stockApi.getDailyData(selectedCode, startDate, earliestDate, 200),
+          factorApi.getStockRPS(selectedCode, { period: 'day' }).catch(() => ({ data: [] }))
+        ])
+        dailyRes = stockDaily
 
-      // 构建RPS日期索引
-      const rpsMap = {}
-      if (rpsRes && rpsRes.data) {
-        rpsRes.data.forEach(item => {
-          rpsMap[item.date] = {
-            rps_10: item.rps_10,
-            rps_20: item.rps_20,
-            rps_50: item.rps_50,
-            rps_120: item.rps_120,
-            rps_250: item.rps_250
-          }
-        })
+        // 构建RPS日期索引
+        if (rpsRes && rpsRes.data) {
+          rpsRes.data.forEach(item => {
+            rpsMap[item.date] = {
+              rps_10: item.rps_10,
+              rps_20: item.rps_20,
+              rps_50: item.rps_50,
+              rps_120: item.rps_120,
+              rps_250: item.rps_250
+            }
+          })
+        }
+      } else {
+        // 板块：日线已包含 RPS 数据
+        dailyRes = await factorApi.getSectorDaily(selectedCode, startDate, earliestDate, 200)
       }
 
       let newData = dailyRes.data.map(item => {
-        const rps = rpsMap[item.trade_date] || {}
-        return {
-          date: item.trade_date,
-          open: item.open,
-          high: item.high,
-          low: item.low,
-          close: item.close,
-          volume: item.volume,
-          rps_10: rps.rps_10,
-          rps_20: rps.rps_20,
-          rps_50: rps.rps_50,
-          rps_120: rps.rps_120,
-          rps_250: rps.rps_250
+        if (marketType === 'stock') {
+          const rps = rpsMap[item.trade_date] || {}
+          return {
+            date: item.trade_date,
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close,
+            volume: item.volume,
+            rps_10: rps.rps_10,
+            rps_20: rps.rps_20,
+            rps_50: rps.rps_50,
+            rps_120: rps.rps_120,
+            rps_250: rps.rps_250
+          }
+        } else {
+          // 板块：RPS 已在数据中
+          return {
+            date: item.trade_date,
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close,
+            volume: item.volume,
+            rps_10: item.rps_10,
+            rps_20: item.rps_20,
+            rps_50: item.rps_50
+          }
         }
       })
 
@@ -434,27 +490,36 @@ function StockAnalysis() {
   }, [])
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3 md:space-y-4">
       {/* 顶部标题和股票选择 */}
       <Card className="rounded-2xl shadow-sm border-gray-100">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center space-x-4">
-            <div className="p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl text-white">
-              <BarChartOutlined style={{ fontSize: '24px' }} />
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div className="flex items-center space-x-3">
+            <div className="p-2 md:p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl md:rounded-2xl text-white">
+              <BarChartOutlined style={{ fontSize: '18px' }} className="md:!text-2xl" />
             </div>
             <div>
-              <Title level={4} style={{ margin: 0 }}>个股技术分析</Title>
-              <Text type="secondary" className="text-xs">
-                {selectedCode || '选择股票开始分析'}
+              <Title level={5} style={{ margin: 0 }} className="!text-sm md:!text-lg">行情分析</Title>
+              <Text type="secondary" className="text-[10px] md:text-xs">
+                {selectedCode || (marketType === 'stock' ? '选择股票开始分析' : '选择板块开始分析')}
               </Text>
             </div>
           </div>
 
-          <div className="flex items-center space-x-4">
+          <div className="flex flex-col md:flex-row md:items-center gap-2 md:space-x-4">
+            <Segmented
+              options={[
+                { label: '个股', value: 'stock' },
+                { label: '板块', value: 'sector' }
+              ]}
+              value={marketType}
+              onChange={setMarketType}
+              size="small"
+            />
             <Select
               showSearch
-              placeholder="输入代码/名称/拼音搜索"
-              style={{ width: 280 }}
+              placeholder={marketType === 'stock' ? '输入代码/名称搜索' : '输入板块名称搜索'}
+              className="w-full md:w-64"
               value={selectedCode}
               onChange={handleSelect}
               onSearch={handleSearch}
@@ -463,39 +528,45 @@ function StockAnalysis() {
               notFoundContent={searching ? <Spin size="small" /> : <Text type="secondary">输入关键词搜索</Text>}
               suffixIcon={<SearchOutlined />}
               allowClear
+              size="small"
             >
               {searchOptions.map(s => (
                 <Select.Option key={s.code} value={s.code}>
                   <div className="flex items-center justify-between">
-                    <span className="font-mono">{s.code}</span>
-                    <span className="text-gray-500 ml-2">{s.name}</span>
+                    <span className="font-mono text-xs">{s.code}</span>
+                    <span className="text-gray-500 ml-2 text-xs">{s.name}</span>
                   </div>
                 </Select.Option>
               ))}
             </Select>
 
-            <Select
-              value={timePeriod}
-              onChange={setTimePeriod}
-              style={{ width: 80 }}
-            >
-              {TIME_PERIODS.map(p => (
-                <Select.Option key={p.value} value={p.value}>{p.label}</Select.Option>
-              ))}
-            </Select>
+            <div className="flex items-center space-x-2">
+              <Select
+                value={timePeriod}
+                onChange={setTimePeriod}
+                className="w-20"
+                size="small"
+              >
+                {TIME_PERIODS.map(p => (
+                  <Select.Option key={p.value} value={p.value}>{p.label}</Select.Option>
+                ))}
+              </Select>
 
-            <Space>
-              <Button
-                icon={<LeftOutlined />}
-                onClick={handleMoveLeft}
-                loading={loadingMore}
-              />
-              <Button
-                icon={<RightOutlined />}
-                onClick={handleMoveRight}
-                disabled={currentIndex <= 0}
-              />
-            </Space>
+              <Space size="small">
+                <Button
+                  icon={<LeftOutlined />}
+                  onClick={handleMoveLeft}
+                  loading={loadingMore}
+                  size="small"
+                />
+                <Button
+                  icon={<RightOutlined />}
+                  onClick={handleMoveRight}
+                  disabled={currentIndex <= 0}
+                  size="small"
+                />
+              </Space>
+            </div>
           </div>
         </div>
       </Card>
@@ -503,25 +574,25 @@ function StockAnalysis() {
       {/* 图表区域 */}
       <Card className="rounded-2xl shadow-sm border-gray-100 p-0 overflow-hidden">
         {loading ? (
-          <div className="flex justify-center items-center h-96">
+          <div className="flex justify-center items-center h-64 md:h-96">
             <Spin size="large" description="加载数据中..." />
           </div>
         ) : error ? (
-          <div className="flex flex-col justify-center items-center h-96">
-            <CloseCircleOutlined className="text-red-500 text-4xl mb-4" />
-            <Text type="danger" className="text-lg">{error}</Text>
-            <Button type="primary" onClick={loadInitialData} className="mt-4">
+          <div className="flex flex-col justify-center items-center h-64 md:h-96">
+            <CloseCircleOutlined className="text-red-500 text-3xl md:text-4xl mb-3 md:mb-4" />
+            <Text type="danger" className="text-sm md:text-lg">{error}</Text>
+            <Button type="primary" onClick={loadInitialData} className="mt-3 md:mt-4" size="small">
               重新加载
             </Button>
           </div>
         ) : displayData.length === 0 ? (
-          <div className="flex flex-col justify-center items-center h-96">
-            <BarChartOutlined className="text-gray-300 text-5xl mb-4" />
-            <Text type="secondary" className="text-lg">暂无数据</Text>
-            <Text type="secondary" className="text-sm">请先在数据管理页面同步该股票的数据</Text>
+          <div className="flex flex-col justify-center items-center h-64 md:h-96">
+            <BarChartOutlined className="text-gray-300 text-4xl md:text-5xl mb-3 md:mb-4" />
+            <Text type="secondary" className="text-sm md:text-lg">暂无数据</Text>
+            <Text type="secondary" className="text-[10px] md:text-sm">请先在数据管理页面同步该股票的数据</Text>
           </div>
         ) : (
-          <TradingViewChart data={displayData} height={800} stockCode={selectedCode} period={timePeriod} />
+          <TradingViewChart data={displayData} height={window.innerWidth < 768 ? 500 : 800} stockCode={selectedCode} period={timePeriod} />
         )}
       </Card>
     </div>
