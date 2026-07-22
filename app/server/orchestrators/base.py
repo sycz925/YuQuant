@@ -3,10 +3,14 @@
 """
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# 全局线程池
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="orchestrator")
 
 
 class BaseOrchestrator(ABC):
@@ -37,15 +41,10 @@ class BaseOrchestrator(ABC):
         task_id = str(uuid.uuid4())
         self.task_repo.create_task(task_id, steps)
         
-        # 启动后台线程
-        thread = threading.Thread(
-            target=self._run_wrapper,
-            args=(task_id, [target_date] if target_date else None),
-            daemon=True
-        )
-        thread.start()
+        # 使用线程池提交任务
+        _executor.submit(self._run_wrapper, task_id, [target_date] if target_date else None)
         
-        logger.info(f'[{self.__class__.__name__}] 任务 {task_id} 已启动')
+        logger.info(f'[{self.__class__.__name__}] 任务 {task_id} 已提交到线程池')
         return task_id
     
     def _run_wrapper(self, task_id: str, dates: Optional[List[str]] = None) -> None:
