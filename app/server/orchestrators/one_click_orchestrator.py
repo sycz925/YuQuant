@@ -1,13 +1,20 @@
 """
 One Click Update Orchestrator - 一键更新编排器
-流程：指数同步 → 个股同步 → 板块同步 → 个股RPS → 板块RPS → PE同步 → 预计算
 
-逻辑：
-- 日线数据同步（步骤1-3）：如果今天已同步过则跳过
-- RPS计算、PE同步、预计算（步骤4-7）：每次都重算
+核心逻辑：
+1. 查询 base_data_daily 中最后更新日期
+2. 从该日期+1 到 今天，计算需要补算的天数 N
+3. 对每一天（从最早到今天），依次执行7个步骤
+4. 总步骤数 = N × 7
+
+步骤逻辑：
+- 步骤1-3（数据同步）：有缓存检查，盘后永久缓存/盘中30分钟缓存
+- 步骤4-7（RPS/PE/预计算）：每次都重算
 """
 import logging
 from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from app.server.orchestrators.base import BaseOrchestrator
 
@@ -17,20 +24,52 @@ logger = logging.getLogger(__name__)
 class OneClickUpdateOrchestrator(BaseOrchestrator):
     """
     一键更新编排器
-    流程：指数同步 → 个股同步 → 板块同步 → 个股RPS → 板块RPS → PE同步 → 预计算
-    7个步骤严格顺序执行，任一步骤失败则停止
+    流程：查询最后更新日期 → 计算日期范围 → 对每天执行7个步骤
     """
     
+    STEP_KEYS = ['sync_index', 'sync_stocks', 'sync_sectors', 'rps_stock', 'rps_sector', 'sync_pe', 'precompute']
+    STEP_NAMES = ['同步指数', '同步个股', '同步板块', '计算个股RPS', '计算板块RPS', '更新PE', '预计算基础数据']
+    
     def get_steps(self) -> List[Dict[str, str]]:
-        return [
-            {'key': 'sync_index', 'name': '同步指数'},
-            {'key': 'sync_stocks', 'name': '同步个股'},
-            {'key': 'sync_sectors', 'name': '同步板块'},
-            {'key': 'rps_stock', 'name': '计算个股RPS'},
-            {'key': 'rps_sector', 'name': '计算板块RPS'},
-            {'key': 'sync_pe', 'name': '更新PE'},
-            {'key': 'precompute', 'name': '预计算基础数据'},
-        ]
+        # 动态生成步骤，在 execute() 中设置
+        return [{'key': k, 'name': n} for k, n in zip(self.STEP_KEYS, self.STEP_NAMES)]
+    
+    def _get_last_update_date(self) -> Optional[str]:
+        """查询 base_data_daily 中最后更新日期"""
+        from app.data.db import get_db
+        db = get_db()
+        
+        latest = db['base_data_daily'].find_one(
+            {},
+            sort=[('date', -1)],
+            projection={'date': 1, '_id': 0}
+        )
+        
+        if latest and latest.get('date'):
+            return latest['date']
+        return None
+    
+    def _get_date_range(self, last_date: Optional[str], today: str) -> List[str]:
+        """计算需要补算的日期范围"""
+        if not last_date:
+            # 没有历史数据，从250天前开始
+            start = datetime.strptime(today, '%Y%m%d') - timedelta(days=250)
+            return [start.strftime('%Y%m%d')]
+        
+        if last_date >= today:
+            # 已经是最新，只更新今天
+            return [today]
+        
+        # 从 last_date+1 到今天
+        dates = []
+        current = datetime.strptime(last_date, '%Y%m%d') + timedelta(days=1)
+        end = datetime.strptime(today, '%Y%m%d')
+        
+        while current <= end:
+            dates.append(current.strftime('%Y%m%d'))
+            current += timedelta(days=1)
+        
+        return dates
     
     def _is_data_synced_for_date(self, collection_name: str, date_field: str, target_date: str) -> bool:
         """
@@ -38,9 +77,6 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         盘中（15:30前）：30分钟缓存，需要重新同步
         盘后（15:30后）：永久缓存，已同步就跳过
         """
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        
         now = datetime.now(ZoneInfo('Asia/Shanghai'))
         today_str = now.strftime('%Y%m%d')
         
@@ -77,7 +113,6 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                 return False
             
             # 如果更新时间超过30分钟，需要重新同步
-            from datetime import timedelta
             if isinstance(updated_at, str):
                 updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
             
@@ -85,6 +120,108 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                 return False
             
             return True
+    
+    def execute(self, target_date: Optional[str] = None) -> str:
+        """
+        执行一键更新
+        :param target_date: 目标日期，None 表示自动计算
+        :return: task_id
+        """
+        today = datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d')
+        target = target_date or today
+        
+        # 查询最后更新日期
+        last_date = self._get_last_update_date()
+        logger.info(f"[一键更新] 最后更新日期: {last_date}")
+        
+        # 计算日期范围
+        dates = self._get_date_range(last_date, target)
+        logger.info(f"[一键更新] 需要更新的日期: {dates}")
+        
+        # 生成步骤：每个日期 × 7个步骤
+        steps = []
+        for date in dates:
+            for key, name in zip(self.STEP_KEYS, self.STEP_NAMES):
+                steps.append({
+                    'key': key,
+                    'name': f'{date} {name}',
+                    'date': date
+                })
+        
+        # 创建任务
+        import uuid
+        task_id = str(uuid.uuid4())
+        self.task_repo.create_task(task_id, steps)
+        
+        # 启动后台线程
+        import threading
+        thread = threading.Thread(
+            target=self._run,
+            args=(task_id, dates),
+            daemon=True
+        )
+        thread.start()
+        
+        return task_id
+    
+    def _run(self, task_id: str, dates: List[str]) -> None:
+        """后台执行流程"""
+        from app.data.task_manager import get_task_manager
+        tm = get_task_manager()
+        
+        for date_idx, date in enumerate(dates):
+            logger.info(f"[一键更新] 开始处理日期: {date}")
+            
+            for step_idx, step_key in enumerate(self.STEP_KEYS):
+                # 计算全局步骤索引
+                global_step_idx = date_idx * len(self.STEP_KEYS) + step_idx
+                
+                # 检查任务是否已取消
+                if tm.is_cancelled(task_id):
+                    logger.info(f'任务 {task_id} 已取消，停止执行')
+                    return
+                
+                step_name = self.STEP_NAMES[step_idx]
+                
+                self.task_repo.update_step_progress(task_id, global_step_idx, status='running')
+                self.task_repo.update_task_progress(task_id, current_step=global_step_idx)
+                
+                # 启动进度同步线程
+                sync_stop = threading.Event()
+                sync_thread = threading.Thread(
+                    target=self._sync_progress,
+                    args=(task_id, global_step_idx, sync_stop),
+                    daemon=True
+                )
+                sync_thread.start()
+                
+                try:
+                    self.execute_step(step_key, task_id, date)
+                except Exception as e:
+                    logger.error(f'步骤 {date} {step_name} 失败: {e}')
+                    sync_stop.set()
+                    sync_thread.join(timeout=5)
+                    self.task_repo.update_step_progress(
+                        task_id, global_step_idx,
+                        status='failed',
+                        message=str(e)[:200]
+                    )
+                    self.task_repo.fail_task(task_id, f'步骤失败: {str(e)[:200]}')
+                    return
+                finally:
+                    sync_stop.set()
+                    sync_thread.join(timeout=5)
+                
+                self.task_repo.update_step_progress(
+                    task_id, global_step_idx, 
+                    status='completed', 
+                    message=f'{date} {step_name}完成'
+                )
+            
+            logger.info(f"[一键更新] 日期 {date} 处理完成")
+        
+        self.task_repo.complete_task(task_id, '全部完成')
+        logger.info(f'[{self.__class__.__name__}] 全部完成')
     
     def execute_step(self, step_key: str, task_id: str, target_date: Optional[str]) -> None:
         """执行单个步骤"""
@@ -94,14 +231,9 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         )
         from app.server.repositories.task_repository import TaskRepository
         
-        step_idx = next(i for i, s in enumerate(self.get_steps()) if s['key'] == step_key)
-        callback = self._make_callback(task_id, step_idx)
         task_repo = TaskRepository()
         
-        # 获取目标日期
-        date = target_date or self._get_today()
-        
-        # 日线数据同步步骤：如果今天已同步过则跳过
+        # 日线数据同步步骤：如果已同步过则跳过
         if step_key in ['sync_index', 'sync_stocks', 'sync_sectors']:
             if step_key == 'sync_index':
                 collection, field = 'index_daily', 'trade_date'
@@ -110,47 +242,37 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             else:  # sync_sectors
                 collection, field = 'sector_daily', 'trade_date'
             
-            if self._is_data_synced_for_date(collection, field, date):
-                logger.info(f"[一键更新] {step_key} 日期 {date} 已有数据，跳过同步")
-                task_repo.update_step_progress(
-                    task_id, step_idx,
-                    status='completed',
-                    message=f'{date} 数据已存在，跳过同步'
-                )
+            if self._is_data_synced_for_date(collection, field, target_date):
+                logger.info(f"[一键更新] {step_key} 日期 {target_date} 已有数据，跳过同步")
                 return
         
         # 执行步骤
         if step_key == 'sync_index':
             factory = get_index_factory()
-            factory.sync_kline(target_date, task_id=task_id, progress_callback=callback)
+            factory.sync_kline(target_date, task_id=task_id)
         
         elif step_key == 'sync_stocks':
             factory = get_stock_factory()
-            factory.sync_daily(target_date, task_id=task_id, progress_callback=callback)
+            factory.sync_daily(target_date, task_id=task_id)
         
         elif step_key == 'sync_sectors':
             factory = get_sector_factory()
-            factory.sync_daily(target_date, task_id=task_id, progress_callback=callback)
+            factory.sync_daily(target_date, task_id=task_id)
         
         elif step_key == 'rps_stock':
             factory = get_stock_factory()
-            factory.compute_chg(target_date, callback)
-            factory.compute_rps(target_date, callback)
+            factory.compute_chg(target_date)
+            factory.compute_rps(target_date)
         
         elif step_key == 'rps_sector':
             factory = get_sector_factory()
-            factory.compute_chg(target_date, callback)
-            factory.compute_rps(target_date, callback)
+            factory.compute_chg(target_date)
+            factory.compute_rps(target_date)
         
         elif step_key == 'sync_pe':
             factory = get_index_factory()
-            factory.sync_pe(target_date, callback)
+            factory.sync_pe(target_date)
         
         elif step_key == 'precompute':
             aggregator = get_market_aggregator()
-            aggregator.precompute_base_data(date, task_id=task_id, progress_callback=callback)
-    
-    def _get_today(self) -> str:
-        """获取今日日期"""
-        from datetime import datetime
-        return datetime.now().strftime('%Y%m%d')
+            aggregator.precompute_base_data(target_date, task_id=task_id)

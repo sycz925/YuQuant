@@ -39,62 +39,70 @@ class BaseOrchestrator(ABC):
         
         thread = threading.Thread(
             target=self._run,
-            args=(task_id, target_date),
+            args=(task_id, [target_date] if target_date else None),
             daemon=True
         )
         thread.start()
         
         return task_id
     
-    def _run(self, task_id: str, target_date: Optional[str]) -> None:
+    def _run(self, task_id: str, dates: Optional[List[str]] = None) -> None:
         """后台执行流程"""
         from app.data.task_manager import get_task_manager
         tm = get_task_manager()
         steps = self.get_steps()
         
-        for i, step in enumerate(steps):
-            # 检查任务是否已取消
-            if tm.is_cancelled(task_id):
-                logger.info(f'任务 {task_id} 已取消，停止执行')
-                return
-            
-            step_key = step['key']
-            step_name = step['name']
-            
-            self.task_repo.update_step_progress(task_id, i, status='running')
-            self.task_repo.update_task_progress(task_id, current_step=i)
-            
-            # 启动进度同步线程
-            sync_stop = threading.Event()
-            sync_thread = threading.Thread(
-                target=self._sync_progress,
-                args=(task_id, i, sync_stop),
-                daemon=True
-            )
-            sync_thread.start()
-            
-            try:
-                self.execute_step(step_key, task_id, target_date)
-            except Exception as e:
-                logger.error(f'步骤 {step_name} 失败: {e}')
-                sync_stop.set()
-                sync_thread.join(timeout=5)
-                self.task_repo.update_step_progress(
-                    task_id, i,
-                    status='failed',
-                    message=str(e)[:200]
+        # 如果没有指定日期列表，使用默认行为
+        if not dates:
+            dates = [None]
+        
+        for date_idx, date in enumerate(dates):
+            for step_idx, step in enumerate(steps):
+                # 计算全局步骤索引
+                global_step_idx = date_idx * len(steps) + step_idx
+                
+                # 检查任务是否已取消
+                if tm.is_cancelled(task_id):
+                    logger.info(f'任务 {task_id} 已取消，停止执行')
+                    return
+                
+                step_key = step['key']
+                step_name = step['name']
+                
+                self.task_repo.update_step_progress(task_id, global_step_idx, status='running')
+                self.task_repo.update_task_progress(task_id, current_step=global_step_idx)
+                
+                # 启动进度同步线程
+                sync_stop = threading.Event()
+                sync_thread = threading.Thread(
+                    target=self._sync_progress,
+                    args=(task_id, global_step_idx, sync_stop),
+                    daemon=True
                 )
-                self.task_repo.fail_task(task_id, f'步骤失败: {str(e)[:200]}')
-                return
-            finally:
-                sync_stop.set()
-                sync_thread.join(timeout=5)
-            
-            self.task_repo.update_step_progress(
-                task_id, i, 
-                status='completed', 
-                message=f'{step_name}完成'
-            )
+                sync_thread.start()
+                
+                try:
+                    self.execute_step(step_key, task_id, date)
+                except Exception as e:
+                    logger.error(f'步骤 {step_name} 失败: {e}')
+                    sync_stop.set()
+                    sync_thread.join(timeout=5)
+                    self.task_repo.update_step_progress(
+                        task_id, global_step_idx,
+                        status='failed',
+                        message=str(e)[:200]
+                    )
+                    self.task_repo.fail_task(task_id, f'步骤失败: {str(e)[:200]}')
+                    return
+                finally:
+                    sync_stop.set()
+                    sync_thread.join(timeout=5)
+                
+                self.task_repo.update_step_progress(
+                    task_id, global_step_idx, 
+                    status='completed', 
+                    message=f'{step_name}完成'
+                )
         
         self.task_repo.complete_task(task_id, '全部完成')
         logger.info(f'[{self.__class__.__name__}] 全部完成')
