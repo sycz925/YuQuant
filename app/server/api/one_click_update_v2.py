@@ -1,9 +1,7 @@
 """
 一键更新API v2 - 使用 Orchestrator 编排层
-简化版本，将业务逻辑委托给 orchestrator
 """
 import logging
-from datetime import datetime
 from fastapi import APIRouter, Query
 
 from app.server.repositories.task_repository import TaskRepository
@@ -58,6 +56,7 @@ def get_status():
             'current_step': running_task.get('current_step', 0),
             'total_steps': len(running_task.get('steps', [])),
             'step_name': running_task.get('current_stock_name', ''),
+            'steps': running_task.get('steps', []),
             'error': None
         }
     
@@ -66,7 +65,7 @@ def get_status():
         'current_step': 0,
         'total_steps': 7,
         'step_name': '',
-        'step_progress': '',
+        'steps': [],
         'error': None
     }
 
@@ -77,8 +76,6 @@ def check_sync_time_endpoint():
     allowed, msg = check_sync_time()
     return {'allowed': allowed, 'message': msg}
 
-
-# ==================== 按日期重算 ====================
 
 @router.post("/recalculate-date")
 def recalculate_date(target_date: str = Query(..., description="目标日期 YYYYMMDD")):
