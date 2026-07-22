@@ -48,9 +48,16 @@ class BaseOrchestrator(ABC):
     
     def _run(self, task_id: str, target_date: Optional[str]) -> None:
         """后台执行流程"""
+        from app.data.task_manager import get_task_manager
+        tm = get_task_manager()
         steps = self.get_steps()
         
         for i, step in enumerate(steps):
+            # 检查任务是否已取消
+            if tm.is_cancelled(task_id):
+                logger.info(f'任务 {task_id} 已取消，停止执行')
+                return
+            
             step_key = step['key']
             step_name = step['name']
             
