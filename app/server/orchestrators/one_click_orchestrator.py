@@ -127,6 +127,32 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             
             return True
     
+    def _get_step_totals(self) -> Dict[str, int]:
+        """查询各步骤的实际数据量"""
+        from app.data.db import get_db
+        db = get_db()
+        
+        # 启用的指数数量
+        index_count = db['index_basics'].count_documents({'is_disable': {'$ne': True}})
+        
+        # 启用的个股数量
+        stock_count = db['stock_basics'].count_documents({'is_disable': {'$ne': True}})
+        
+        # 启用的板块数量
+        sector_count = db['sector_basics'].count_documents({'is_disable': {'$ne': True}})
+        
+        logger.info(f"[一键更新] 数据量: 指数={index_count}, 个股={stock_count}, 板块={sector_count}")
+        
+        return {
+            'sync_index': index_count,
+            'sync_stocks': stock_count,
+            'sync_sectors': sector_count,
+            'rps_stock': 1,  # 单次计算
+            'rps_sector': 1,  # 单次计算
+            'sync_pe': index_count,  # PE同步数量与指数相同
+            'precompute': 1,  # 单次计算
+        }
+    
     def execute(self, target_date: Optional[str] = None) -> str:
         """
         执行一键更新
@@ -142,7 +168,10 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         
         # 计算日期范围
         dates = self._get_date_range(last_date, target)
-        logger.info(f"[一键更新] 需要更新的日期: {dates}")
+        logger.info(f"[一键更新] 需要更新的日期: {dates} (共{len(dates)}天)")
+        
+        # 查询各步骤的实际数据量
+        step_totals = self._get_step_totals()
         
         # 生成步骤：每个日期 × 7个步骤
         steps = []
@@ -151,8 +180,12 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                 steps.append({
                     'key': key,
                     'name': f'{date} {name}',
-                    'date': date
+                    'date': date,
+                    'total_count': step_totals.get(key, 1),
+                    'completed_count': 0,
                 })
+        
+        logger.info(f"[一键更新] 总步骤数: {len(steps)}")
         
         # 创建任务
         import uuid
@@ -172,11 +205,15 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
     
     def _run(self, task_id: str, dates: List[str]) -> None:
         """后台执行流程"""
+        import threading
         from app.data.task_manager import get_task_manager
         tm = get_task_manager()
         
+        total_dates = len(dates)
+        logger.info(f"[一键更新] 开始执行，共 {total_dates} 个日期")
+        
         for date_idx, date in enumerate(dates):
-            logger.info(f"[一键更新] 开始处理日期: {date}")
+            logger.info(f"[一键更新] ===== 日期 {date_idx+1}/{total_dates}: {date} =====")
             
             for step_idx, step_key in enumerate(self.STEP_KEYS):
                 # 计算全局步骤索引
@@ -188,6 +225,7 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                     return
                 
                 step_name = self.STEP_NAMES[step_idx]
+                logger.info(f"[一键更新] 步骤 {step_idx+1}/7: {step_name}")
                 
                 self.task_repo.update_step_progress(task_id, global_step_idx, status='running')
                 self.task_repo.update_task_progress(task_id, current_step=global_step_idx)
@@ -204,7 +242,7 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                 try:
                     self.execute_step(step_key, task_id, date)
                 except Exception as e:
-                    logger.error(f'步骤 {date} {step_name} 失败: {e}')
+                    logger.error(f'[一键更新] 步骤 {date} {step_name} 失败: {e}', exc_info=True)
                     sync_stop.set()
                     sync_thread.join(timeout=5)
                     self.task_repo.update_step_progress(
@@ -223,11 +261,12 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                     status='completed', 
                     message=f'{date} {step_name}完成'
                 )
+                logger.info(f"[一键更新] 步骤 {step_idx+1}/7: {step_name} 完成")
             
-            logger.info(f"[一键更新] 日期 {date} 处理完成")
+            logger.info(f"[一键更新] ===== 日期 {date} 全部完成 =====")
         
         self.task_repo.complete_task(task_id, '全部完成')
-        logger.info(f'[{self.__class__.__name__}] 全部完成')
+        logger.info(f'[一键更新] 全部完成，共处理 {total_dates} 个日期')
     
     def execute_step(self, step_key: str, task_id: str, target_date: Optional[str]) -> None:
         """执行单个步骤"""
@@ -235,9 +274,6 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             get_index_factory, get_stock_factory, 
             get_sector_factory, get_market_aggregator
         )
-        from app.server.repositories.task_repository import TaskRepository
-        
-        task_repo = TaskRepository()
         
         # 日线数据同步步骤：如果已同步过则跳过
         if step_key in ['sync_index', 'sync_stocks', 'sync_sectors']:
@@ -251,8 +287,12 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             if self._is_data_synced_for_date(collection, field, target_date):
                 logger.info(f"[一键更新] {step_key} 日期 {target_date} 已有数据，跳过同步")
                 return
+            else:
+                logger.info(f"[一键更新] {step_key} 日期 {target_date} 需要同步")
         
         # 执行步骤
+        logger.info(f"[一键更新] 执行 {step_key} 日期 {target_date}")
+        
         if step_key == 'sync_index':
             factory = get_index_factory()
             factory.sync_kline(target_date, task_id=task_id)
@@ -267,18 +307,26 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         
         elif step_key == 'rps_stock':
             factory = get_stock_factory()
+            logger.info(f"[一键更新] 计算个股涨幅字段")
             factory.compute_chg(target_date)
+            logger.info(f"[一键更新] 计算个股RPS")
             factory.compute_rps(target_date)
         
         elif step_key == 'rps_sector':
             factory = get_sector_factory()
+            logger.info(f"[一键更新] 计算板块涨幅字段")
             factory.compute_chg(target_date)
+            logger.info(f"[一键更新] 计算板块RPS")
             factory.compute_rps(target_date)
         
         elif step_key == 'sync_pe':
             factory = get_index_factory()
+            logger.info(f"[一键更新] 同步PE数据")
             factory.sync_pe(target_date)
         
         elif step_key == 'precompute':
             aggregator = get_market_aggregator()
+            logger.info(f"[一键更新] 预计算基础数据")
             aggregator.precompute_base_data(target_date, task_id=task_id)
+        
+        logger.info(f"[一键更新] {step_key} 日期 {target_date} 执行完成")
