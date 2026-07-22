@@ -67,7 +67,7 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         elif step_key == 'precompute':
             date = target_date or self._get_today()
             aggregator = get_market_aggregator()
-            aggregator.run_full_pipeline(date, callback)
+            aggregator.precompute_base_data(date, task_id=task_id, progress_callback=callback)
     
     def _get_today(self) -> str:
         """获取今日日期"""

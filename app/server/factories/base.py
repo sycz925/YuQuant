@@ -53,10 +53,13 @@ class ProgressCallback:
     
     def __init__(self, callback: Optional[Callable] = None):
         self._callback = callback
+        self._total = 0
     
     def __call__(self, current: int, total: int, message: str = '') -> None:
         if self._callback:
             self._callback(current, total, message)
+        if total > 0:
+            self._total = total
     
     def update(self, current: int, total: int, message: str = '') -> None:
         """更新进度"""
@@ -64,4 +67,5 @@ class ProgressCallback:
     
     def complete(self, message: str = '完成') -> None:
         """标记完成"""
-        self(100, 100, message)
+        total = self._total if self._total > 0 else 1
+        self(total, total, message)

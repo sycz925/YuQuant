@@ -30,21 +30,21 @@ class MarketAggregator:
         self.market_repo = market_repo or MarketRepository()
     
     def precompute_base_data(self, target_date: str,
+                             task_id: str = None,
                              progress_callback: Callable = None) -> ComputeResult:
         """
-        预计算 base_data_daily：CR5/CR10/MA/NH-NL/涨跌家数/总成交额
+        预计算 base_data_daily + market_daily
         :param target_date: 必须指定日期
+        :param task_id: 任务ID
         """
         callback = ProgressCallback(progress_callback)
         
         try:
             callback.update(0, 100, '计算 CR5/CR10/MA/NH-NL...')
             
-            # TODO: 从 factors._run_precompute_base_for_date 迁移逻辑
-            # 1. 计算CR5/CR10/MA/NH-NL（读取 stock_daily）
-            # 2. 统计涨跌家数（读取 stock_daily）
-            # 3. 统计总成交额（读取 index_daily）
-            # 4. upsert 到 base_data_daily
+            # 调用原始的预计算函数
+            from app.server.api.factors import _run_precompute_base_for_date
+            _run_precompute_base_for_date(task_id, target_date, is_external=True)
             
             callback.complete('基础数据预计算完成')
             return ComputeResult(success=True, message='基础数据预计算完成')
