@@ -378,13 +378,12 @@ class IndexFactory:
             
             callback.update(0, 1, '开始同步PE数据...')
             
-            # 调用 factor_service 的 PE 同步逻辑
-            from app.server.services.factor_service import get_factor_service
-            fs = get_factor_service()
+            # 调用 factors.py 的 PE 同步逻辑
+            from app.server.api.factors import _run_sync_pe
             
             import uuid
             temp_task_id = str(uuid.uuid4())
-            fs._run_sync_pe(temp_task_id, settings.LEGULEGU_TOKEN, is_external=True)
+            _run_sync_pe(temp_task_id, settings.LEGULEGU_TOKEN, is_external=True)
             
             callback.complete('PE同步完成')
             return SyncResult(success=True, message='PE同步完成')
