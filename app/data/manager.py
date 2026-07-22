@@ -279,7 +279,9 @@ class DataManager:
 
             if tm and task_id:
                 tm.update_task_progress(task_id, current_stock=day,
-                                        current_stock_name=f"同步 {day}...")
+                                        current_stock_name=f"同步 {day}...",
+                                        total_count=expected,
+                                        completed_count=0)
 
             day_processed = 0
             with ThreadPoolExecutor(max_workers=max_workers) as executor:

@@ -18,10 +18,12 @@ class SectorFactory:
         self.repo = sector_repo or SectorRepository()
     
     def sync_daily(self, target_date: Optional[str] = None,
+                   task_id: str = None,
                    progress_callback: Callable = None) -> SyncResult:
         """
         同步板块日线数据
         :param target_date: 指定日期 YYYYMMDD，None 同步到最新
+        :param task_id: 任务ID，用于更新进度
         """
         callback = ProgressCallback(progress_callback)
         
@@ -39,6 +41,7 @@ class SectorFactory:
             dm = get_data_manager()
             
             result = dm.sync_sector_indices(
+                task_id=task_id,
                 enabled_codes=enabled_sectors,
                 is_external=True
             )

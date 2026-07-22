@@ -32,8 +32,10 @@ class BaseOrchestrator(ABC):
         :param target_date: 目标日期，None 表示最新
         :return: task_id
         """
+        import uuid
         steps = self.get_steps()
-        task_id = self.task_repo.create_task(steps)
+        task_id = str(uuid.uuid4())
+        self.task_repo.create_task(task_id, steps)
         
         thread = threading.Thread(
             target=self._run,
