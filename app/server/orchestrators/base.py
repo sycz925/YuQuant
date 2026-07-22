@@ -37,14 +37,27 @@ class BaseOrchestrator(ABC):
         task_id = str(uuid.uuid4())
         self.task_repo.create_task(task_id, steps)
         
+        # 启动后台线程
         thread = threading.Thread(
-            target=self._run,
+            target=self._run_wrapper,
             args=(task_id, [target_date] if target_date else None),
             daemon=True
         )
         thread.start()
         
+        logger.info(f'[{self.__class__.__name__}] 任务 {task_id} 已启动')
         return task_id
+    
+    def _run_wrapper(self, task_id: str, dates: Optional[List[str]] = None) -> None:
+        """线程包装器 - 确保异常被捕获"""
+        try:
+            self._run(task_id, dates)
+        except Exception as e:
+            logger.error(f'[{self.__class__.__name__}] 任务 {task_id} 异常: {e}', exc_info=True)
+            try:
+                self.task_repo.fail_task(task_id, f'任务异常: {str(e)[:200]}')
+            except Exception:
+                pass
     
     def _run(self, task_id: str, dates: Optional[List[str]] = None) -> None:
         """后台执行流程"""
@@ -56,7 +69,11 @@ class BaseOrchestrator(ABC):
         if not dates:
             dates = [None]
         
+        logger.info(f'[{self.__class__.__name__}] 开始执行任务 {task_id}，共 {len(dates)} 个日期')
+        
         for date_idx, date in enumerate(dates):
+            logger.info(f'[{self.__class__.__name__}] 日期 {date_idx+1}/{len(dates)}: {date}')
+            
             for step_idx, step in enumerate(steps):
                 # 计算全局步骤索引
                 global_step_idx = date_idx * len(steps) + step_idx
@@ -68,6 +85,8 @@ class BaseOrchestrator(ABC):
                 
                 step_key = step['key']
                 step_name = step['name']
+                
+                logger.info(f'[{self.__class__.__name__}] 步骤 {step_idx+1}/{len(steps)}: {step_name}')
                 
                 self.task_repo.update_step_progress(task_id, global_step_idx, status='running')
                 self.task_repo.update_task_progress(task_id, current_step=global_step_idx)
@@ -84,7 +103,7 @@ class BaseOrchestrator(ABC):
                 try:
                     self.execute_step(step_key, task_id, date)
                 except Exception as e:
-                    logger.error(f'步骤 {step_name} 失败: {e}')
+                    logger.error(f'[{self.__class__.__name__}] 步骤 {date} {step_name} 失败: {e}', exc_info=True)
                     sync_stop.set()
                     sync_thread.join(timeout=5)
                     self.task_repo.update_step_progress(
@@ -101,11 +120,14 @@ class BaseOrchestrator(ABC):
                 self.task_repo.update_step_progress(
                     task_id, global_step_idx, 
                     status='completed', 
-                    message=f'{step_name}完成'
+                    message=f'{date} {step_name}完成'
                 )
+                logger.info(f'[{self.__class__.__name__}] 步骤 {step_idx+1}/{len(steps)}: {step_name} 完成')
+            
+            logger.info(f'[{self.__class__.__name__}] 日期 {date} 全部完成')
         
         self.task_repo.complete_task(task_id, '全部完成')
-        logger.info(f'[{self.__class__.__name__}] 全部完成')
+        logger.info(f'[{self.__class__.__name__}] 任务 {task_id} 全部完成，共处理 {len(dates)} 个日期')
     
     def _sync_progress(self, task_id: str, step_idx: int, stop_event: threading.Event) -> None:
         """同步顶层进度到步骤级进度"""
