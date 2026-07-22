@@ -565,8 +565,9 @@ class FactorService:
                                 offset = 0
                                 max_retries = 3
                                 retry_count = 0
+                                max_iterations = 50  # 最大迭代次数，防止无限循环
 
-                                while True:
+                                for _ in range(max_iterations):
                                     data = api.get_index_bars(
                                         category=TDXParams.KLINE_TYPE_DAILY,
                                         market=idx_config['market'],
