@@ -78,10 +78,10 @@ def _run_update_task(task_id: str):
         step_idx = step_keys.index('sync_index') if 'sync_index' in step_keys else 0
         tm.start_step(task_id, step_idx)
         try:
-            from app.server.services.tdx_service import get_tdx_service
+            from app.server.services.data_service import get_data_service
             from app.server.factories import get_index_factory
             
-            tdx = get_tdx_service()
+            data_svc = get_data_service()
             factory = get_index_factory()
             
             # 获取同步配置
@@ -101,7 +101,7 @@ def _run_update_task(task_id: str):
                     current_stock_name=f"正在同步 {idx_config['name']}...",
                     total_count=len(sync_cfg), completed_count=i,
                 )
-                result = tdx.sync_index(idx_config, today_str, today_str)
+                result = data_svc.sync_index(idx_config, today_str, today_str)
                 if not result['success']:
                     logger.warning(f"同步 {idx_config['name']} 失败: {result['message']}")
             

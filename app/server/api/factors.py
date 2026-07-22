@@ -84,10 +84,10 @@ def sync_index_data(
         if not allowed:
             return {"success": False, "message": msg}
         # 使用 tdx_service 的同步逻辑
-        from app.server.services.tdx_service import get_tdx_service
+        from app.server.services.data_service import get_data_service
         from app.server.factories import get_index_factory
         
-        tdx = get_tdx_service()
+        data_svc = get_data_service()
         factory = get_index_factory()
         
         # 获取同步配置
@@ -104,7 +104,7 @@ def sync_index_data(
         # 逐个同步指数
         success_count = 0
         for idx_config in sync_cfg:
-            result = tdx.sync_index(idx_config, start_date, end_date)
+            result = data_svc.sync_index(idx_config, start_date, end_date)
             if result['success']:
                 success_count += 1
         

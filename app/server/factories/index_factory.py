@@ -331,8 +331,8 @@ class IndexFactory:
             callback.update(0, total, '开始同步指数K线...')
             
             # 调用 tdx_service 的同步逻辑（逐个同步）
-            from app.server.services.tdx_service import get_tdx_service
-            tdx = get_tdx_service()
+            from app.server.services.data_service import get_data_service
+            data_svc = get_data_service()
             
             # 获取同步配置
             sync_cfg = self.get_sync_config()
@@ -346,7 +346,7 @@ class IndexFactory:
             # 逐个同步指数
             success_count = 0
             for idx_config in sync_cfg:
-                result = tdx.sync_index(idx_config, start_date, end_date)
+                result = data_svc.sync_index(idx_config, start_date, end_date)
                 if result['success']:
                     success_count += 1
             
