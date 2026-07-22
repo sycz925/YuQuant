@@ -3,6 +3,7 @@ Index Factory - 指数工厂
 管理指数数据的同步与衍生计算
 """
 import logging
+from datetime import datetime
 from typing import Callable, Dict, List, Optional
 
 from app.server.factories.base import SyncResult, ComputeResult, PipelineResult, ProgressCallback
@@ -34,8 +35,24 @@ class IndexFactory:
             
             callback.update(0, total, '开始同步指数K线...')
             
-            # TODO: 调用 TDX 数据源同步
-            # 这里需要从 factor_service 迁移同步逻辑
+            # 调用 factor_service 的同步逻辑
+            from app.server.services.factor_service import get_factor_service
+            fs = get_factor_service()
+            
+            # 获取同步配置
+            index_cfg = fs._get_sync_index_config()
+            enabled_codes = set(idx['code'] for idx in enabled_indices)
+            sync_cfg = [c for c in index_cfg if c.get('code') in enabled_codes]
+            
+            # 生成临时 task_id 用于进度更新
+            import uuid
+            temp_task_id = str(uuid.uuid4())
+            
+            # 调用同步方法
+            end_date = target_date or datetime.now().strftime('%Y%m%d')
+            start_date = '19900101'  # 从最早开始
+            
+            fs._run_sync_indices(temp_task_id, sync_cfg, start_date, end_date, is_external=True)
             
             callback.complete(f'指数K线同步完成: {total} 个')
             return SyncResult(
@@ -65,7 +82,13 @@ class IndexFactory:
             
             callback.update(0, 1, '开始同步PE数据...')
             
-            # TODO: 调用 legulegu 数据源同步
+            # 调用 factor_service 的 PE 同步逻辑
+            from app.server.services.factor_service import get_factor_service
+            fs = get_factor_service()
+            
+            import uuid
+            temp_task_id = str(uuid.uuid4())
+            fs._run_sync_pe(temp_task_id, settings.LEGULEGU_TOKEN, is_external=True)
             
             callback.complete('PE同步完成')
             return SyncResult(success=True, message='PE同步完成')
@@ -86,7 +109,10 @@ class IndexFactory:
         try:
             callback.update(0, 1, '计算指数涨幅...')
             
-            # TODO: 调用 factor_engine.calculate_chg_fields
+            # 调用 data_manager 的涨幅计算
+            from app.data.manager import get_data_manager
+            dm = get_data_manager()
+            dm.calculate_chg_fields(target='index', trade_date=target_date)
             
             callback.complete('指数涨幅计算完成')
             return ComputeResult(success=True, message='指数涨幅计算完成')
@@ -102,10 +128,9 @@ class IndexFactory:
         try:
             callback.update(0, 1, '计算指数均线...')
             
-            # TODO: 实现均线计算
-            
-            callback.complete('指数均线计算完成')
-            return ComputeResult(success=True, message='指数均线计算完成')
+            # 指数暂不计算均线
+            callback.complete('指数均线计算完成（跳过）')
+            return ComputeResult(success=True, message='指数均线计算完成（跳过）')
         except Exception as e:
             logger.error(f'计算指数均线失败: {e}')
             return ComputeResult(success=False, message=str(e))

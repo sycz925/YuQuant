@@ -3,6 +3,7 @@ Stock Factory - 个股工厂
 管理个股数据的同步与衍生计算
 """
 import logging
+from datetime import datetime
 from typing import Callable, Dict, List, Optional
 
 from app.server.factories.base import SyncResult, ComputeResult, PipelineResult, ProgressCallback
@@ -35,15 +36,30 @@ class StockFactory:
             
             callback.update(0, total, '开始同步个股日线...')
             
-            # TODO: 调用 data_manager.sync_daily_data
-            # 这里需要从 sync._run_sync_task 迁移同步逻辑
+            # 调用 data_manager 的同步逻辑
+            from app.data.manager import get_data_manager
+            dm = get_data_manager()
             
-            callback.complete(f'个股日线同步完成: {total} 只')
+            end_date = target_date or datetime.now().strftime('%Y%m%d')
+            
+            result = dm.sync_daily_data(
+                stock_codes=enabled_stocks,
+                end_date=end_date,
+                max_workers=max_workers
+            )
+            
+            success_count = result.get('success', 0)
+            fail_count = result.get('fail', 0)
+            skipped_count = result.get('skipped', 0)
+            
+            callback.complete(f'个股日线同步完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skipped_count}')
             return SyncResult(
                 success=True,
-                message=f'个股日线同步完成: {total} 只',
+                message=f'个股日线同步完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skipped_count}',
                 total=total,
-                synced=total
+                synced=success_count,
+                failed=fail_count,
+                skipped=skipped_count
             )
         except Exception as e:
             logger.error(f'同步个股日线失败: {e}')
@@ -60,10 +76,13 @@ class StockFactory:
         try:
             callback.update(0, 1, '计算个股RPS...')
             
-            # TODO: 调用 factor_engine.calculate_rps(data_type='stock')
+            # 调用 factor_engine 的 RPS 计算
+            from app.engine.factor_engine import FactorEngine
+            engine = FactorEngine()
+            result = engine.calculate_rps(data_type='stock', max_dates=None)
             
-            callback.complete('个股RPS计算完成')
-            return ComputeResult(success=True, message='个股RPS计算完成')
+            callback.complete(f'个股RPS计算完成: {result}')
+            return ComputeResult(success=True, message=f'个股RPS计算完成: {result}')
         except Exception as e:
             logger.error(f'计算个股RPS失败: {e}')
             return ComputeResult(success=False, message=str(e))
@@ -76,7 +95,10 @@ class StockFactory:
         try:
             callback.update(0, 1, '计算个股涨幅...')
             
-            # TODO: 调用 data_manager.calculate_chg_fields(target='stock')
+            # 调用 data_manager 的涨幅计算
+            from app.data.manager import get_data_manager
+            dm = get_data_manager()
+            dm.calculate_chg_fields(target='stock', trade_date=target_date)
             
             callback.complete('个股涨幅计算完成')
             return ComputeResult(success=True, message='个股涨幅计算完成')
@@ -92,7 +114,10 @@ class StockFactory:
         try:
             callback.update(0, 1, '计算个股均线...')
             
-            # TODO: 实现均线计算
+            # 调用 data_manager 的均线计算
+            from app.data.manager import get_data_manager
+            dm = get_data_manager()
+            dm.calculate_all_derived_fields(target='stock', trade_date=target_date)
             
             callback.complete('个股均线计算完成')
             return ComputeResult(success=True, message='个股均线计算完成')

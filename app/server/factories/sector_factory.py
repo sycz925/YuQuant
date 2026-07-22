@@ -34,7 +34,17 @@ class SectorFactory:
             
             callback.update(0, total, '开始同步板块日线...')
             
-            # TODO: 调用 data_manager.sync_sector_indices
+            # 调用 data_manager 的板块同步逻辑
+            from app.data.manager import get_data_manager
+            dm = get_data_manager()
+            
+            result = dm.sync_sector_indices(
+                enabled_codes=enabled_sectors,
+                is_external=True
+            )
+            
+            # 计算冗余字段
+            dm.calculate_all_derived_fields(target='sector')
             
             callback.complete(f'板块日线同步完成: {total} 个')
             return SyncResult(
@@ -58,10 +68,13 @@ class SectorFactory:
         try:
             callback.update(0, 1, '计算板块RPS...')
             
-            # TODO: 调用 factor_engine.calculate_rps(data_type='sector')
+            # 调用 factor_engine 的 RPS 计算
+            from app.engine.factor_engine import FactorEngine
+            engine = FactorEngine()
+            result = engine.calculate_rps(data_type='sector', max_dates=None)
             
-            callback.complete('板块RPS计算完成')
-            return ComputeResult(success=True, message='板块RPS计算完成')
+            callback.complete(f'板块RPS计算完成: {result}')
+            return ComputeResult(success=True, message=f'板块RPS计算完成: {result}')
         except Exception as e:
             logger.error(f'计算板块RPS失败: {e}')
             return ComputeResult(success=False, message=str(e))
@@ -74,7 +87,10 @@ class SectorFactory:
         try:
             callback.update(0, 1, '计算板块涨幅...')
             
-            # TODO: 调用 data_manager.calculate_chg_fields(target='sector')
+            # 调用 data_manager 的涨幅计算
+            from app.data.manager import get_data_manager
+            dm = get_data_manager()
+            dm.calculate_chg_fields(target='sector', trade_date=target_date)
             
             callback.complete('板块涨幅计算完成')
             return ComputeResult(success=True, message='板块涨幅计算完成')
@@ -90,7 +106,10 @@ class SectorFactory:
         try:
             callback.update(0, 1, '计算板块均线...')
             
-            # TODO: 实现均线计算
+            # 调用 data_manager 的均线计算
+            from app.data.manager import get_data_manager
+            dm = get_data_manager()
+            dm.calculate_all_derived_fields(target='sector', trade_date=target_date)
             
             callback.complete('板块均线计算完成')
             return ComputeResult(success=True, message='板块均线计算完成')
