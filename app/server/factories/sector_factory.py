@@ -158,6 +158,7 @@ class SectorFactory:
         同步板块日线数据
         :param target_date: 指定日期 YYYYMMDD，None 同步到最新
         :param task_id: 任务ID，用于更新进度
+        :return: SyncResult，失败率超过5%则标记失败
         """
         callback = ProgressCallback(progress_callback)
         
@@ -182,6 +183,21 @@ class SectorFactory:
             
             # 计算冗余字段
             dm.calculate_all_derived_fields(target='sector')
+            
+            # 检查失败率
+            success_count = result.get('block_count', 0)
+            fail_count = total - success_count
+            if total > 0:
+                fail_rate = fail_count / total
+                if fail_rate > 0.05:
+                    callback.complete(f'板块日线同步失败: 失败率 {fail_rate:.1%} 超过阈值')
+                    return SyncResult(
+                        success=False,
+                        message=f'失败率 {fail_rate:.1%} 超过5%阈值',
+                        total=total,
+                        synced=success_count,
+                        failed=fail_count
+                    )
             
             callback.complete(f'板块日线同步完成: {total} 个')
             return SyncResult(

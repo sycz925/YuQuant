@@ -299,7 +299,7 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                 aggregator.precompute_base_data(date, task_id=task_id)
     
     def _execute_sync_step(self, step_key: str, task_id: str, dates: List[str]) -> None:
-        """执行数据同步步骤（检查缓存）"""
+        """执行数据同步步骤（检查缓存，失败率超过5%则停止）"""
         from app.server.factories import get_index_factory, get_stock_factory, get_sector_factory
         
         if step_key == 'sync_index':
@@ -332,7 +332,14 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         # 执行同步
         for date in dates_to_sync:
             logger.info(f"[一键更新] 同步 {step_key} 日期 {date}")
-            sync_method(date, task_id=task_id)
+            result = sync_method(date, task_id=task_id)
+            
+            # 检查失败率，超过5%则停止
+            if hasattr(result, 'failed') and hasattr(result, 'total'):
+                if result.total > 0:
+                    fail_rate = result.failed / result.total
+                    if fail_rate > 0.05:
+                        raise Exception(f'{step_key} 失败率 {fail_rate:.1%} 超过阈值，停止执行')
     
     def _sync_progress(self, task_id: str, step_idx: int, stop_event: threading.Event) -> None:
         """同步顶层进度到步骤级进度（只同步 completed_count，不覆盖 total_count）"""
