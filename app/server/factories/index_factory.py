@@ -330,7 +330,7 @@ class IndexFactory:
             
             callback.update(0, total, '开始同步指数K线...')
             
-            # 调用 tdx_service 的同步逻辑
+            # 调用 tdx_service 的同步逻辑（逐个同步）
             from app.server.services.tdx_service import get_tdx_service
             tdx = get_tdx_service()
             
@@ -339,16 +339,16 @@ class IndexFactory:
             enabled_codes = set(idx['code'] for idx in enabled_indices)
             sync_cfg = [c for c in sync_cfg if c.get('code') in enabled_codes]
             
-            # 如果没有传入 task_id，生成临时的
-            if not task_id:
-                import uuid
-                task_id = str(uuid.uuid4())
-            
             # 调用同步方法 - 只同步目标日期的数据
             end_date = target_date or datetime.now().strftime('%Y%m%d')
             start_date = end_date  # 只同步目标日期
             
-            tdx.sync_indices(task_id, sync_cfg, start_date, end_date, is_external=True)
+            # 逐个同步指数
+            success_count = 0
+            for idx_config in sync_cfg:
+                result = tdx.sync_index(idx_config, start_date, end_date)
+                if result['success']:
+                    success_count += 1
             
             callback.complete(f'指数K线同步完成: {total} 个')
             return SyncResult(

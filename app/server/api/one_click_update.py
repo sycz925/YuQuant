@@ -84,7 +84,7 @@ def _run_update_task(task_id: str):
             tdx = get_tdx_service()
             factory = get_index_factory()
             
-            # 同步执行：直接调用 sync_indices 而不是启动线程
+            # 获取同步配置
             index_cfg = factory.get_sync_config()
             enabled_codes = set(
                 doc['code'] for doc in db['index_basics'].find(
@@ -92,7 +92,24 @@ def _run_update_task(task_id: str):
                 )
             )
             sync_cfg = [c for c in index_cfg if c.get('code') in enabled_codes]
-            tdx.sync_indices(task_id, sync_cfg, None, None, is_external=True)
+            
+            # 逐个同步指数
+            today_str = datetime.now().strftime('%Y%m%d')
+            for i, idx_config in enumerate(sync_cfg):
+                tm.update_task_progress(
+                    task_id, current_stock=str(i),
+                    current_stock_name=f"正在同步 {idx_config['name']}...",
+                    total_count=len(sync_cfg), completed_count=i,
+                )
+                result = tdx.sync_index(idx_config, today_str, today_str)
+                if not result['success']:
+                    logger.warning(f"同步 {idx_config['name']} 失败: {result['message']}")
+            
+            # 计算涨跌幅
+            from app.data.manager import get_data_manager
+            dm = get_data_manager()
+            dm.calculate_chg_fields(target='index')
+            
             tm.complete_step(task_id, step_idx, f'{today} 指数同步完成')
         except Exception as e:
             logger.warning(f"同步指数失败: {e}")

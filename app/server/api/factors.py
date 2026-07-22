@@ -95,20 +95,25 @@ def sync_index_data(
         enabled_codes = set(idx['code'] for idx in factory.repo.get_enabled_list())
         sync_cfg = [c for c in sync_cfg if c.get('code') in enabled_codes]
         
-        # 生成任务ID
-        import uuid
-        task_id = str(uuid.uuid4())
-        
         # 设置日期范围
         if not end_date:
             end_date = datetime.now().strftime('%Y%m%d')
         if not start_date:
             start_date = '20180101'
         
-        # 启动同步
-        tdx.sync_indices(task_id, sync_cfg, start_date, end_date, is_external=False)
+        # 逐个同步指数
+        success_count = 0
+        for idx_config in sync_cfg:
+            result = tdx.sync_index(idx_config, start_date, end_date)
+            if result['success']:
+                success_count += 1
         
-        return {"success": True, "task_id": task_id, "message": f"指数同步任务已启动，共 {len(sync_cfg)} 个指数"}
+        # 计算涨跌幅
+        from app.data.manager import get_data_manager
+        dm = get_data_manager()
+        dm.calculate_chg_fields(target='index')
+        
+        return {"success": True, "message": f"指数同步完成，成功 {success_count}/{len(sync_cfg)} 个"}
     except Exception as e:
         logger.error(f"启动指数同步任务失败: {e}")
         return {"success": False, "message": str(e)}
