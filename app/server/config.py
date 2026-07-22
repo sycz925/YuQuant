@@ -47,10 +47,14 @@ class Settings(BaseSettings):
     # 日志配置
     LOG_LEVEL: str = Field(default="INFO", description="日志级别")
     
+    # Tushare Token（可选）
+    TUSHARE_TOKEN: str = Field(default="", description="Tushare API Token")
+    
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
+        "extra": "ignore",
     }
 
 
