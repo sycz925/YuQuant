@@ -93,6 +93,185 @@ class IndexFactory:
             for item in data
         ]
     
+    def aggregate_by_period(self, daily_data: List[Dict[str, Any]], period: str) -> List[Dict[str, Any]]:
+        """按周期聚合数据"""
+        from datetime import date, timedelta
+        import calendar
+        
+        if period == "day":
+            return daily_data
+        
+        bucket_map = {}
+        for item in daily_data:
+            d = item['trade_date']
+            y, m, day = int(d[0:4]), int(d[4:6]), int(d[6:8])
+            
+            if period == "week":
+                iso_year, iso_week, _ = date(y, m, day).isocalendar()
+                key = f"{iso_year}W{iso_week:02d}"
+                week_end = date(y, m, day) + timedelta(days=(6 - date(y, m, day).weekday()))
+                sort_key = week_end.strftime("%Y%m%d")
+            elif period == "month":
+                key = f"{y}-{m:02d}"
+                last_day = calendar.monthrange(y, m)[1]
+                sort_key = f"{y}{m:02d}{last_day:02d}"
+            elif period == "quarter":
+                q = (m - 1) // 3 + 1
+                key = f"{y}Q{q}"
+                quarter_end_month = q * 3
+                last_day = calendar.monthrange(y, quarter_end_month)[1]
+                sort_key = f"{y}{quarter_end_month:02d}{last_day:02d}"
+            else:
+                key = f"{y}"
+                sort_key = f"{y}1231"
+            
+            if key not in bucket_map or d > bucket_map[key]['original_date']:
+                bucket_map[key] = {
+                    'trade_date': key, 'value': item['value'],
+                    'original_date': d, 'sort_key': sort_key
+                }
+        
+        result = sorted(bucket_map.values(), key=lambda x: x['sort_key'])
+        for item in result:
+            del item['sort_key']
+            del item['original_date']
+        
+        return result
+    
+    def aggregate_index_by_period(self, normalized: List[Dict[str, Any]], period: str) -> List[Dict[str, Any]]:
+        """按周期聚合指数数据"""
+        from datetime import date, timedelta
+        import calendar
+        
+        if period == "day":
+            return normalized
+        
+        bucket_map = {}
+        for item in normalized:
+            d = item['trade_date']
+            y, m, day = int(d[0:4]), int(d[4:6]), int(d[6:8])
+            
+            if period == "week":
+                iso_year, iso_week, _ = date(y, m, day).isocalendar()
+                key = f"{iso_year}W{iso_week:02d}"
+                week_end = date(y, m, day) + timedelta(days=(6 - date(y, m, day).weekday()))
+                sort_key = week_end.strftime("%Y%m%d")
+            elif period == "month":
+                key = f"{y}-{m:02d}"
+                last_day = calendar.monthrange(y, m)[1]
+                sort_key = f"{y}{m:02d}{last_day:02d}"
+            elif period == "quarter":
+                q = (m - 1) // 3 + 1
+                key = f"{y}Q{q}"
+                quarter_end_month = q * 3
+                last_day = calendar.monthrange(y, quarter_end_month)[1]
+                sort_key = f"{y}{quarter_end_month:02d}{last_day:02d}"
+            else:
+                key = f"{y}"
+                sort_key = f"{y}1231"
+            
+            if key not in bucket_map or d > bucket_map[key]['original_date']:
+                bucket_map[key] = {
+                    'trade_date': key, 'value': item['value'],
+                    'close': item.get('close'),
+                    'original_date': d, 'sort_key': sort_key
+                }
+        
+        result = sorted(bucket_map.values(), key=lambda x: x['sort_key'])
+        for item in result:
+            del item['sort_key']
+            del item['original_date']
+        
+        return result
+    
+    def get_cr5_data(self, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                     include_index: bool = True, period: str = 'day') -> Optional[Dict[str, Any]]:
+        """获取 CR5 数据"""
+        from datetime import timedelta
+        from app.data.db import get_db
+        
+        now = datetime.now()
+        if not start_date or not end_date:
+            period_days = {"day": 120, "week": 365, "month": 365 * 3,
+                           "quarter": 365 * 5, "year": 365 * 10}
+            default_start = now - timedelta(days=period_days.get(period, 120))
+            if not start_date:
+                start_date = default_start.strftime("%Y%m%d")
+            if not end_date:
+                end_date = now.strftime("%Y%m%d")
+        
+        # 优先从 base_data_daily 读取
+        db = get_db()
+        cached = list(db['base_data_daily'].find(
+            {'date': {'$gte': start_date, '$lte': end_date}, 'cr5_pct': {'$exists': True}},
+            {'_id': 0, 'date': 1, 'cr5_pct': 1, 'cr10_pct': 1}
+        ).sort('date', 1))
+        
+        if cached:
+            daily_data = [{'trade_date': d['date'], 'value': d['cr5_pct']} for d in cached]
+            sector_daily_data = [{'trade_date': d['date'], 'value': d.get('cr10_pct', 0)} for d in cached]
+        else:
+            # 从 factor_engine 计算
+            from app.engine.factor_engine import FactorEngine
+            fe = FactorEngine()
+            cr5_series = fe.get_all_cr5_history(start_date, end_date)
+            sector_cr_series = fe.get_sector_cr_history(start_date, end_date, percentile=10)
+            
+            if len(cr5_series) == 0 and len(sector_cr_series) == 0:
+                return None
+            
+            daily_data = [
+                {'trade_date': str(idx), 'value': float(value)}
+                for idx, value in cr5_series.items()
+                if start_date <= str(idx) <= end_date
+            ]
+            sector_daily_data = [
+                {'trade_date': str(idx), 'value': float(value)}
+                for idx, value in sector_cr_series.items()
+                if start_date <= str(idx) <= end_date
+            ]
+        
+        data = self.aggregate_by_period(daily_data, period)
+        sector_data = self.aggregate_by_period(sector_daily_data, period)
+        extra_data = {}
+        
+        db_index_list = self.get_config_from_db()
+        
+        if include_index and daily_data:
+            dates = [d['trade_date'] for d in daily_data]
+            date_start, date_end = min(dates), max(dates)
+            for config in db_index_list:
+                index_code = config['code']
+                index_raw = self.get_index_data(index_code, date_start, date_end)
+                if index_raw:
+                    normalized = self.normalize_index_data(index_raw)
+                    extra_data[index_code] = self.aggregate_index_by_period(normalized, period)
+        
+        data.sort(key=lambda x: x['trade_date'])
+        sector_data.sort(key=lambda x: x['trade_date'])
+        for idx in extra_data:
+            extra_data[idx].sort(key=lambda x: x['trade_date'])
+        
+        total_stocks = 0
+        if data:
+            latest_date = data[-1]['trade_date']
+            db = get_db()
+            stock_count_result = list(db['stock_daily'].aggregate([
+                {'$match': {'trade_date': latest_date, 'amount': {'$exists': True, '$gt': 0}}},
+                {'$count': 'count'}
+            ]))
+            total_stocks = stock_count_result[0]['count'] if stock_count_result else 0
+        
+        return {
+            'total': len(data),
+            'period': period,
+            'data': data,
+            'sector_cr_data': sector_data,
+            'index_data': extra_data,
+            'index_config': [{'code': c['code'], 'name': c['name']} for c in db_index_list],
+            'total_stocks': total_stocks,
+        }
+    
     def get_indices_list(self, page: Optional[int] = None, page_size: int = 50,
                          keyword: Optional[str] = None, filter_mode: Optional[str] = None) -> Dict[str, Any]:
         """获取指数列表"""

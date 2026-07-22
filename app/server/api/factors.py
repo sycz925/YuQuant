@@ -1,8 +1,8 @@
 """
 因子 API 路由层
 
-路由函数只负责：接收请求 → 调用 FactorService → 返回结果。
-所有业务逻辑、数据库访问、后台任务调度均在 FactorService 中。
+路由函数只负责：接收请求 → 调用工厂/服务 → 返回结果。
+所有业务逻辑、数据库访问、后台任务调度均在工厂层中。
 """
 import logging
 from typing import Optional, Dict, Any, List
@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from app.server.services.factor_service import get_factor_service
+from app.server.factories import get_index_factory, get_stock_factory, get_sector_factory, get_market_aggregator
 from app.data.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -30,8 +30,8 @@ def get_cr5_factor(
 ):
     """获取CR5%因子数据（支持日/周/月/季/年聚合，默认近一年日数据）"""
     try:
-        svc = get_factor_service()
-        result = svc.get_cr5_data(start_date, end_date, include_index, period)
+        factory = get_index_factory()
+        result = factory.get_cr5_data(start_date, end_date, include_index, period)
         if result is None:
             raise HTTPException(status_code=404, detail="暂无因子数据")
         return result
@@ -53,7 +53,8 @@ def get_indices_list(
 ):
     """获取指数列表（支持分页、搜索和状态筛选）"""
     try:
-        return get_factor_service().get_indices_list(page, page_size or 50, keyword, filter_mode)
+        factory = get_index_factory()
+        return factory.get_indices_list(page, page_size or 50, keyword, filter_mode)
     except Exception as e:
         logger.error(f"获取指数列表失败: {e}")
         raise HTTPException(status_code=500, detail="获取指数列表失败")
@@ -63,7 +64,8 @@ def get_indices_list(
 def search_indices(keyword: str = Query(..., description="搜索关键词（代码或名称）")):
     """搜索指数（先本地数据库，再查通达信 TDX）"""
     try:
-        return get_factor_service().search_indices(keyword)
+        factory = get_index_factory()
+        return factory.search_indices(keyword)
     except Exception as e:
         logger.error(f"搜索指数失败: {e}")
         raise HTTPException(status_code=500, detail="搜索指数失败")
@@ -789,9 +791,9 @@ def calculate_and_save_rps(
 ):
     """计算并保存 RPS 指标（后台任务）"""
     try:
-        return get_factor_service().calculate_rps(
-            start_date, end_date, target_date, target, max_workers or 16, min_days, external_task_id,
-        )
+        # 使用 MarketAggregator 的 calculate_rps 方法
+        aggregator = get_market_aggregator()
+        return aggregator.calculate_rps(target=target)
     except Exception as e:
         logger.error(f"启动 RPS 计算任务失败: {e}")
         return {"success": False, "message": f"启动任务失败: {str(e)}"}
@@ -801,7 +803,8 @@ def calculate_and_save_rps(
 def clear_all_tasks():
     """清除所有后台任务状态（用于重置脏数据）"""
     try:
-        return get_factor_service().clear_all_tasks()
+        aggregator = get_market_aggregator()
+        return aggregator.clear_all_tasks()
     except Exception as e:
         logger.error(f"清除任务状态失败: {e}")
         return {"success": False, "message": str(e)}
@@ -813,7 +816,8 @@ def delete_rps_data(
 ):
     """清除 RPS 数据（不删除日线，只清 rps_* 字段）"""
     try:
-        return get_factor_service().delete_rps_data(target)
+        aggregator = get_market_aggregator()
+        return aggregator.delete_rps_data(target)
     except Exception as e:
         logger.error(f"清除 RPS 数据失败: {e}")
         return {"success": False, "message": str(e)}
@@ -828,7 +832,8 @@ def get_stock_rps(
 ):
     """获取指定股票的 RPS 数据（支持日/周/月线聚合）"""
     try:
-        result = get_factor_service().get_stock_rps(code, start_date, end_date, period)
+        factory = get_stock_factory()
+        result = factory.get_stock_rps(code, start_date, end_date, period)
         if result is None:
             raise HTTPException(status_code=404, detail=f"股票 {code} 没有找到 RPS 数据")
         return result
@@ -846,7 +851,8 @@ def get_rps_by_date(
 ):
     """获取指定交易日的所有股票 RPS 数据"""
     try:
-        result = get_factor_service().get_rps_by_date(trade_date, min_rps)
+        factory = get_stock_factory()
+        result = factory.get_rps_by_date(trade_date, min_rps)
         if result is None:
             raise HTTPException(status_code=404, detail=f"日期 {trade_date} 没有找到 RPS 数据")
         return result
@@ -870,7 +876,8 @@ def sync_sectors(
         allowed, msg = _check_sync_time()
         if not allowed:
             return {"success": False, "message": msg}
-        return get_factor_service().sync_sectors(max_workers or 16, min_days)
+        factory = get_sector_factory()
+        return factory.sync_daily(max_workers=max_workers or 16)
     except Exception as e:
         logger.error(f"启动板块同步任务失败: {e}")
         return {"success": False, "message": str(e)}
@@ -887,7 +894,8 @@ def get_sector_list(
 ):
     """获取板块列表（支持分页、搜索和状态筛选，含RPS数据）"""
     try:
-        return get_factor_service().get_sector_list(
+        factory = get_sector_factory()
+        return factory.get_sector_list(
             page, page_size or 50, keyword, filter_mode, limit, min_stock_count or 0,
         )
     except Exception as e:
@@ -968,7 +976,8 @@ async def import_sector_codes(file: UploadFile):
     try:
         content = await file.read()
         filename = file.filename or ''
-        return get_factor_service().import_sector_codes(content, filename)
+        factory = get_sector_factory()
+        return factory.import_sector_codes(content, filename)
     except Exception as e:
         logger.error(f"导入板块代码失败: {e}")
         return {"success": False, "message": str(e)}
