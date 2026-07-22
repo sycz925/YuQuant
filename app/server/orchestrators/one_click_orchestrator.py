@@ -128,20 +128,20 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             return True
     
     def _get_step_totals(self) -> Dict[str, int]:
-        """查询各步骤的实际数据量"""
+        """查询各步骤的实际数据量（仅启用的记录）"""
         from app.data.db import get_db
         db = get_db()
         
-        # 启用的指数数量
-        index_count = db['index_basics'].count_documents({'is_disable': {'$ne': True}})
+        # 启用的指数数量（is_disable 为 False）
+        index_count = db['index_basics'].count_documents({'is_disable': False})
         
-        # 启用的个股数量
-        stock_count = db['stock_basics'].count_documents({'is_disable': {'$ne': True}})
+        # 启用的个股数量（is_disable 为 False）
+        stock_count = db['stock_basics'].count_documents({'is_disable': False})
         
-        # 启用的板块数量
-        sector_count = db['sector_basics'].count_documents({'is_disable': {'$ne': True}})
+        # 启用的板块数量（is_disable 为 False）
+        sector_count = db['sector_basics'].count_documents({'is_disable': False})
         
-        logger.info(f"[一键更新] 数据量: 指数={index_count}, 个股={stock_count}, 板块={sector_count}")
+        logger.info(f"[一键更新] 启用数量: 指数={index_count}, 个股={stock_count}, 板块={sector_count}")
         
         return {
             'sync_index': index_count,
