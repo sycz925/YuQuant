@@ -22,7 +22,6 @@
 - [ ] 创建 `app/server/api/` - API路由模块
   - [ ] `stocks.py` - 股票数据API
   - [ ] `factors.py` - 因子API
-  - [ ] `backtest.py` - 回测API
   - [ ] `sync.py` - 数据同步API
 - [ ] 创建 `app/server/models.py` - Pydantic模型定义
 - [ ] 更新 `requirements.txt` - 添加FastAPI等依赖
@@ -50,7 +49,6 @@
 - [ ] 创建API客户端封装
 - [ ] 实现市场监控页面
 - [ ] 实现个股技术分析页面（含Recharts K线图）
-- [ ] 实现策略回测页面
 - [ ] 创建公共组件库
 
 ### 交付物
@@ -76,11 +74,10 @@
 ## 📁 新架构目录结构
 
 ```
-YuQuant/
+A股量化系统/
 ├── app/
 │   ├── data_manager.py      # 保留
 │   ├── factor_engine.py     # 保留
-│   ├── backtest_engine.py   # 保留
 │   ├── sentiment_engine.py  # 保留
 │   ├── app.py              # Streamlit（保留，可选使用）
 │   │
@@ -92,7 +89,6 @@ YuQuant/
 │   │       ├── __init__.py
 │   │       ├── stocks.py
 │   │       ├── factors.py
-│   │       ├── backtest.py
 │   │       └── sync.py
 │   │
 │   └── client/             # 新增：React前端
@@ -142,10 +138,6 @@ YuQuant/
 
 ### 因子API
 - `GET /api/factors/cr5` - 获取CR5%因子数据
-
-### 回测API
-- `POST /api/backtest/run` - 运行回测
-- `GET /api/backtest/result/{id}` - 获取回测结果
 
 ### 数据同步API
 - `POST /api/sync/basics` - 同步股票基础信息

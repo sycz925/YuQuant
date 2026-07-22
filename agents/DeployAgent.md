@@ -17,7 +17,7 @@
 
 ### 🛑 绝对铁律
 
-1. **严格仅部署配置**：你 **不得** 修改任何应用代码（`app/server/`、`app/client/`、`app/data_manager.py`、`app/factor_engine.py`、`app/backtest_engine.py`）
+1. **严格仅部署配置**：你 **不得** 修改任何应用代码（`app/server/`、`app/client/`、`app/data_manager.py`、`app/factor_engine.py`）
 2. **必须上报跨层变更**：任何需要应用配合的变更（端口、环境变量）必须先上报 ProjectManagerAgent
 3. **安全第一**：配置中不得包含密码、密钥等敏感信息
 

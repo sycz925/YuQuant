@@ -57,19 +57,10 @@
 | `name` | String | 指数名称 |
 | `market` | Number | 市场（1=沪，0=深） |
 | `tdx_code` | String | 通达信代码 |
+| `is_disable` | Boolean | 是否禁用（true=禁用） |
 | `update_time` | ISODate | 更新时间 |
 
-### 5. exclusions - 排除设置表
-
-| 字段名 | 类型 | 说明 |
-|--------|------|------|
-| `code` | String | 代码 |
-| `code_type` | String | 类型（stock/sector/index） |
-| `exclude_type` | String | 排除类型（sync/rps） |
-| `reason` | String | 排除原因 |
-| `update_time` | ISODate | 更新时间 |
-
-### 6. sync_tasks - 同步任务状态表
+### 5. sync_tasks - 同步任务状态表
 
 | 字段名 | 类型 | 说明 |
 |--------|------|------|
@@ -108,12 +99,6 @@
 ```javascript
 // 唯一索引：指数代码唯一
 { code: 1 }
-```
-
-### exclusions 索引
-```javascript
-// 复合唯一索引：防止重复排除
-{ code: 1, code_type: 1, exclude_type: 1 }
 ```
 
 ---

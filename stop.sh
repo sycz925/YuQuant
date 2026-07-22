@@ -1,7 +1,7 @@
 #!/bin/bash
 # 停止脚本 - 停止前后端服务
 
-echo "🛑 停止 YuQuant 服务..."
+echo "🛑 停止 A股量化系统 服务..."
 
 # 停止后端服务
 if lsof -ti:8000 > /dev/null 2>&1; then

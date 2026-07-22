@@ -26,6 +26,16 @@ class DailyBar(BaseModel):
     change_pct: Optional[float] = Field(None, description="涨跌幅")
     change: Optional[float] = Field(None, description="涨跌额")
     turnover: Optional[float] = Field(None, description="换手率")
+    # 均线字段
+    ma10: Optional[float] = Field(None, description="10日均线")
+    ma20: Optional[float] = Field(None, description="20日均线")
+    ma50: Optional[float] = Field(None, description="50日均线")
+    ma120: Optional[float] = Field(None, description="120日均线")
+    # 成交量均线字段
+    vol_ma5: Optional[float] = Field(None, description="5日成交量均线")
+    vol_ma10: Optional[float] = Field(None, description="10日成交量均线")
+    vol_ma20: Optional[float] = Field(None, description="20日成交量均线")
+    vol_ma50: Optional[float] = Field(None, description="50日成交量均线")
 
 
 class StockListResponse(BaseModel):
@@ -55,37 +65,12 @@ class CR5FactorResponse(BaseModel):
     index_config: Optional[List[Dict[str, str]]] = Field(None, description="指数配置")
 
 
-class BacktestRequest(BaseModel):
-    """回测请求"""
-    initial_capital: float = Field(100000, alias="initialCapital", description="初始资金")
-    start_date: str = Field(..., alias="startDate", description="开始日期 YYYYMMDD")
-    end_date: str = Field(..., alias="endDate", description="结束日期 YYYYMMDD")
-    stock_codes: Optional[List[str]] = Field(None, alias="stockCodes", description="股票列表")
-    max_workers: Optional[int] = Field(16, alias="maxWorkers", description="最大线程数（默认16）")
-
-    class Config:
-        populate_by_name = True
-
-
-class BacktestResult(BaseModel):
-    """回测结果"""
-    total_return: float = Field(..., alias="totalReturn", description="总收益率")
-    annual_return: float = Field(..., alias="annualReturn", description="年化收益率")
-    max_drawdown: float = Field(..., alias="maxDrawdown", description="最大回撤")
-    sharpe_ratio: float = Field(..., alias="sharpeRatio", description="夏普比率")
-    equity_curve: List[Dict[str, Any]] = Field(..., alias="equityCurve", description="资金曲线")
-    trades: List[Dict[str, Any]] = Field(..., description="交易记录")
-
-    class Config:
-        populate_by_name = True
-
-
 class SyncRequest(BaseModel):
     """数据同步请求"""
     stock_codes: Optional[List[str]] = Field(None, alias="stockCodes", description="股票列表（可选，为空则同步全部）")
     start_date: Optional[str] = Field(None, alias="startDate", description="开始日期（可选）")
     end_date: Optional[str] = Field(None, alias="endDate", description="结束日期（可选）")
-    max_workers: Optional[int] = Field(16, alias="maxWorkers", description="最大线程数（默认16）")
+    max_workers: Optional[int] = Field(4, alias="maxWorkers", description="最大线程数（默认4）")
     min_days: Optional[int] = Field(None, alias="minDays", description="最小上市天数（可选，过滤不满足条件的股票）")
 
     class Config:

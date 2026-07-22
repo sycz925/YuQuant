@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import ReactECharts from 'echarts-for-react'
 import { ConfigProvider, DatePicker, Button, Select, Space, Segmented } from 'antd'
+import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
-import { marketAnalysisApi } from '../api'
+import { marketAnalysisApi, marketReviewApi } from '../api'
 
 // A股配色
 const COLORS = {
@@ -47,8 +48,9 @@ const RPS_GROUP_PERIODS = [
   { label: 'RPS250', value: 250 },
 ]
 
-export default function MarketAnalysis() {
-  const [date, setDate] = useState(null)
+export default function MarketAnalysis({ initialDate }) {
+  const navigate = useNavigate()
+  const [date, setDate] = useState(initialDate ? dayjs(initialDate, 'YYYYMMDD') : null)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -64,13 +66,25 @@ export default function MarketAnalysis() {
 
   const toYmd = (d) => (d ? d.format('YYYYMMDD') : '')
 
+  // 外部传入的initialDate变化时更新
+  useEffect(() => {
+    if (initialDate) {
+      const newDate = dayjs(initialDate, 'YYYYMMDD')
+      setDate(newDate)
+      // 重新加载数据
+      fetchData(initialDate, rpsGroupPeriod)
+      fetchBubbleData(initialDate, rpsPeriod)
+    }
+  }, [initialDate])
+
   // 获取气泡数据
   const fetchBubbleData = async (queryDate, rps) => {
     setBubbleLoading(true)
     setBubbleError(null)
     try {
       const params = { rps_period: rps }
-      if (queryDate) params.date = queryDate
+      // 总是传date参数，使用queryDate或当前选中的date
+      params.date = queryDate || toYmd(date) || undefined
       const res = await marketAnalysisApi.getBubble(params)
       setBubbleData(res)
     } catch (e) {
@@ -80,20 +94,45 @@ export default function MarketAnalysis() {
     }
   }
 
-  // 获取分析数据
+  // 获取分析数据（优先从缓存读取分组统计）
   const fetchData = async (queryDate, rpsGroup) => {
     setLoading(true)
     setError(null)
     try {
-      const params = {}
-      if (queryDate) params.date = queryDate
-      if (rpsGroup) params.rps_period = rpsGroup
-      const res = await marketAnalysisApi.getAnalysis(params)
-      const data = res
-      setData(data)
-      // 首次加载时同步日期
-      if (!queryDate && data?.date) {
-        setDate(dayjs(data.date))
+      const dateStr = queryDate || toYmd(date) || undefined
+
+      // 先尝试从缓存读取分组统计
+      let cachedStats = null
+      try {
+        const groupRes = await marketReviewApi.getGroupStats(dateStr)
+        if (groupRes?.success && groupRes?.stats && Object.keys(groupRes.stats).length > 0) {
+          cachedStats = groupRes.stats
+        }
+      } catch (e) {
+        // 缓存读取失败，继续实时计算
+      }
+
+      if (cachedStats) {
+        // 使用缓存数据
+        setData({
+          date: dateStr,
+          total_stocks: 0,
+          rps_stats: cachedStats.rps_stats || [],
+          amount_stats: cachedStats.amount_stats || [],
+          price_stats: cachedStats.price_stats || [],
+          float_mv_stats: cachedStats.float_mv_stats || [],
+        })
+      } else {
+        // 缓存未命中，实时计算
+        const params = {}
+        if (dateStr) params.date = dateStr
+        if (rpsGroup) params.rps_period = rpsGroup
+        const res = await marketAnalysisApi.getAnalysis(params)
+        setData(res)
+        // 首次加载时同步日期
+        if (!queryDate && res?.date) {
+          setDate(dayjs(res.date))
+        }
       }
     } catch (e) {
       setError(e.response?.data?.detail || '获取数据失败')
@@ -169,8 +208,8 @@ export default function MarketAnalysis() {
         backgroundColor: 'rgba(255,255,255,0.96)',
         borderColor: '#ddd',
         borderWidth: 1,
-        padding: [12, 16],
-        textStyle: { color: '#333', fontSize: 13 },
+        padding: [10, 12],
+        textStyle: { color: '#333', fontSize: 12 },
         formatter: (params) => {
           const d = params.data
           const amountPct = d[2]
@@ -197,34 +236,29 @@ export default function MarketAnalysis() {
             </table>`
         },
       },
-      grid: { left: 70, right: 40, top: 20, bottom: 50 },
+      grid: { left: 55, right: 30, top: 15, bottom: 40 },
       xAxis: {
         type: 'value',
-        name: `${rpsLabel} 相对强度 (0-100)`,
+        name: `${rpsLabel} 相对强度 (85-100)`,
         nameLocation: 'center',
-        nameGap: 38,
-        nameTextStyle: { color: '#666', fontSize: 13 },
-        min: 0, max: 100,
-        axisLabel: { color: '#888', fontSize: 11 },
+        nameGap: 30,
+        nameTextStyle: { color: '#666', fontSize: 11 },
+        min: 85, max: 100,
+        axisLabel: { color: '#888', fontSize: 9 },
         splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
       },
       yAxis: {
         type: 'value',
         name: yAxisName,
         nameLocation: 'center',
-        nameGap: 42,
-        nameTextStyle: { color: '#666', fontSize: 13 },
+        nameGap: 35,
+        nameTextStyle: { color: '#666', fontSize: 11 },
         min: isSector ? yMin : 0,
         max: isSector ? yMax : 100,
-        axisLabel: { color: '#888', fontSize: 11 },
+        axisLabel: { color: '#888', fontSize: 9 },
         splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
       },
-      dataZoom: [
-        { type: 'inside', xAxisIndex: 0, startValue: 80, endValue: 100 },
-        { type: 'inside', yAxisIndex: 0 },
-        { type: 'slider', xAxisIndex: 0, bottom: 8, height: 16, startValue: 80, endValue: 100, borderColor: 'transparent', backgroundColor: 'rgba(0,0,0,0.05)', fillerColor: 'rgba(0,0,0,0.08)', handleStyle: { color: '#999' } },
-        { type: 'slider', yAxisIndex: 0, right: 4, width: 16, borderColor: 'transparent', backgroundColor: 'rgba(0,0,0,0.05)', fillerColor: 'rgba(0,0,0,0.08)', handleStyle: { color: '#999' } },
-      ],
+      dataZoom: [],
       series: [
         {
           type: 'scatter',
@@ -241,41 +275,23 @@ export default function MarketAnalysis() {
             formatter: function (params) {
               const name = params.data[4] || ''
               const size = params.data[7] || 0
-              if (size < 18) return ''
+              if (size < 15) return ''
 
-              const truncated = name.length > 9 ? name.slice(0, 9) : name
-              const lines = []
-              let i = 0
-              while (i < truncated.length) {
-                const ch = truncated[i]
-                const isAscii = ch.charCodeAt(0) <= 127
-                if (isAscii) {
-                  let end = i
-                  while (end < truncated.length && end - i < 6 && truncated[end].charCodeAt(0) <= 127) end++
-                  lines.push(truncated.slice(i, end))
-                  i = end
-                } else {
-                  let end = i
-                  while (end < truncated.length && end - i < 3 && truncated[end].charCodeAt(0) > 127) end++
-                  lines.push(truncated.slice(i, end))
-                  i = end
-                }
-              }
-              return lines.join('\n')
+              const truncated = name.length > 6 ? name.slice(0, 6) : name
+              return truncated
             },
-            fontSize: 13,
+            fontSize: 10,
             color: '#000',
             fontWeight: 'bold',
             textBorderColor: '#fff',
-            textBorderWidth: 2,
+            textBorderWidth: 1,
             position: 'inside',
-            lineHeight: 13,
+            lineHeight: 12,
             overflow: 'break',
           },
           labelLayout: function (params) {
             const size = params.data?.[7] || 0
-            // 根据气泡大小调整字体
-            const fontSize = Math.max(8, Math.min(14, size / 4))
+            const fontSize = Math.max(7, Math.min(12, size / 4))
             return {
               fontSize: fontSize,
               lineHeight: fontSize + 2,
@@ -316,7 +332,8 @@ export default function MarketAnalysis() {
         trigger: 'axis',
         backgroundColor: 'rgba(22,33,62,0.95)',
         borderColor: COLORS.grid,
-        textStyle: { color: COLORS.text, fontSize: 12 },
+        textStyle: { color: COLORS.text, fontSize: 11 },
+        axisPointer: { type: 'cross' },
         formatter: (params) => {
           const d = params[0]
           const stat = stats[d.dataIndex]
@@ -327,15 +344,15 @@ export default function MarketAnalysis() {
                   <div style="color:#999;font-size:11px">股票数: ${stat.count}</div>`
         },
       },
-      grid: { left: 50, right: 16, top: 16, bottom: 36 },
+      grid: { left: 45, right: 12, top: 12, bottom: 32 },
       xAxis: {
         type: 'category',
         data: categories,
         axisLabel: {
           color: '#888',
-          fontSize: 10,
-          rotate: categories.length > 10 ? 30 : 0,
-          interval: categories.length > 10 ? 'auto' : 0,
+          fontSize: 9,
+          rotate: categories.length > 8 ? 30 : 0,
+          interval: categories.length > 8 ? 'auto' : 0,
         },
         axisLine: { lineStyle: { color: '#e0e0e0' } },
         axisTick: { show: false },
@@ -367,54 +384,17 @@ export default function MarketAnalysis() {
 
   return (
     <ConfigProvider>
-      <div className="space-y-4">
-        {/* 标题栏 */}
-        <div className="bg-white rounded-xl shadow-sm p-4">
-          <div className="flex items-center justify-between flex-wrap gap-4">
-            <h1 className="text-xl font-bold text-gray-800">市场多维统计分析</h1>
-            <div className="flex items-center space-x-3">
-              <DatePicker
-                value={date}
-                onChange={(d) => setDate(d)}
-                format="YYYYMMDD"
-                placeholder="选择交易日"
-                allowClear
-                style={{ minWidth: 150 }}
-              />
-              <Button type="primary" onClick={handleQuery} loading={loading}>
-                查询
-              </Button>
-            </div>
-          </div>
-
-          {/* 数据概览 */}
-          {data && (
-            <div className="mt-3 pt-3 border-t border-gray-100 text-sm text-gray-500 flex flex-wrap gap-x-4">
-              <span>交易日: <span className="font-mono font-medium text-gray-700">{data.date}</span></span>
-              <span>统计: <span className="font-medium text-gray-700">{data.total_stocks}</span> 只股票</span>
-              {data.is_final === true && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
-                  已收盘
-                </span>
-              )}
-              {data.is_final === false && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
-                  收盘前
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-
+      <div className="space-y-3 md:space-y-4">
         {/* 气泡图 */}
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div className="p-4 pb-2">
+        <div data-section="板块气泡图" className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="p-3 md:p-4 pb-2">
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-gray-800">
-                板块四维动量气泡图
+              <h3 className="text-sm md:text-base font-semibold text-gray-800">
+                <span className="hidden sm:inline">板块四维动量气泡图</span>
+                <span className="sm:hidden">板块气泡图</span>
                 {bubbleData && (
-                  <span className="text-sm font-normal text-gray-400 ml-2">
-                    ({bubbleData.date} · {bubbleData.total}个板块)
+                  <span className="text-xs font-normal text-gray-400 ml-1 md:ml-2">
+                    ({bubbleData.date} · {bubbleData.total}个)
                   </span>
                 )}
               </h3>
@@ -427,31 +407,42 @@ export default function MarketAnalysis() {
             </div>
           </div>
           {bubbleLoading ? (
-            <div className="flex justify-center items-center h-[500px]">
+            <div className="flex justify-center items-center h-[300px] md:h-[500px]">
               <span className="text-gray-400">加载中...</span>
             </div>
           ) : bubbleError ? (
-            <div className="flex justify-center items-center h-[500px]">
+            <div className="flex justify-center items-center h-[300px] md:h-[500px]">
               <span className="text-red-400">{bubbleError}</span>
             </div>
           ) : bubbleData ? (
             <ReactECharts
               option={getBubbleOption()}
-              style={{ height: 600 }}
+              style={{ height: '300px' }}
               opts={{ renderer: 'canvas' }}
               notMerge={true}
+              className="md:!h-[600px]"
+              onEvents={{
+                click: (params) => {
+                  if (params.componentType === 'series') {
+                    const name = params.data?.[4]
+                    if (name) {
+                      navigate(`/search?keyword=${encodeURIComponent(name)}`)
+                    }
+                  }
+                }
+              }}
             />
           ) : null}
         </div>
 
         {/* RPS 分组统计 */}
         {data && !loading && (
-          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-            <div className="p-4 pb-2">
-              <div className="flex items-center justify-between">
+          <div data-section="RPS分组统计" className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <div className="p-3 md:p-4 pb-2">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                 <div>
-                  <h3 className="font-semibold text-gray-800">按 RPS 分组</h3>
-                  <p className="text-xs text-gray-400 mt-1">RPS 越高代表相对强度越大，柱状图为该区间平均涨跌幅</p>
+                  <h3 className="text-sm md:text-base font-semibold text-gray-800">按 RPS 分组</h3>
+                  <p className="text-[10px] md:text-xs text-gray-400 mt-0.5 md:mt-1">RPS 越高代表相对强度越大</p>
                 </div>
                 <Segmented
                   options={RPS_GROUP_PERIODS}
@@ -463,50 +454,69 @@ export default function MarketAnalysis() {
             </div>
             <ReactECharts
               option={getBarOption(data.rps_stats, 'RPS区间')}
-              style={{ height: 350 }}
+              style={{ height: '250px' }}
               opts={{ renderer: 'canvas' }}
+              className="md:!h-[350px]"
             />
           </div>
         )}
 
         {/* 成交额统计 */}
         {data && !loading && (
-          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-            <div className="p-4 pb-2">
-              <h3 className="font-semibold text-gray-800">按成交额分组</h3>
-              <p className="text-xs text-gray-400 mt-1">从左到右成交额递增（百分位），观察大/小成交额股票的平均涨跌幅</p>
+          <div data-section="成交额分组统计" className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <div className="p-3 md:p-4 pb-2">
+              <h3 className="text-sm md:text-base font-semibold text-gray-800">按成交额分组</h3>
+              <p className="text-[10px] md:text-xs text-gray-400 mt-0.5 md:mt-1">从左到右成交额递增</p>
             </div>
             <ReactECharts
               option={getBarOption(data.amount_stats, '成交额区间')}
-              style={{ height: 350 }}
+              style={{ height: '250px' }}
               opts={{ renderer: 'canvas' }}
+              className="md:!h-[350px]"
             />
           </div>
         )}
 
         {/* 股价统计 */}
         {data && !loading && (
-          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-            <div className="p-4 pb-2">
-              <h3 className="font-semibold text-gray-800">按股价分组</h3>
-              <p className="text-xs text-gray-400 mt-1">从左到右股价递增（百分位），观察高/低股价股票的平均涨跌幅</p>
+          <div data-section="股价分组统计" className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <div className="p-3 md:p-4 pb-2">
+              <h3 className="text-sm md:text-base font-semibold text-gray-800">按股价分组</h3>
+              <p className="text-[10px] md:text-xs text-gray-400 mt-0.5 md:mt-1">从左到右股价递增</p>
             </div>
             <ReactECharts
               option={getBarOption(data.price_stats, '股价区间')}
-              style={{ height: 350 }}
+              style={{ height: '250px' }}
               opts={{ renderer: 'canvas' }}
+              className="md:!h-[350px]"
+            />
+          </div>
+        )}
+
+        {/* 流通市值统计 */}
+        {data && !loading && data.float_mv_stats && data.float_mv_stats.length > 0 && (
+          <div data-section="流通市值分组统计" className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <div className="p-3 md:p-4 pb-2">
+              <h3 className="text-sm md:text-base font-semibold text-gray-800">按流通市值分组</h3>
+              <p className="text-[10px] md:text-xs text-gray-400 mt-0.5 md:mt-1">从左到右市值递增（亿元）</p>
+            </div>
+            <ReactECharts
+              option={getBarOption(data.float_mv_stats, '市值区间')}
+              style={{ height: '250px' }}
+              opts={{ renderer: 'canvas' }}
+              className="md:!h-[350px]"
             />
           </div>
         )}
 
         {/* 加载/错误状态 */}
         {loading && (
-          <div className="flex justify-center items-center h-32 bg-white rounded-xl shadow-sm">
+          <div className="flex justify-center items-center h-24 md:h-32 bg-white rounded-xl shadow-sm">
             <span className="text-gray-400">加载中...</span>
           </div>
         )}
         {error && !loading && (
-          <div className="flex justify-center items-center h-32 bg-white rounded-xl shadow-sm">
+          <div className="flex justify-center items-center h-24 md:h-32 bg-white rounded-xl shadow-sm">
             <span className="text-red-500">{error}</span>
           </div>
         )}

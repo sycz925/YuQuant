@@ -233,64 +233,6 @@ def calculate_rps_incremental(
     return result_df
 
 
-def save_rps_to_database(rps_df: pd.DataFrame, db=None):
-    """
-    将 RPS 结果保存到数据库
-    
-    Args:
-        rps_df: 包含 RPS 数据的 DataFrame
-        db: MongoDB 数据库连接（可选，如果不提供则自动获取）
-    """
-    if rps_df.empty:
-        logger.warning("没有 RPS 数据需要保存")
-        return 0
-    
-    from app.data.db import get_db, get_stock_basics
-    from pymongo import UpdateOne
-    
-    if db is None:
-        db = get_db()
-    
-    # 准备数据
-    operations = []
-    update_time = datetime.utcnow()
-    
-    logger.info(f"准备保存 {len(rps_df)} 条 RPS 数据...")
-    
-    for _, row in rps_df.iterrows():
-        # 构建更新文档
-        doc = {
-            'update_time': update_time
-        }
-        
-        # 添加各周期 RPS 值
-        rps_columns = ['rps_10', 'rps_20', 'rps_50', 'rps_120', 'rps_250']
-        for col in rps_columns:
-            if col in row.index and pd.notna(row[col]):
-                doc[col] = int(row[col])
-        
-        # 使用 UpdateOne 进行更新或插入
-        operations.append(
-            UpdateOne(
-                {'stock_code': row['code'], 'trade_date': str(row['date'])},
-                {'$set': doc},
-                upsert=True
-            )
-        )
-    
-    # 批量执行
-    if operations:
-        try:
-            result = db['daily_data'].bulk_write(operations, ordered=False)
-            logger.info(f"RPS 保存完成: 插入 {result.upserted_count}, 更新 {result.modified_count}")
-            return len(operations)
-        except Exception as e:
-            logger.error(f"批量保存 RPS 失败: {e}")
-            return 0
-    
-    return 0
-
-
 def load_all_daily_data_for_rps(db=None, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
     """
     从数据库加载用于计算 RPS 的全市场日线数据
@@ -308,8 +250,8 @@ def load_all_daily_data_for_rps(db=None, start_date: Optional[str] = None, end_d
     if db is None:
         db = get_db()
     
-    # 构建查询（只查个股，排除指数）
-    query = {'data_type': 'stock'}
+    # 构建查询（从stock_daily读取个股数据）
+    query = {'close': {'$gt': 0}}
     if start_date or end_date:
         query['trade_date'] = {}
         if start_date:
@@ -318,8 +260,8 @@ def load_all_daily_data_for_rps(db=None, start_date: Optional[str] = None, end_d
             query['trade_date']['$lte'] = end_date
     
     # 查询数据
-    logger.info(f"从数据库加载日线数据，查询条件: {query}")
-    cursor = db['daily_data'].find(
+    logger.info(f"从stock_daily加载日线数据，查询条件: {query}")
+    cursor = db['stock_daily'].find(
         query,
         {'_id': 0, 'stock_code': 1, 'trade_date': 1, 'close': 1}
     )
@@ -343,3 +285,239 @@ def load_all_daily_data_for_rps(db=None, start_date: Optional[str] = None, end_d
     
     logger.info(f"加载完成，数据量: {len(df)}")
     return df
+
+
+def load_sector_daily_data_for_rps(db=None, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
+    """
+    从数据库加载用于计算 RPS 的板块日线数据
+    
+    Args:
+        db: MongoDB 连接（可选）
+        start_date: 开始日期（可选）
+        end_date: 结束日期（可选）
+    
+    Returns:
+        包含 date, code, close 的 DataFrame，date 作为索引
+    """
+    from app.data.db import get_db
+    
+    if db is None:
+        db = get_db()
+    
+    # 构建查询（从sector_daily读取板块数据）
+    query = {'close': {'$gt': 0}}
+    if start_date or end_date:
+        query['trade_date'] = {}
+        if start_date:
+            query['trade_date']['$gte'] = start_date
+        if end_date:
+            query['trade_date']['$lte'] = end_date
+    
+    # 查询数据
+    logger.info(f"从sector_daily加载板块日线数据，查询条件: {query}")
+    cursor = db['sector_daily'].find(
+        query,
+        {'_id': 0, 'stock_code': 1, 'trade_date': 1, 'close': 1}
+    )
+    
+    data = list(cursor)
+    if not data:
+        logger.warning("没有找到板块日线数据")
+        return pd.DataFrame()
+    
+    # 转换为 DataFrame
+    df = pd.DataFrame(data)
+    
+    # 重命名列以符合 RPS 计算要求
+    df = df.rename(columns={
+        'stock_code': 'code',
+        'trade_date': 'date'
+    })
+    
+    # 设置日期索引并排序
+    df = df.set_index('date').sort_index()
+    
+    logger.info(f"板块日线数据加载完成，数据量: {len(df)}")
+    return df
+
+
+def backfill_sector_rps(db=None, start_date: Optional[str] = None, end_date: Optional[str] = None) -> int:
+    """
+    回填板块 RPS 数据（RPS120, RPS250）
+    
+    Args:
+        db: MongoDB 连接（可选）
+        start_date: 开始日期（可选，默认全量）
+        end_date: 结束日期（可选）
+    
+    Returns:
+        更新的记录数
+    """
+    from app.data.db import get_db
+    
+    if db is None:
+        db = get_db()
+    
+    if not end_date:
+        end_date = datetime.now().strftime("%Y%m%d")
+    if not start_date:
+        # RPS250需要250天数据，加载全量以确保准确
+        start_date = '20230101'
+    
+    logger.info(f"开始回填板块 RPS 数据 ({start_date} ~ {end_date})...")
+    
+    # 加载板块日线数据
+    sector_df = load_sector_daily_data_for_rps(db, start_date, end_date)
+    if sector_df.empty:
+        logger.warning("没有板块日线数据，跳过回填")
+        return 0
+    
+    logger.info(f"加载数据: {len(sector_df)} 条, {sector_df['code'].nunique()} 个板块")
+    
+    # 过滤存续不足20天的板块
+    MIN_LIST_DAYS = 20
+    code_day_counts = sector_df.groupby('code')['close'].count()
+    eligible_codes = set(code_day_counts[code_day_counts >= MIN_LIST_DAYS].index)
+    sector_df = sector_df[sector_df['code'].isin(eligible_codes)].copy()
+    
+    # Pivot数据
+    pivot_close = sector_df.pivot(columns='code', values='close')
+    pivot_close = pivot_close.sort_index()
+    
+    # 计算120日和250日涨幅
+    pct_change_120 = pivot_close.pct_change(periods=120)
+    pct_change_250 = pivot_close.pct_change(periods=250)
+    
+    # 逐日排名并更新数据库
+    updated_count = 0
+    total_dates = len(pivot_close.index)
+    
+    for date_idx, date in enumerate(pivot_close.index):
+        if date_idx % 20 == 0:
+            logger.info(f"处理进度: {date_idx}/{total_dates} ({date})")
+        
+        update_fields = {}
+        
+        # RPS120
+        if date in pct_change_120.index:
+            daily_pct_120 = pct_change_120.loc[date]
+            rps_120 = (daily_pct_120.rank(pct=True, ascending=True) * 100).round().clip(1, 100).astype('Int64')
+            
+            for code in rps_120.index:
+                if pd.notna(rps_120[code]):
+                    db['sector_daily'].update_one(
+                        {'stock_code': code, 'trade_date': date},
+                        {'$set': {'rps_120': int(rps_120[code])}}
+                    )
+                    updated_count += 1
+        
+        # RPS250
+        if date in pct_change_250.index:
+            daily_pct_250 = pct_change_250.loc[date]
+            rps_250 = (daily_pct_250.rank(pct=True, ascending=True) * 100).round().clip(1, 100).astype('Int64')
+            
+            for code in rps_250.index:
+                if pd.notna(rps_250[code]):
+                    db['sector_daily'].update_one(
+                        {'stock_code': code, 'trade_date': date},
+                        {'$set': {'rps_250': int(rps_250[code])}}
+                    )
+                    updated_count += 1
+    
+    logger.info(f"板块 RPS 回填完成，更新 {updated_count} 条记录")
+    return updated_count
+
+
+def backfill_stock_rps10(db=None, start_date: Optional[str] = None, end_date: Optional[str] = None) -> int:
+    """
+    回填个股 RPS10 数据（高效版本，只计算 RPS10）
+    
+    Args:
+        db: MongoDB 连接（可选）
+        start_date: 开始日期（可选，默认最近30天）
+        end_date: 结束日期（可选）
+    
+    Returns:
+        更新的记录数
+    """
+    from app.data.db import get_db
+    
+    if db is None:
+        db = get_db()
+    
+    if not end_date:
+        end_date = datetime.now().strftime("%Y%m%d")
+    if not start_date:
+        # RPS10需要至少10天历史数据，加载最近30天确保足够
+        start_date = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
+    
+    logger.info(f"开始回填个股 RPS10 数据 ({start_date} ~ {end_date})...")
+    
+    # 从stock_daily加载数据
+    query = {
+        'close': {'$gt': 0},
+        'trade_date': {'$gte': start_date, '$lte': end_date}
+    }
+    cursor = db['stock_daily'].find(
+        query,
+        {'_id': 0, 'stock_code': 1, 'trade_date': 1, 'close': 1}
+    )
+    
+    data = list(cursor)
+    if not data:
+        logger.warning("没有个股日线数据，跳过回填")
+        return 0
+    
+    df = pd.DataFrame(data)
+    df = df.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
+    df = df.set_index('date').sort_index()
+    
+    logger.info(f"加载数据: {len(df)} 条, {df['code'].nunique()} 只股票, {len(df.index.unique())} 个交易日")
+    
+    # 过滤上市不足10天的股票
+    MIN_LIST_DAYS = 10
+    code_day_counts = df.groupby('code')['close'].count()
+    eligible_codes = set(code_day_counts[code_day_counts >= MIN_LIST_DAYS].index)
+    df = df[df['code'].isin(eligible_codes)].copy()
+    logger.info(f"过滤后: {len(eligible_codes)} 只股票")
+    
+    if df.empty:
+        return 0
+    
+    # Pivot数据
+    pivot_close = df.pivot(columns='code', values='close')
+    pivot_close = pivot_close.sort_index()
+    
+    # 计算10日涨幅
+    pct_change_10 = pivot_close.pct_change(periods=10)
+    
+    # 逐日排名并更新数据库
+    updated_count = 0
+    total_dates = len(pivot_close.index)
+    
+    for date_idx, date in enumerate(pivot_close.index):
+        if date_idx % 10 == 0:
+            logger.info(f"处理进度: {date_idx}/{total_dates} ({date})")
+        
+        if date not in pct_change_10.index:
+            continue
+            
+        daily_pct = pct_change_10.loc[date]
+        rps_values = (daily_pct.rank(pct=True, ascending=True) * 100).round().clip(1, 100).astype('Int64')
+        
+        # 批量更新
+        bulk_ops = []
+        for code in rps_values.index:
+            if pd.notna(rps_values[code]):
+                bulk_ops.append(
+                    db['stock_daily'].update_one(
+                        {'stock_code': code, 'trade_date': date},
+                        {'$set': {'rps_10': int(rps_values[code])}}
+                    )
+                )
+        
+        if bulk_ops:
+            updated_count += len(bulk_ops)
+    
+    logger.info(f"个股 RPS10 回填完成，更新 {updated_count} 条记录")
+    return updated_count

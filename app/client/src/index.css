@@ -15,3 +15,25 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
+
+/* iOS 安全区域适配 */
+.safe-area-pb {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* 移动端滚动优化 */
+@media (max-width: 639px) {
+  body {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: none;
+  }
+}
+
+/* 移动端触摸反馈 */
+@media (hover: none) and (pointer: coarse) {
+  button:active,
+  a:active {
+    opacity: 0.7;
+    transition: opacity 0.1s;
+  }
+}

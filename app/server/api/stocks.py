@@ -67,7 +67,7 @@ def search_stocks(keyword: str = Query(..., description="搜索关键词（代�
         raise HTTPException(status_code=500, detail="搜索股票失败")
 
 
-@router.get("", response_model=StockListResponse)
+@router.get("")
 def get_stock_list(
     page: Optional[int] = Query(None, ge=1, description="页码"),
     page_size: Optional[int] = Query(50, ge=1, le=500, description="每页数量"),
@@ -94,11 +94,11 @@ def get_stock_list(
 
         if filter_mode in ('enabled', 'disabled'):
             db = get_db()
-            excl_docs = list(db['exclusions'].find(
-                {'category': 'stock', 'exclude_sync': True},
-                {'_id': 0, 'code': 1}
-            ))
-            disabled_codes = {d['code'] for d in excl_docs if d.get('code')}
+            # 从stock_basics的exclude字段获取禁用的股票
+            disabled_cursor = db['stock_basics'].find(
+                {'is_disable': True}, {'_id': 0, 'stock_code': 1}
+            )
+            disabled_codes = {d['stock_code'] for d in disabled_cursor}
             if filter_mode == 'disabled':
                 df = df[df['stock_code'].isin(disabled_codes)]
             else:
@@ -110,15 +110,26 @@ def get_stock_list(
             start = (page - 1) * page_size
             df = df.iloc[start:start + page_size]
 
+        # 获取禁用的股票代码
+        db = get_db()
+        disabled_cursor = db['stock_basics'].find(
+            {'is_disable': True}, {'_id': 0, 'stock_code': 1}
+        )
+        disabled_codes = {d['stock_code'] for d in disabled_cursor}
+
         stocks = []
         for _, row in df.iterrows():
-            stocks.append(StockBasic(
-                code=row["stock_code"],
-                name=row["stock_name"],
-                market=row["market"]
-            ))
+            stock_code = row["stock_code"]
+            stocks.append({
+                "code": stock_code,
+                "stock_code": stock_code,
+                "name": row["stock_name"],
+                "stock_name": row["stock_name"],
+                "market": row["market"],
+                "exclude_sync": stock_code in disabled_codes
+            })
 
-        return StockListResponse(total=total, data=stocks)
+        return {"total": total, "data": stocks}
 
     except HTTPException:
         raise
@@ -267,7 +278,17 @@ def get_daily_data(
                 amplitude=float(row.get("amplitude", 0)) if "amplitude" in row and not pd.isna(row.get("amplitude")) else None,
                 change_pct=float(row.get("change_pct", 0)) if "change_pct" in row and not pd.isna(row.get("change_pct")) else None,
                 change=float(row.get("change", 0)) if "change" in row and not pd.isna(row.get("change")) else None,
-                turnover=float(row.get("turnover", 0)) if "turnover" in row and not pd.isna(row.get("turnover")) else None
+                turnover=float(row.get("turnover", 0)) if "turnover" in row and not pd.isna(row.get("turnover")) else None,
+                # 均线字段
+                ma10=float(row["ma10"]) if "ma10" in row and not pd.isna(row["ma10"]) else None,
+                ma20=float(row["ma20"]) if "ma20" in row and not pd.isna(row["ma20"]) else None,
+                ma50=float(row["ma50"]) if "ma50" in row and not pd.isna(row["ma50"]) else None,
+                ma120=float(row["ma120"]) if "ma120" in row and not pd.isna(row["ma120"]) else None,
+                # 成交量均线字段
+                vol_ma5=float(row["vol_ma5"]) if "vol_ma5" in row and not pd.isna(row["vol_ma5"]) else None,
+                vol_ma10=float(row["vol_ma10"]) if "vol_ma10" in row and not pd.isna(row["vol_ma10"]) else None,
+                vol_ma20=float(row["vol_ma20"]) if "vol_ma20" in row and not pd.isna(row["vol_ma20"]) else None,
+                vol_ma50=float(row["vol_ma50"]) if "vol_ma50" in row and not pd.isna(row["vol_ma50"]) else None,
             )
             bars.append(bar)
 

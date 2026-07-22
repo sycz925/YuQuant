@@ -24,7 +24,6 @@ from app.engine.factor_engine import FactorEngine
 from app.data.manager import get_data_manager
 from app.data.task_manager import get_task_manager
 from app.data.db import get_db, get_collection
-from app.server.api.exclusions import get_excluded_set
 from app.server.api.constants import INDEX_CONFIG_SEED, TDX_INDEX_NAME_MAP
 
 logger = logging.getLogger(__name__)
@@ -147,23 +146,6 @@ class FactorService:
             }
             result.append(item)
             existing_codes.add(item['code'])
-        try:
-            db = get_db()
-            excl_items = list(db['exclusions'].find(
-                {'category': 'index'}, {'_id': 0, 'code': 1, 'name': 1}
-            ))
-            for item in excl_items:
-                code = item.get('code', '')
-                if code and code not in existing_codes:
-                    result.append({
-                        'code': code,
-                        'name': item.get('name', code),
-                        'tdx_code': code,
-                        'market': 1,
-                    })
-                    existing_codes.add(code)
-        except Exception as e:
-            logger.warning(f"合并 exclusions 指数失败: {e}")
         return result
 
     def _get_index_data(self, index_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
@@ -201,30 +183,9 @@ class FactorService:
             for item in data
         ]
 
-    def _get_index_list_with_exclusions(self) -> List[Dict[str, Any]]:
-        """获取指数列表（合并 exclusions 中新增的指数）"""
-        db_index_list = self._get_index_config_from_db()
-        try:
-            db = get_db()
-            existing_codes = {c.get('code') for c in db_index_list}
-            excl_items = list(db['exclusions'].find(
-                {'category': 'index'}, {'_id': 0, 'code': 1, 'name': 1, 'exclude_sync': 1}
-            ))
-            disabled_codes = set()
-            for item in excl_items:
-                code = item.get('code', '')
-                if not code:
-                    continue
-                if item.get('exclude_sync'):
-                    disabled_codes.add(code)
-                if code not in existing_codes:
-                    db_index_list.append({'code': code, 'name': item.get('name', code)})
-                    existing_codes.add(code)
-            if disabled_codes:
-                db_index_list = [c for c in db_index_list if c.get('code') not in disabled_codes]
-        except Exception:
-            pass
-        return db_index_list
+    def _get_index_list_enabled(self) -> List[Dict[str, Any]]:
+        """获取指数列表（直接从index_basics读取）"""
+        return self._get_index_config_from_db()
 
     # ------------------------------------------------------------------
     # 内部：周期聚合
@@ -362,7 +323,7 @@ class FactorService:
         sector_data = self._aggregate_by_period(sector_daily_data, period)
         extra_data = {}
 
-        db_index_list = self._get_index_list_with_exclusions()
+        db_index_list = self._get_index_list_enabled()
 
         if include_index and daily_data:
             dates = [d['trade_date'] for d in daily_data]
@@ -408,43 +369,32 @@ class FactorService:
         keyword: Optional[str],
         filter_mode: Optional[str],
     ) -> Dict[str, Any]:
-        cfgs = self._get_index_config_from_db()
-        indices = [{'code': c.get('code', ''), 'name': c.get('name', '')} for c in cfgs]
-        existing_codes = {item['code'] for item in indices}
-        disabled_codes = set()
-
-        try:
-            db = get_db()
-            excl_items = list(db['exclusions'].find(
-                {'category': 'index'}, {'_id': 0, 'code': 1, 'name': 1, 'exclude_sync': 1}
-            ))
-            for item in excl_items:
-                code = item.get('code', '')
-                if not code:
-                    continue
-                if item.get('exclude_sync'):
-                    disabled_codes.add(code)
-                if code not in existing_codes:
-                    indices.append({'code': code, 'name': item.get('name', code)})
-                    existing_codes.add(code)
-        except Exception as e:
-            logger.warning(f"合并 exclusions 指数失败: {e}")
-
-        if filter_mode == 'disabled':
-            indices = [i for i in indices if i['code'] in disabled_codes]
-        elif filter_mode == 'enabled':
-            indices = [i for i in indices if i['code'] not in disabled_codes]
-
+        db = get_db()
+        
+        # 直接在查询时过滤is_disable
+        query = {}
+        if filter_mode == 'enabled':
+            query['is_disable'] = {'$ne': True}
+        elif filter_mode == 'disabled':
+            query['is_disable'] = True
+        
+        cursor = db['index_basics'].find(query, {'_id': 0, 'code': 1, 'name': 1, 'tdx_code': 1, 'is_disable': 1}).sort('code', 1)
+        indices = list(cursor)
+        
+        # 添加exclude_sync字段
+        for idx in indices:
+            idx['exclude_sync'] = idx.get('is_disable', False)
+        
         if keyword:
             kw = keyword.lower()
-            indices = [i for i in indices if kw in i['code'].lower() or kw in i.get('name', '').lower()]
+            indices = [i for i in indices if kw in i.get('code', '').lower() or kw in i.get('name', '').lower()]
 
         total = len(indices)
         if page is not None:
             start = (page - 1) * page_size
             indices = indices[start:start + page_size]
 
-        return {'success': True, 'indices': indices, 'total': total}
+        return {'success': True, 'items': indices, 'total': total}
 
     # -------------------- 指数搜索 --------------------
 
@@ -543,6 +493,7 @@ class FactorService:
         start_date: Optional[str],
         end_date: Optional[str],
         max_workers: int,
+        is_external: bool = False,
     ) -> Dict[str, Any]:
         if not end_date:
             end_date = datetime.now().strftime("%Y%m%d")
@@ -550,17 +501,25 @@ class FactorService:
             start_date = "20180101"
 
         tm = get_task_manager()
-        task_id = tm.create_task(100)
+        task_id = tm.create_task()
 
-        excluded_indices = get_excluded_set('index', 'sync')
+        # 获取启用的指数列表
         sync_cfg = self._get_sync_index_config()
-        if excluded_indices:
-            sync_cfg = [c for c in sync_cfg if c.get('code') not in excluded_indices]
-            logger.info(f"排除 {len(excluded_indices)} 个指数，实际同步 {len(sync_cfg)} 个")
+        
+        # 直接从数据库查询启用的指数
+        db = get_db()
+        enabled_codes = set(
+            doc['code'] for doc in db['index_basics'].find(
+                {'is_disable': {'$ne': True}},
+                {'_id': 0, 'code': 1}
+            )
+        )
+        sync_cfg = [c for c in sync_cfg if c.get('code') in enabled_codes]
+        logger.info(f"过滤后同步 {len(sync_cfg)} 个指数")
 
         thread = threading.Thread(
             target=self._run_sync_indices,
-            args=(task_id, sync_cfg, start_date, end_date),
+            args=(task_id, sync_cfg, start_date, end_date, is_external),
         )
         thread.daemon = True
         thread.start()
@@ -572,7 +531,7 @@ class FactorService:
         }
 
     def _run_sync_indices(self, task_id: str, sync_cfg: List[Dict],
-                          start_date: str, end_date: str):
+                          start_date: str, end_date: str, is_external: bool = False):
         try:
             from pytdx.hq import TdxHq_API
             from pytdx.params import TDXParams
@@ -799,9 +758,47 @@ class FactorService:
                     logger.error(f"同步 {idx_config['name']} 失败: {e}")
                     fail_count += 1
 
+            # 同步完成后，计算所有指数的涨跌幅 (chg_pct)
+            try:
+                logger.info("[指数同步] 开始计算涨跌幅...")
+                enabled_codes = list(db['index_basics'].find(
+                    {'is_disable': {'$ne': True}},
+                    {'_id': 0, 'code': 1}
+                ))
+                from pymongo import UpdateOne as Upd
+                bulk_ops = []
+                for idx_doc in enabled_codes:
+                    code = idx_doc['code']
+                    # 按日期升序查询该指数所有数据
+                    cursor = db['index_daily'].find(
+                        {'stock_code': code},
+                        {'_id': 0, 'trade_date': 1, 'close': 1}
+                    ).sort('trade_date', 1)
+                    docs = list(cursor)
+                    for i, doc in enumerate(docs):
+                        if i == 0:
+                            chg_pct = 0
+                        else:
+                            prev_close = docs[i-1].get('close', 0)
+                            curr_close = doc.get('close', 0)
+                            if prev_close > 0 and curr_close > 0:
+                                chg_pct = round((curr_close / prev_close - 1) * 100, 2)
+                            else:
+                                chg_pct = 0
+                        bulk_ops.append(Upd(
+                            {'stock_code': code, 'trade_date': doc['trade_date']},
+                            {'$set': {'chg_pct': chg_pct}},
+                        ))
+                if bulk_ops:
+                    db['index_daily'].bulk_write(bulk_ops, ordered=False)
+                    logger.info(f"[指数同步] 涨跌幅计算完成，更新 {len(bulk_ops)} 条记录")
+            except Exception as e:
+                logger.warning(f"[指数同步] 涨跌幅计算失败: {e}")
+
             msg = f"指数数据同步完成，成功 {success_count} 个，失败 {fail_count} 个"
             logger.info(msg)
-            tm.complete_task(task_id, msg)
+            if not is_external:
+                tm.complete_task(task_id, msg)
             self.clear_index_data_cache()
             try:
                 from app.server.cache import refresh_trade_dates
@@ -833,20 +830,18 @@ class FactorService:
         target: str,
         max_workers: int,
         min_days: Optional[int],
+        external_task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         tm = get_task_manager()
-        task_id = tm.create_task(100)
+        task_id = external_task_id or tm.create_task()
 
-        if target == 'stock':
-            excluded_codes = list(get_excluded_set('stock', 'rps'))
-        elif target == 'sector':
-            excluded_codes = list(get_excluded_set('sector', 'rps'))
-        else:
-            excluded_codes = list(get_excluded_set('stock', 'rps')) + list(get_excluded_set('sector', 'rps'))
+        # 已在查询时过滤禁用的数据，这里不需要额外排除
+        excluded_codes = []
 
+        is_external = external_task_id is not None
         thread = threading.Thread(
             target=self._run_rps_calculation_task,
-            args=(task_id, start_date, end_date, target_date, target, excluded_codes),
+            args=(task_id, start_date, end_date, target_date, target, excluded_codes, is_external),
         )
         thread.daemon = True
         thread.start()
@@ -862,6 +857,7 @@ class FactorService:
         start_date: Optional[str], end_date: Optional[str],
         target_date: Optional[str], target: str,
         excluded_codes: Optional[List[str]],
+        is_external: bool = False,
     ):
         try:
             tm = get_task_manager()
@@ -870,12 +866,16 @@ class FactorService:
             def _progress(msg, current_idx, total_count, phase=""):
                 if tm.is_cancelled(task_id):
                     raise InterruptedError("任务已取消")
-                tm.update_task_progress(
-                    task_id, current_stock=str(current_idx),
-                    current_stock_name=msg,
-                    total_count=max(1, int(total_count)),
-                    completed_count=int(current_idx),
-                )
+                if is_external:
+                    # 外部任务不更新进度，由调用方控制
+                    pass
+                else:
+                    tm.update_task_progress(
+                        task_id, current_stock=str(current_idx),
+                        current_stock_name=msg,
+                        total_count=max(1, int(total_count)),
+                        completed_count=int(current_idx),
+                    )
 
             engine = FactorEngine()
             result = engine.calculate_rps(
@@ -900,13 +900,21 @@ class FactorService:
             except Exception as e:
                 logger.error(f"计算涨幅字段失败: {e}")
 
-            tm.update_task_progress(
-                task_id, current_stock=str(result.get('dates', 0)),
-                current_stock_name="计算完成",
-                total_count=max(1, int(result.get('dates', 0))),
-                completed_count=int(result.get('dates', 0)),
-            )
-            tm.complete_task(task_id, message)
+            # 只有内部任务才更新进度计数，外部任务保持原有进度
+            if not is_external:
+                tm.update_task_progress(
+                    task_id, current_stock=str(result.get('dates', 0)),
+                    current_stock_name="计算完成",
+                    total_count=max(1, int(result.get('dates', 0))),
+                    completed_count=int(result.get('dates', 0)),
+                )
+            else:
+                # 外部任务不更新 current_stock_name，由调用方控制
+                pass
+            # 只有内部创建的任务才调用complete_task
+            # 外部传入的task_id由调用方决定何时完成
+            if not is_external:
+                tm.complete_task(task_id, message)
             try:
                 from app.server.cache import refresh_trade_dates
                 refresh_trade_dates()
@@ -950,25 +958,32 @@ class FactorService:
         self,
         max_workers: int,
         min_days: Optional[int],
+        is_external: bool = False,
     ) -> Dict[str, Any]:
         """同步板块数据 — 逐天回溯模式"""
         tm = get_task_manager()
-        task_id = tm.create_task(100)
-        excluded_sectors = get_excluded_set('sector', 'sync')
+        task_id = tm.create_task() if not is_external else None
+        
+        # 直接获取启用的板块代码
+        db = get_db()
+        enabled_sectors = set(
+            doc['code'] for doc in db['sector_basics'].find(
+                {'is_disable': {'$ne': True}},
+                {'_id': 0, 'code': 1}
+            )
+        )
 
         thread = threading.Thread(
             target=self._run_sync_sectors,
-            args=(task_id, max_workers, min_days, excluded_sectors),
+            args=(task_id, max_workers, min_days, enabled_sectors),
         )
         thread.daemon = True
         thread.start()
         return {"success": True, "task_id": task_id, "message": "板块同步任务已启动"}
 
-    def _run_sync_sectors(self, task_id, max_workers, min_days, excluded_sectors):
+    def _run_sync_sectors(self, task_id, max_workers, min_days, enabled_sectors):
         try:
             logger.info(f"启动板块逐天同步任务，线程数: {max_workers}")
-            if excluded_sectors:
-                logger.info(f"排除 {len(excluded_sectors)} 个板块")
             tm = get_task_manager()
             tm.update_task_progress(task_id, current_stock="初始化", current_stock_name="读取通达信板块信息...")
             dm = get_data_manager()
@@ -984,7 +999,7 @@ class FactorService:
 
             result = dm.sync_sector_indices(
                 task_id=task_id,
-                excluded_codes=excluded_sectors,
+                enabled_codes=enabled_sectors,
             )
             msg = f"完成: 共 {result.get('block_count', 0)} 个板块，{result.get('sector_daily_count', 0)} 条日线聚合"
             logger.info(msg)
@@ -1024,7 +1039,13 @@ class FactorService:
         if min_stock_count:
             query['stock_count'] = {'$gte': min_stock_count}
 
-        cursor = db['sector_basics'].find(query, {'_id': 0, 'code': 1, 'name': 1, 'source': 1, 'stock_count': 1})
+        # 直接在查询时过滤is_disable
+        if filter_mode == 'enabled':
+            query['is_disable'] = {'$ne': True}
+        elif filter_mode == 'disabled':
+            query['is_disable'] = True
+
+        cursor = db['sector_basics'].find(query, {'_id': 0, 'code': 1, 'name': 1, 'source': 1, 'stock_count': 1, 'is_disable': 1})
         items = list(cursor)
 
         sector_coll = db['sector_daily']
@@ -1041,16 +1062,7 @@ class FactorService:
                 item['rps_10'] = rps.get('rps_10')
                 item['rps_20'] = rps.get('rps_20')
                 item['rps_50'] = rps.get('rps_50')
-
-        if filter_mode in ('enabled', 'disabled'):
-            excl_docs = list(db['exclusions'].find(
-                {'category': 'sector', 'exclude_sync': True}, {'_id': 0, 'code': 1}
-            ))
-            disabled_codes = {d['code'] for d in excl_docs if d.get('code')}
-            if filter_mode == 'disabled':
-                items = [i for i in items if i.get('code') in disabled_codes]
-            else:
-                items = [i for i in items if i.get('code') not in disabled_codes]
+                item['exclude_sync'] = item.get('is_disable', False)
 
         if keyword:
             from pypinyin import lazy_pinyin, Style

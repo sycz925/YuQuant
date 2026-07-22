@@ -10,6 +10,7 @@
 ## 挂载技能
 
 - @skills/autoproject（全栈工程孵化与文档同步引擎）
+- @skills/vibecoding-refactor（Vibe Coding 工程化重构方法论，六阶段工作流：项目分区→关键识别→架构分析→模块分析→执行重构→验证归档）
 
 ## 核心原则
 
@@ -44,7 +45,6 @@
 - `data_manager.py` - 数据管理器
 - `factor_engine.py` - 因子引擎
 - `sentiment_engine.py` - 舆情分析引擎
-- `backtest_engine.py` - 回测引擎
 - `server/main.py` - FastAPI 入口
 - `server/api/` - API 路由模块
 

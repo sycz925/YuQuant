@@ -1,13 +1,13 @@
 # MongoDB 数据模型设计
 
 **日期**：2026-06-18 (更新)  
-**项目**：YuQuant - A股量化仿真与前端看板系统
+**项目**：A股量化系统
 
 ---
 
 ## 概述
 
-本文档定义 YuQuant 系统在 MongoDB 中的数据模型。
+本文档定义 A股量化系统 在 MongoDB 中的数据模型。
 
 ---
 
@@ -217,31 +217,7 @@
 
 ---
 
-## Collection 6: `exclusions` - 排除设置
-
-### 用途
-存储用户配置的排除规则，用于同步和RPS计算时过滤特定代码。
-
-### Schema
-```javascript
-{
-  _id: ObjectId,
-  code: String,                  // 代码（股票/板块/指数）
-  code_type: String,             // 类型："stock" / "sector" / "index"
-  exclude_type: String,          // 排除类型："sync" / "rps"
-  reason: String | null,         // 排除原因
-  update_time: ISODate           // 最后更新时间
-}
-```
-
-### 索引设计
-| 索引 | 类型 | 说明 |
-|------|------|------|
-| `{ code: 1, code_type: 1, exclude_type: 1 }` | 复合唯一索引 | 防止重复排除 |
-
----
-
-## Collection 7: `sync_tasks` - 同步任务状态
+## Collection 6: `sync_tasks` - 同步任务状态
 
 ### 用途
 存储后台同步任务的状态和进度。

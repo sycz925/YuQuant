@@ -325,7 +325,6 @@ calculate_rps(target='stock|sector|all')
 | `task_status` | 同步任务状态 | 运行时临时 |
 | `index_basics` | 指数基础信息 | 备用 |
 | `stock_universe` | 选股池（可扩展） | 备用 |
-| `backtest_results` | 回测结果 | 动态 |
 
 ### 5.2 关键索引设计
 

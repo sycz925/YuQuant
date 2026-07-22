@@ -28,9 +28,9 @@ const debounce = (fn, delay) => {
   }
 }
 
-function StockAnalysis() {
-  const [marketType, setMarketType] = useState('stock') // stock: 个股, sector: 板块
-  const [selectedCode, setSelectedCode] = useState('688279')
+function StockAnalysis({ initialCode, initialType }) {
+  const [marketType, setMarketType] = useState(initialType === 'sector' ? 'sector' : 'stock')
+  const [selectedCode, setSelectedCode] = useState(initialCode || '688279')
   const [allData, setAllData] = useState([]) // 全部数据
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -129,34 +129,6 @@ function StockAnalysis() {
     return { dif, dea, macd }
   }
 
-  const calculateMA = (data) => {
-    const result = [...data]
-    for (let i = 0; i < result.length; i++) {
-      let sum10 = 0, count10 = 0
-      let sum20 = 0, count20 = 0
-      let sum60 = 0, count60 = 0
-
-      for (let j = 0; j < 60 && i - j >= 0; j++) {
-        if (j < 10) { sum10 += result[i - j].close; count10++ }
-        if (j < 20) { sum20 += result[i - j].close; count20++ }
-        sum60 += result[i - j].close; count60++
-      }
-
-      result[i].ma10 = count10 > 0 ? sum10 / count10 : null
-      result[i].ma20 = count20 > 0 ? sum20 / count20 : null
-      result[i].ma60 = count60 > 0 ? sum60 / count60 : null
-    }
-
-    const { dif, dea, macd } = calculateMACD(result)
-    result.forEach((d, i) => {
-      d.dif = dif[i]
-      d.dea = dea[i]
-      d.macd = macd[i]
-    })
-
-    return result
-  }
-
   // ISO周计算（与Python isocalendar一致）
   const getISOWeek = (dateStr) => {
     const y = parseInt(dateStr.slice(0, 4))
@@ -191,6 +163,15 @@ function StockAnalysis() {
           low: Math.min(...weekData.map(d => d.low)),
           close: weekData[weekData.length - 1].close,
           volume: weekData.reduce((sum, d) => sum + (d.volume || 0), 0),
+          // 均线字段（使用最新一天的数据）
+          ma10: weekData[weekData.length - 1].ma10,
+          ma20: weekData[weekData.length - 1].ma20,
+          ma50: weekData[weekData.length - 1].ma50,
+          ma120: weekData[weekData.length - 1].ma120,
+          vol_ma5: weekData[weekData.length - 1].vol_ma5,
+          vol_ma10: weekData[weekData.length - 1].vol_ma10,
+          vol_ma20: weekData[weekData.length - 1].vol_ma20,
+          vol_ma50: weekData[weekData.length - 1].vol_ma50,
           rps_20: weekData[weekData.length - 1].rps_20,
           rps_50: weekData[weekData.length - 1].rps_50,
           rps_120: weekData[weekData.length - 1].rps_120,
@@ -209,6 +190,15 @@ function StockAnalysis() {
         low: Math.min(...weekData.map(d => d.low)),
         close: weekData[weekData.length - 1].close,
         volume: weekData.reduce((sum, d) => sum + (d.volume || 0), 0),
+        // 均线字段（使用最新一天的数据）
+        ma10: weekData[weekData.length - 1].ma10,
+        ma20: weekData[weekData.length - 1].ma20,
+        ma50: weekData[weekData.length - 1].ma50,
+        ma120: weekData[weekData.length - 1].ma120,
+        vol_ma5: weekData[weekData.length - 1].vol_ma5,
+        vol_ma10: weekData[weekData.length - 1].vol_ma10,
+        vol_ma20: weekData[weekData.length - 1].vol_ma20,
+        vol_ma50: weekData[weekData.length - 1].vol_ma50,
         rps_20: weekData[weekData.length - 1].rps_20,
         rps_50: weekData[weekData.length - 1].rps_50,
         rps_120: weekData[weekData.length - 1].rps_120,
@@ -239,6 +229,15 @@ function StockAnalysis() {
             low: Math.min(...monthData.map(d => d.low)),
             close: monthData[monthData.length - 1].close,
             volume: monthData.reduce((sum, d) => sum + (d.volume || 0), 0),
+            // 均线字段（使用最新一天的数据）
+            ma10: monthData[monthData.length - 1].ma10,
+            ma20: monthData[monthData.length - 1].ma20,
+            ma50: monthData[monthData.length - 1].ma50,
+            ma120: monthData[monthData.length - 1].ma120,
+            vol_ma5: monthData[monthData.length - 1].vol_ma5,
+            vol_ma10: monthData[monthData.length - 1].vol_ma10,
+            vol_ma20: monthData[monthData.length - 1].vol_ma20,
+            vol_ma50: monthData[monthData.length - 1].vol_ma50,
             rps_20: monthData[monthData.length - 1].rps_20,
             rps_50: monthData[monthData.length - 1].rps_50,
             rps_120: monthData[monthData.length - 1].rps_120,
@@ -259,6 +258,15 @@ function StockAnalysis() {
         low: Math.min(...monthData.map(d => d.low)),
         close: monthData[monthData.length - 1].close,
         volume: monthData.reduce((sum, d) => sum + (d.volume || 0), 0),
+        // 均线字段（使用最新一天的数据）
+        ma10: monthData[monthData.length - 1].ma10,
+        ma20: monthData[monthData.length - 1].ma20,
+        ma50: monthData[monthData.length - 1].ma50,
+        ma120: monthData[monthData.length - 1].ma120,
+        vol_ma5: monthData[monthData.length - 1].vol_ma5,
+        vol_ma10: monthData[monthData.length - 1].vol_ma10,
+        vol_ma20: monthData[monthData.length - 1].vol_ma20,
+        vol_ma50: monthData[monthData.length - 1].vol_ma50,
         rps_20: monthData[monthData.length - 1].rps_20,
         rps_50: monthData[monthData.length - 1].rps_50,
         rps_120: monthData[monthData.length - 1].rps_120,
@@ -270,7 +278,10 @@ function StockAnalysis() {
   }
 
   // 初始加载（最近200条）
+  const loadingRef = useRef(false)
   const loadInitialData = async () => {
+    if (loadingRef.current) return // 防止重复调用
+    loadingRef.current = true
     setLoading(true)
     setError('')
     setCurrentIndex(0)
@@ -312,6 +323,15 @@ function StockAnalysis() {
             low: item.low,
             close: item.close,
             volume: item.volume,
+            // 均线字段（从数据库读取）
+            ma10: item.ma10,
+            ma20: item.ma20,
+            ma50: item.ma50,
+            ma120: item.ma120,
+            vol_ma5: item.vol_ma5,
+            vol_ma10: item.vol_ma10,
+            vol_ma20: item.vol_ma20,
+            vol_ma50: item.vol_ma50,
             rps_10: rps.rps_10,
             rps_20: rps.rps_20,
             rps_50: rps.rps_50,
@@ -341,14 +361,14 @@ function StockAnalysis() {
         data = convertToMonthly(data)
       }
 
-      const withMA = calculateMA(data)
-      setAllData(withMA)
+      setAllData(data)
     } catch (e) {
       console.error('加载日线数据失败:', e)
       setError(e.response?.data?.detail || '加载数据失败，请先同步数据')
       setAllData([])
     } finally {
       setLoading(false)
+      loadingRef.current = false
     }
   }
 
@@ -403,6 +423,15 @@ function StockAnalysis() {
             low: item.low,
             close: item.close,
             volume: item.volume,
+            // 均线字段（从数据库读取）
+            ma10: item.ma10,
+            ma20: item.ma20,
+            ma50: item.ma50,
+            ma120: item.ma120,
+            vol_ma5: item.vol_ma5,
+            vol_ma10: item.vol_ma10,
+            vol_ma20: item.vol_ma20,
+            vol_ma50: item.vol_ma50,
             rps_10: rps.rps_10,
             rps_20: rps.rps_20,
             rps_50: rps.rps_50,
@@ -441,8 +470,7 @@ function StockAnalysis() {
           processedData = convertToMonthly(mergedData)
         }
 
-        const withMA = calculateMA(processedData)
-        setAllData(withMA)
+        setAllData(processedData)
 
         // 更新索引以保持当前显示位置
         setCurrentIndex(prev => prev + uniqueNewData.length)
@@ -491,62 +519,63 @@ function StockAnalysis() {
 
   return (
     <div className="space-y-3 md:space-y-4">
-      {/* 顶部标题和股票选择 */}
-      <Card className="rounded-2xl shadow-sm border-gray-100">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div className="flex items-center space-x-3">
-            <div className="p-2 md:p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl md:rounded-2xl text-white">
-              <BarChartOutlined style={{ fontSize: '18px' }} className="md:!text-2xl" />
+      {/* 顶部标题和股票选择 - 仅在非搜索页面调用时显示 */}
+      {!initialCode && (
+        <Card className="rounded-2xl shadow-sm border-gray-100">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div className="flex items-center space-x-3">
+              <div className="p-2 md:p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl md:rounded-2xl text-white">
+                <BarChartOutlined style={{ fontSize: '18px' }} className="md:!text-2xl" />
+              </div>
+              <div>
+                <Title level={5} style={{ margin: 0 }} className="!text-sm md:!text-lg">行情分析</Title>
+                <Text type="secondary" className="text-[10px] md:text-xs">
+                  {selectedCode || (marketType === 'stock' ? '选择股票开始分析' : '选择板块开始分析')}
+                </Text>
+              </div>
             </div>
-            <div>
-              <Title level={5} style={{ margin: 0 }} className="!text-sm md:!text-lg">行情分析</Title>
-              <Text type="secondary" className="text-[10px] md:text-xs">
-                {selectedCode || (marketType === 'stock' ? '选择股票开始分析' : '选择板块开始分析')}
-              </Text>
-            </div>
-          </div>
 
-          <div className="flex flex-col md:flex-row md:items-center gap-2 md:space-x-4">
-            <Segmented
-              options={[
-                { label: '个股', value: 'stock' },
-                { label: '板块', value: 'sector' }
-              ]}
-              value={marketType}
-              onChange={setMarketType}
-              size="small"
-            />
-            <Select
-              showSearch
-              placeholder={marketType === 'stock' ? '输入代码/名称搜索' : '输入板块名称搜索'}
-              className="w-full md:w-64"
-              value={selectedCode}
-              onChange={handleSelect}
-              onSearch={handleSearch}
-              filterOption={false}
-              loading={searching}
-              notFoundContent={searching ? <Spin size="small" /> : <Text type="secondary">输入关键词搜索</Text>}
-              suffixIcon={<SearchOutlined />}
-              allowClear
-              size="small"
-            >
-              {searchOptions.map(s => (
-                <Select.Option key={s.code} value={s.code}>
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-xs">{s.code}</span>
-                    <span className="text-gray-500 ml-2 text-xs">{s.name}</span>
-                  </div>
-                </Select.Option>
-              ))}
-            </Select>
-
-            <div className="flex items-center space-x-2">
+            <div className="flex flex-col md:flex-row md:items-center gap-2 md:space-x-4">
+              <Segmented
+                options={[
+                  { label: '个股', value: 'stock' },
+                  { label: '板块', value: 'sector' }
+                ]}
+                value={marketType}
+                onChange={setMarketType}
+                size="small"
+              />
               <Select
-                value={timePeriod}
-                onChange={setTimePeriod}
-                className="w-20"
+                showSearch
+                placeholder={marketType === 'stock' ? '输入代码/名称搜索' : '输入板块名称搜索'}
+                className="w-full md:w-64"
+                value={selectedCode}
+                onChange={handleSelect}
+                onSearch={handleSearch}
+                filterOption={false}
+                loading={searching}
+                notFoundContent={searching ? <Spin size="small" /> : <Text type="secondary">输入关键词搜索</Text>}
+                suffixIcon={<SearchOutlined />}
+                allowClear
                 size="small"
               >
+                {searchOptions.map(s => (
+                  <Select.Option key={s.code} value={s.code}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs">{s.code}</span>
+                      <span className="text-gray-500 ml-2 text-xs">{s.name}</span>
+                    </div>
+                  </Select.Option>
+                ))}
+              </Select>
+
+              <div className="flex items-center space-x-2">
+                <Select
+                  value={timePeriod}
+                  onChange={setTimePeriod}
+                  className="w-20"
+                  size="small"
+                >
                 {TIME_PERIODS.map(p => (
                   <Select.Option key={p.value} value={p.value}>{p.label}</Select.Option>
                 ))}
@@ -570,6 +599,7 @@ function StockAnalysis() {
           </div>
         </div>
       </Card>
+      )}
 
       {/* 图表区域 */}
       <Card className="rounded-2xl shadow-sm border-gray-100 p-0 overflow-hidden">

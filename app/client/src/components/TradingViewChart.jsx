@@ -135,27 +135,43 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
         color: isUp ? AQ_STYLES.upColor : AQ_STYLES.downColor
       };
     });
-    return { candles, volumes };
+    // 从数据库读取均线数据
+    const ma10Data = uniqueData.map(d => ({
+      time: formatDateForChart(d.trade_date || d.date),
+      value: d.ma10 !== undefined ? parseFloat(d.ma10) : null
+    })).filter(d => d.value !== null);
+    const ma20Data = uniqueData.map(d => ({
+      time: formatDateForChart(d.trade_date || d.date),
+      value: d.ma20 !== undefined ? parseFloat(d.ma20) : null
+    })).filter(d => d.value !== null);
+    const ma120Data = uniqueData.map(d => ({
+      time: formatDateForChart(d.trade_date || d.date),
+      value: d.ma120 !== undefined ? parseFloat(d.ma120) : null
+    })).filter(d => d.value !== null);
+    // 成交量均线
+    const volMa5Data = uniqueData.map(d => ({
+      time: formatDateForChart(d.trade_date || d.date),
+      value: d.vol_ma5 !== undefined ? parseFloat(d.vol_ma5) : null
+    })).filter(d => d.value !== null);
+    const volMa50Data = uniqueData.map(d => ({
+      time: formatDateForChart(d.trade_date || d.date),
+      value: d.vol_ma50 !== undefined ? parseFloat(d.vol_ma50) : null
+    })).filter(d => d.value !== null);
+    return { candles, volumes, ma10Data, ma20Data, ma120Data, volMa5Data, volMa50Data };
   }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
-    const { candles, volumes } = formatData(data);
+    const { candles, volumes, ma10Data, ma20Data, ma120Data, volMa5Data, volMa50Data } = formatData(data);
 
-    // 计算各项指标
+    // 计算MACD
     const macdData = calculateMACD(candles);
-    const ma10Data = calculateMA(candles, 10);
-    const ma20Data = calculateMA(candles, 20);
-    const ma120Data = calculateMA(candles, 120);
-
-    // 成交量均线
-    const volMa5Data = calculateVolMA(volumes, 5);
-    const volMa50Data = calculateVolMA(volumes, 50);
 
     // 清空容器
     container.querySelectorAll('.chart-wrapper').forEach(el => el.remove());
     if (verticalLineRef.current) verticalLineRef.current.remove();
+    container.querySelectorAll('.crosshair-date-label').forEach(el => el.remove());
 
     // ==================== 全局垂直十字线 ====================
     const verticalLine = document.createElement('div');
@@ -168,14 +184,27 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
     container.appendChild(verticalLine);
     verticalLineRef.current = verticalLine;
 
+    // 垂直线底部日期+涨幅标签
+    const crosshairDateLabel = document.createElement('div');
+    crosshairDateLabel.className = 'crosshair-date-label';
+    crosshairDateLabel.style.cssText = `
+      position: absolute; bottom: 0; transform: 0;
+      pointer-events: none; z-index: 11; display: none;
+      background: rgba(30, 30, 40, 0.9); border: 1px solid #555;
+      border-radius: 4px; padding: 2px 6px;
+      font-size: 10px; font-family: 'Consolas', 'Monaco', monospace;
+      color: #d1d4dc; white-space: nowrap;
+    `;
+    container.appendChild(crosshairDateLabel);
+
     // ==================== 公共配置（禁用缩放，隐藏Y轴） ====================
     const commonOpts = {
       layout: { background: { type: 'solid', color: AQ_STYLES.bg }, textColor: '#d1d4dc' },
       grid: { vertLines: { color: AQ_STYLES.grid }, horzLines: { color: AQ_STYLES.grid } },
       crosshair: {
-        mode: 1,
+        mode: 0,
         vertLine: { visible: false },
-        horzLine: { color: '#758696', width: 1, style: 1, labelVisible: false },
+        horzLine: { color: '#758696', width: 1, style: 2, visible: true, labelVisible: false },
       },
       rightPriceScale: {
         visible: false,
@@ -188,6 +217,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
         secondsVisible: false,
         fixLeftEdge: true,
         fixRightEdge: true,
+        visible: false, // 隐藏时间轴
       },
       handleScroll: {
         mouseWheel: true,
@@ -229,7 +259,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
     });
     candleSeries.setData(candles);
 
-    // 均线
+    // 均线（使用数据库字段）
     const ma10Series = mainChart.addLineSeries({ color: '#5b9bd5', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
     const ma20Series = mainChart.addLineSeries({ color: '#70ad47', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
     const ma120Series = mainChart.addLineSeries({ color: '#ffc107', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
@@ -276,7 +306,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       scaleMargins: { top: 0.1, bottom: 0.1 },
     });
 
-    // 成交量均线
+    // 成交量均线（使用数据库字段）
     const volMa5Series = volumeChart.addLineSeries({ color: '#c586c0', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
     const volMa50Series = volumeChart.addLineSeries({ color: '#5b9bd5', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
     volMa5Series.setData(volMa5Data);
@@ -331,6 +361,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
         visible: false,
         borderVisible: false,
       },
+      timeScale: { ...commonOpts.timeScale, visible: false },
     });
 
     // 格式化 RPS 数据（从data中提取，与K线使用相同日期）
@@ -428,6 +459,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
     const handleCrosshairMove = (param) => {
       if (!param.point) {
         verticalLine.style.display = 'none';
+        crosshairDateLabel.style.display = 'none';
         setHoverData(null);
         // 恢复显示最新数据的标签
         if (candles.length > 0) {
@@ -439,6 +471,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       verticalLine.style.display = 'block';
 
       if (!param.time) {
+        crosshairDateLabel.style.display = 'none';
         setHoverData(null);
         return;
       }
@@ -465,8 +498,16 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
         const chg = prevC ? c.close - prevC.close : 0;
         const chgPct = prevC && prevC.close !== 0 ? (chg / prevC.close * 100) : 0;
 
+        // 更新底部日期+涨幅标签
+        const dateStr = formatDateForDisplay(c.time);
+        const sign = chgPct >= 0 ? '+' : '';
+        const chgColor = chgPct >= 0 ? '#ef5350' : '#26a69a';
+        crosshairDateLabel.innerHTML = `<span>${dateStr}</span> <span style="color:${chgColor};margin-left:4px">${sign}${chgPct.toFixed(2)}%</span>`;
+        crosshairDateLabel.style.left = `${param.point.x}px`;
+        crosshairDateLabel.style.display = 'block';
+
         setHoverData({
-          date: formatDateForDisplay(c.time),
+          date: dateStr,
           open: c.open, high: c.high, low: c.low, close: c.close,
           isUp, chg, chgPct,
           volume: v?.value,
@@ -508,6 +549,8 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       volumeChart.remove();
       macdChart.remove();
       rpsChart.remove();
+      // 清理自定义元素
+      container.querySelectorAll('.crosshair-date-label').forEach(el => el.remove());
     };
   }, [data, height, formatData, rpsData]);
 

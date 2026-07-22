@@ -11,16 +11,54 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
-def is_market_open() -> bool:
-    """判断当前是否是盘中交易时间（9:30-15:00，含午休）"""
+def is_market_open(trade_date: str = None) -> bool:
+    """
+    判断是否是盘中交易时间
+    - 如果 trade_date 是今天：用当前时间判断
+    - 如果 trade_date 是历史日期：盘后（已收盘）
+    """
     now = datetime.now()
+    today_str = now.strftime('%Y%m%d')
+
+    # 如果没有传日期或日期不是今天，认为是盘后
+    if not trade_date or trade_date != today_str:
+        return False
+
     hour = now.hour
     minute = now.minute
     time_in_minutes = hour * 60 + minute
-    
+
     # 盘中时间：9:30(570)-15:00(900)，包含午休时间
     is_during_trading = 570 <= time_in_minutes < 900
     return is_during_trading
+
+
+def is_deepseek_available() -> tuple[bool, str]:
+    """检查当前是否在 DeepSeek API 可用时间窗口内
+    允许时段：12:00-13:00，18:00-23:59
+    如果配置了忽略时间窗口，则始终返回可用
+    返回: (available: bool, message: str)
+    """
+    try:
+        from app.data.db import get_db
+        db = get_db()
+        config = db['system_config'].find_one({'key': 'deepseek_time_limit'})
+        if config and config.get('value') is False:
+            return True, ""
+    except Exception:
+        pass
+
+    now = datetime.now()
+    hour, minute = now.hour, now.minute
+    t = hour * 60 + minute
+    # 12:00(720) - 13:00(780)
+    if 720 <= t < 780:
+        return True, ""
+    # 18:00(1080) - 23:59(1439)
+    if 1080 <= t <= 1439:
+        return True, ""
+
+    return False, f"DeepSeek API 当前不可用，可用时间为 12:00-13:00 或 18:00-23:59（当前 {now.strftime('%H:%M')}）"
 
 SYSTEM_PROMPT = """You are a senior quantitative strategy director who strictly adheres to the trading philosophies of William O'Neil (CANSLIM), Mark Minervini (SEPA/VCP), and Jesse Livermore.
 Your task is to analyze the daily A-share structured market data provided by the user and output a professional, sharp, and highly actionable market wrap-up report.
@@ -31,7 +69,11 @@ Your task is to analyze the daily A-share structured market data provided by the
 3. Maintain a tone that is decisive, cynical of low-quality meme stock pumps, and highly protective of capital during corrections.
 4. All output text MUST be in Chinese (简体中文).
 5. [LANGUAGE STYLE] 尽量少用英文专业术语（如 SEPA、VCP、Pivot Point、CANSLIM 等），用通俗易懂的中文表达。例如说"选股环境好"而不是"SEPA系统选股环境极佳"，说"成交量萎缩后突破"而不是"VCP形态突破"。只在必要时才引用术语并附带中文解释。
-6. [CRITICAL REGULATION] 用户提供的"历史新高个股板块效应聚类"中的行业，是按新高股票数量筛选出的 Top5 强势板块。这些板块今天都有大量个股创出历史新高，属于市场最强方向。你必须认可这些板块的强势地位，不得将它们标记为"弱势板块"、"跟风板块"或建议回避。即使某个板块平均涨幅为负，只要它有大量新高股，就说明该板块内部分化严重但仍有强势龙头，应聚焦龙头而非回避整个板块。你的任务是评估这些板块中谁最强、谁是主线，而不是质疑它们是否强势。
+6. [CRITICAL REGULATION] 用户提供的"新高强力板块"中的行业，是按近新高股票数量筛选出的 Top5 强势板块。这些板块今天都有大量个股创出历史接近新高（当日收盘价>历史最高*0.9），属于市场最强方向。你必须认可这些板块的强势地位，不得将它们标记为"弱势板块"、"跟风板块"或建议回避。即使某个板块平均涨幅为负，只要它有大量近新高股，就说明该板块内部分化严重但仍有强势龙头，应聚焦龙头而非回避整个板块。你的任务是评估这些板块中谁最强、谁是主线，而不是质疑它们是否强势。
+7. [LOW POSITION SECTORS] 用户提供的"低位潜力板块"是经过量化筛选、具备中长期布局价值的板块。这些板块当前处于相对低位（RPS指标显示近期开始走强），但尚未进入主升浪。分析时应关注：哪些低位板块正在出现资金关注迹象、哪些有望成为下一阶段的补涨主线。不要因为它们涨幅不大就忽略，低位布局往往风险收益比更好。
+8. [ACTIVE SECTORS - 异动活跃板块] 用户提供的"异动活跃板块"是当日出现集体异动的板块（大市值个股50%以上涨幅≥3.5%）。这些板块可能代表新的主线正在萌芽。分析时必须重视以下信号：(1) RPS10>85且RPS20>80说明短线动量已扩散至中线，是趋势转折信号而非一日游；(2) 板块内多只个股50日涨幅>30%说明资金已持续介入；(3) 板块名称与新高板块不同但相关（如医药vs新材料），可能是产业链轮动。禁止将RPS走强的异动板块简单定性为"超跌反弹"或"一日游"，必须基于数据判断是情绪脉冲还是趋势转折。
+9. [DYNAMIC POSITION ADJUSTMENT] 仓位动态调整：在评估仓位时，虽然要严格遵循中期均线广度（站上50日线占比），但必须引入“短期动量与赚钱效应”的进攻加权。若数据同时满足以下两个条件：① 1个月/3个月新高差出现显著多头喷发（如1个月新高差接近或超过1000）；② 头部核心资金组（RPS20 95%~100%分位或成交额95%~100%分位）的平均涨幅极强（>4%），说明全市场最顶尖的股票正在疯狂赚钱，主线右侧进攻动量极强。此时必须打破中期广度的保守限制，允许并建议将总仓位区间上限提升至 60% 到 100%，定义为“核心主线右侧主升期”，不可一味盲目恐高。
+10. [涨跌停板规则] 涨跌停幅度因板块而异：主板±10%，创业板/科创板±20%，北交所±30%。判断涨停/跌停必须先看股票代码前缀确定板块，再对比涨幅是否达到阈值。禁止将未触及涨跌停的个股称为"涨停/跌停"。
 
 [STRICT TEXT FORMATTING RULE]
 1. When outputting long text in `market_phase_diagnosis` and `industry_cluster_evaluation`, you MUST highlight important terms using Markdown bold syntax.
@@ -42,12 +84,13 @@ Your task is to analyze the daily A-share structured market data provided by the
 [OUTPUT JSON FORMAT]
 {
     "market_phase_diagnosis": "一精炼段落：从Minervini/Livermore视角分析指数或广度背离，定性当日行情特征。",
-    "industry_cluster_evaluation": "一精炼段落：评估最强产业链，揪出主力建仓铁证。必须基于用户提供的新高板块数据进行分析，不得凭空臆断板块强弱。",
-    "execution_strategy_advice": "数组字符串：基于明日具体执行指令列表（例如：["锁定高位个股风险", "等待回调缩量低吸"]）。",
+    "industry_cluster_evaluation": "一精炼段落：综合评估三类板块——(1)新高强力板块中谁是主线龙头、(2)低位潜力板块中哪些有资金介入迹象值得跟踪、(3)异动活跃板块是超跌反弹还是趋势转折信号。揪出主力建仓铁证，区分真突破与假信号。必须基于用户提供的数据进行分析，不得凭空臆断板块强弱。注意：如果用户未提供某类板块数据（如低位潜力板块或异动活跃板块为空数组），说明该类板块在今日未产生符合条件的数据（即没有板块满足筛选条件），而非数据缺失。此时只需分析有数据的板块即可，不要提及数据缺失。",
+    "execution_strategy_advice": "数组字符串：基于明日具体执行指令列表（例如：[\"锁定高位个股风险\", \"等待回调缩量低吸\"]）。",
     "allocation_and_focus_model": {
-        "recommended_position_range": "基于市场广度、拥挤度、新高数推演的推荐总仓位区间，例如 20% 到 30%",
+        "recommended_position_range": "推荐总仓位区间（仅数字范围，如'0-20%'、'30-50%'、'60-80%'）。必须综合中期均线广度与[DYNAMIC POSITION ADJUSTMENT]规则：若短期主线动量与头部赚钱效应触发加权，应大方给出 60% 到 70% 或 60% 到 80% 的积极进攻仓位；若不触发，则保持 30% 到 50% 的防守仓位。严禁死板机械。",
+        "position_management_commentary": "仓位管理说明（必填）。用1-2句话解释为什么给出这个仓位区间，结合市场状态、均线广度、动量信号等关键因素。例如：'总仓位降低至0-20%，坚决轻仓或空仓回避系统风险。中期均线广度崩溃，且短期无从触发进攻加权，必须采取最高级别的防守策略。' 或 '总仓位提升至60-80%，主线右侧进攻动量极强，头部核心资金组疯狂赚钱，必须果断重仓跟进。'",
         "market_risk_level": "风险评级：低/中低/中/中高/高",
-        "core_target_sectors": ["从用户提供的新高板块中选出的资金集中攻击的核心板块名称数组，最多5个。注意：这里的板块名称必须与输入数据中的名称完全保持一致，严禁自造简称"],
+        "core_target_sectors": ["从用户提供的三种板块（新高强力板块、低位潜力板块、异动活跃板块）中综合选出的核心目标板块名称数组，最多5个。优先选择新高板块中的主线龙头，若异动活跃板块有明确的趋势转折信号也可纳入。注意：板块名称必须与输入数据中的名称完全保持一致，严禁自造简称"],
         "capital_concentration_rule": "操盘手收盘后的核心风控警示（一句话）。"
     }
 }"""
@@ -71,6 +114,12 @@ class DeepSeekAnalyst:
         if not self.api_key:
             logger.warning("[DeepSeek] API Key 未配置，返回降级数据")
             return self._fallback()
+
+        # 检查时间窗口
+        available, msg = is_deepseek_available()
+        if not available:
+            logger.warning(f"[DeepSeek] {msg}")
+            return self._fallback(error_msg=msg)
 
         try:
             import openai
@@ -125,9 +174,9 @@ class DeepSeekAnalyst:
         overview = market_data.get('overview', {})
         new_high = market_data.get('new_high', {})
         trade_date = market_data.get('trade_date', '')
-        
-        # 判断是否是盘中时间
-        is_trading = is_market_open()
+
+        # 判断是否是盘中时间（根据交易日期判断）
+        is_trading = is_market_open(trade_date)
 
         # 从base_data_daily获取量化指标
         try:
@@ -158,7 +207,8 @@ class DeepSeekAnalyst:
         # 交易日标识
         if trade_date:
             formatted_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}" if len(trade_date) == 8 else trade_date
-            msg_parts.append(f"【分析日期】{formatted_date}")
+            market_phase = "盘中" if is_trading else "盘后"
+            msg_parts.append(f"【分析日期】{formatted_date}（{market_phase}）")
             msg_parts.append("")
 
         # 市场概览
@@ -203,39 +253,190 @@ class DeepSeekAnalyst:
                 msg_parts.append("【市场多维分组统计分析】")
                 msg_parts.append(group_stats)
 
-        # 新高板块聚类
+        # 新高板块聚类（当日）
         clusters = new_high.get('clusters', [])[:5]
         if clusters:
             msg_parts.append("")
-            msg_parts.append("【历史新高个股板块效应聚类】")
+            msg_parts.append("【新高强力板块】")
+            msg_parts.append("筛选条件：RPS10+RPS20+RPS50三者之和>250的板块中取当日收盘价>历史最高*0.9的个股（接近新高），按行业聚类统计数量，取Top5")
             for c in clusters:
-                msg_parts.append(f"  {c['industry']}: 涨幅{c.get('chg', 0)}%")
+                chg = c.get('chg_pct', 0) or c.get('chg', 0)
+                rps_info = ""
+                if c.get('rps_10') or c.get('rps_20') or c.get('rps_50'):
+                    rps_parts = []
+                    if c.get('rps_10'):
+                        rps_parts.append(f"RPS10={c['rps_10']}")
+                    if c.get('rps_20'):
+                        rps_parts.append(f"RPS20={c['rps_20']}")
+                    if c.get('rps_50'):
+                        rps_parts.append(f"RPS50={c['rps_50']}")
+                    rps_info = f", {', '.join(rps_parts)}"
+                count_info = f"(创250日近新高{c.get('count', 0)}个)"
+                msg_parts.append(f"  {c['industry']}{count_info}: 涨幅{chg}%{rps_info}")
                 pioneer = c.get('pioneer', [])
                 main_force = c.get('main_force', [])
                 followers = c.get('followers', [])
                 if pioneer:
                     msg_parts.append(f"    先锋(50日涨幅最高): {', '.join(pioneer)}")
                 if main_force:
-                    msg_parts.append(f"    中军(市值最大+50日涨幅最高): {', '.join(main_force)}")
+                    msg_parts.append(f"    中军(流通市值Top10+50日涨幅最高): {', '.join(main_force)}")
                 if followers:
                     msg_parts.append(f"    后排(低价+当天涨幅): {', '.join(followers)}")
+
+        # 前四天新高强力板块（包含历史数据和今日数据对比）
+        if trade_date:
+            try:
+                from app.data.db import get_db
+                db = get_db()
+
+                # 获取交易日列表
+                all_dates = sorted(db['market_daily'].distinct('trade_date'), reverse=True)
+                # 找到当前日期之前的4个交易日
+                prev_dates = [d for d in all_dates if d < trade_date][:4]
+
+                if prev_dates:
+                    # 收集所有历史板块名称，用于批量查询今日数据
+                    all_sector_names = set()
+                    hist_data = []
+                    for d in reversed(prev_dates):
+                        doc = db['market_daily'].find_one({'trade_date': d}, {'_id': 0, 'new_high': 1})
+                        if doc and doc.get('new_high', {}).get('clusters'):
+                            clusters = doc['new_high']['clusters'][:5]
+                            hist_data.append((d, clusters))
+                            for c in clusters:
+                                all_sector_names.add(c.get('industry', ''))
+                        else:
+                            hist_data.append((d, []))
+
+                    # 从 sector_basics 获取名称到代码的映射
+                    name_to_code = {}
+                    code_to_name = {}
+                    for sb in db['sector_basics'].find({'name': {'$in': list(all_sector_names)}}, {'_id': 0, 'code': 1, 'name': 1}):
+                        name_to_code[sb['name']] = sb['code']
+                        code_to_name[sb['code']] = sb['name']
+
+                    # 从 sector_daily 查询今日这些板块的涨跌幅和RPS
+                    today_sector_data = {}
+                    if name_to_code:
+                        codes = list(name_to_code.values())
+                        sector_docs = db['sector_daily'].find(
+                            {'trade_date': trade_date, 'stock_code': {'$in': codes}},
+                            {'_id': 0, 'stock_code': 1, 'chg_pct': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
+                        )
+                        for sd in sector_docs:
+                            name = code_to_name.get(sd['stock_code'], '')
+                            if name:
+                                today_sector_data[name] = sd
+
+                    msg_parts.append("")
+                    msg_parts.append("【近4日新高强力板块变化趋势】")
+                    for d, clusters in hist_data:
+                        formatted_date = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+                        cluster_strs = []
+                        for c in clusters:
+                            name = c.get('industry', '')
+                            chg = c.get('chg_pct', 0) or c.get('chg', 0)
+                            rps_parts = []
+                            if c.get('rps_10'):
+                                rps_parts.append(f"RPS10={c['rps_10']}")
+                            if c.get('rps_20'):
+                                rps_parts.append(f"RPS20={c['rps_20']}")
+                            if c.get('rps_50'):
+                                rps_parts.append(f"RPS50={c['rps_50']}")
+                            rps_str = ', '.join(rps_parts) if rps_parts else ''
+
+                            # 从 sector_daily 查询今日数据
+                            today_sd = today_sector_data.get(name)
+                            today_str = ''
+                            if today_sd:
+                                today_rps = []
+                                if today_sd.get('rps_10'):
+                                    today_rps.append(f"RPS10={today_sd['rps_10']}")
+                                if today_sd.get('rps_20'):
+                                    today_rps.append(f"RPS20={today_sd['rps_20']}")
+                                if today_sd.get('rps_50'):
+                                    today_rps.append(f"RPS50={today_sd['rps_50']}")
+                                today_rps_str = ', '.join(today_rps) if today_rps else ''
+                                today_str = f"(今日: 涨幅{today_sd.get('chg_pct', 0)}%, {today_rps_str})"
+
+                            cluster_strs.append(f"{name}: 涨幅{chg}%, {rps_str}{today_str}")
+                        msg_parts.append(f"  {formatted_date}: {'; '.join(cluster_strs)}")
+            except Exception as e:
+                logger.warning(f"获取历史新高板块失败: {e}")
 
         # 低位潜力板块
         lps = market_data.get('low_position_sectors', [])[:5]
         if lps:
             msg_parts.append("")
             msg_parts.append("【低位潜力板块】")
+            msg_parts.append("筛选条件：MA10>MA20 + RPS10>85(短线爆发力) + RPS50<70(长线低位) + 近3天有1天以上≥15%个股创20日新高 + 近5天有4天净新高>-10")
             for s in lps:
-                msg_parts.append(f"  {s['name']}: 涨幅{s.get('chg_pct', 0)}%, RPS10={s.get('rps_10', 0)}, RPS50={s.get('rps_50', 0)}, MA10={s.get('ma10', 0)}/MA20={s.get('ma20', 0)}")
+                count_info = f"(创20日近新高{s.get('count', 0)}个)"
+                msg_parts.append(f"  {s['name']}{count_info}: 涨幅{s.get('chg_pct', 0)}%, RPS10={s.get('rps_10', 0)}, RPS20={s.get('rps_20', 0)}, RPS50={s.get('rps_50', 0)}")
                 pioneer = s.get('pioneer', [])
                 main_force = s.get('main_force', [])
                 followers = s.get('followers', [])
                 if pioneer:
                     msg_parts.append(f"    先锋(50日涨幅最高): {', '.join(pioneer)}")
                 if main_force:
-                    msg_parts.append(f"    中军(市值最大+50日涨幅最高): {', '.join(main_force)}")
+                    msg_parts.append(f"    中军(流通市值Top10+50日涨幅最高): {', '.join(main_force)}")
                 if followers:
                     msg_parts.append(f"    后排(低价+当天涨幅): {', '.join(followers)}")
+
+        # 异动活跃板块
+        active = market_data.get('active_sectors', [])[:5]
+        if active:
+            msg_parts.append("")
+            msg_parts.append("【异动活跃板块】")
+            msg_parts.append("筛选条件：板块中大市值(流通市值Top20%)个股，50%以上今日涨幅≥3.5%，且涨幅≥6%不检查量能、涨幅<6%需放量(量比≥1.5)")
+            for s in active:
+                rps_info = ""
+                if s.get('rps_10') or s.get('rps_20') or s.get('rps_50'):
+                    rps_parts = []
+                    if s.get('rps_10'):
+                        rps_parts.append(f"RPS10={s['rps_10']}")
+                    if s.get('rps_20'):
+                        rps_parts.append(f"RPS20={s['rps_20']}")
+                    if s.get('rps_50'):
+                        rps_parts.append(f"RPS50={s['rps_50']}")
+                    rps_info = f", {', '.join(rps_parts)}"
+                count_info = f"(创50日近新高{s.get('count', 0)}个)"
+                msg_parts.append(f"  {s['name']}{count_info}: 涨幅{s.get('chg_pct', 0)}%{rps_info}")
+                pioneer = s.get('pioneer', [])
+                main_force = s.get('main_force', [])
+                followers = s.get('followers', [])
+                if pioneer:
+                    msg_parts.append(f"    先锋(50日涨幅最高): {', '.join(pioneer)}")
+                if main_force:
+                    msg_parts.append(f"    中军(流通市值Top10+50日涨幅最高): {', '.join(main_force)}")
+                if followers:
+                    msg_parts.append(f"    后排(低价+当天涨幅): {', '.join(followers)}")
+
+        # 板块四维动量气泡图数据（RPS20>85 的板块）
+        try:
+            from app.data.db import get_db
+            db = get_db()
+            trade_date = market_data.get('trade_date', '')
+            if trade_date:
+                high_rps_sectors = list(db['sector_daily'].find(
+                    {'trade_date': trade_date, 'rps_20': {'$gt': 85}},
+                    {'_id': 0, 'stock_code': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'chg_pct': 1, 'chg_5d': 1, 'chg_20d': 1}
+                ).sort('rps_20', -1))
+                if high_rps_sectors:
+                    basics = {b['code']: b['name'] for b in db['sector_basics'].find({}, {'_id': 0, 'code': 1, 'name': 1})}
+                    msg_parts.append("")
+                    msg_parts.append("【板块四维动量气泡图】（RPS20>85 的强势板块，按RPS20降序）")
+                    msg_parts.append("  四维指标: RPS20(中期动量) RPS10(短期动量) 当日涨幅 5日涨幅")
+                    msg_parts.append(f"  共 {len(high_rps_sectors)} 个板块:")
+                    for s in high_rps_sectors:
+                        name = basics.get(s['stock_code'], s['stock_code'])
+                        rps20 = s.get('rps_20', 0)
+                        rps10 = s.get('rps_10', 0)
+                        chg = s.get('chg_pct', 0) or 0
+                        chg5 = s.get('chg_5d', 0) or 0
+                        msg_parts.append(f"    {name}: RPS20={rps20}, RPS10={rps10}, 涨幅={chg:+.1f}%, 5日={chg5:+.1f}%")
+        except Exception as e:
+            logger.warning(f"[DeepSeek] 板块四维动量数据获取失败: {e}")
 
         return '\n'.join(msg_parts)
 
@@ -331,12 +532,13 @@ class DeepSeekAnalyst:
             logger.warning(f"[DeepSeek] 计算分组统计失败: {e}")
             return ''
 
-    def _fallback(self) -> Dict[str, Any]:
+    def _fallback(self, error_msg: str = None) -> Dict[str, Any]:
         """降级返回（API不可用时）"""
+        msg = error_msg or '系统分析服务暂时不可用，请稍后重试。'
         return {
-            'market_phase_diagnosis': '系统分析服务暂时不可用，请稍后重试。',
-            'industry_cluster_evaluation': '系统分析服务暂时不可用，请稍后重试。',
-            'execution_strategy_advice': ['系统繁忙中，请稍后刷新查看分析结果。'],
+            'market_phase_diagnosis': msg,
+            'industry_cluster_evaluation': msg,
+            'execution_strategy_advice': [msg],
         }
 
 

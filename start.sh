@@ -1,7 +1,7 @@
 #!/bin/bash
 # 启动脚本 - 启动前后端服务
 
-echo "🚀 启动 YuQuant 服务..."
+echo "🚀 启动 A股量化系统 服务..."
 
 # 检查是否已在运行（仅检查 LISTEN 状态，忽略 TIME_WAIT）
 BACKEND_PID=$(lsof -ti:8000 -sTCP:LISTEN 2>/dev/null || true)
@@ -11,7 +11,7 @@ else
     echo "📦 启动后端服务..."
     cd "$(dirname "$0")"
     source venv/bin/activate
-    nohup python -m uvicorn app.server.main:app --host 0.0.0.0 --port 8000 --reload > logs/backend.log 2>&1 &
+    nohup python -m uvicorn app.server.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 30 > logs/backend.log 2>&1 &
     sleep 4
     if lsof -ti:8000 > /dev/null 2>&1; then
         echo "✅ 后端服务启动成功 (http://localhost:8000)"

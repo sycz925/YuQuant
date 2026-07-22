@@ -1,29 +1,47 @@
-import React, { useState, useEffect, useRef } from 'react'
-import { Routes, Route, Link, useLocation } from 'react-router-dom'
-import { Drawer, Button, Menu, message, Modal, Checkbox } from 'antd'
-import { MenuOutlined, CameraOutlined } from '@ant-design/icons'
-import { toPng } from 'html-to-image'
-import MarketMonitor from './pages/MarketMonitor'
+import React, { useState, useEffect, useCallback } from 'react'
+import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
+import { Button, message, Tag, Tooltip, notification } from 'antd'
+import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined } from '@ant-design/icons'
+import CalendarReview from './pages/CalendarReview'
+import ReviewDetail from './pages/ReviewDetail'
 import StockAnalysis from './pages/StockAnalysis'
+import SearchPage from './pages/SearchPage'
 import TestIndexChart from './pages/TestIndexChart'
 import Settings from './pages/Settings'
 import MarketAnalysis from './pages/MarketAnalysis'
+import MarketMonitor from './pages/MarketMonitor'
 import ErrorBoundary from './components/ErrorBoundary'
-import { healthApi } from './api'
-
-export const ScreenshotContext = React.createContext(null)
+import { healthApi, oneClickUpdateApi, taskApi } from './api'
 
 function App() {
   const location = useLocation()
-  const [isHealthy, setIsHealthy] = useState(true)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [screenshotLoading, setScreenshotLoading] = useState(false)
-  const screenshotRef = useRef(null)
+  const navigate = useNavigate()
+  const [isHealthy, setIsHealthy] = useState(false)
 
-  // 截图选择弹窗状态
-  const [screenshotModalOpen, setScreenshotModalOpen] = useState(false)
-  const [screenshotSections, setScreenshotSections] = useState([])
-  const [selectedSections, setSelectedSections] = useState([])
+  // 一键更新状态
+  const [oneClickRunning, setOneClickRunning] = useState(false)
+  const [latestTradeDate, setLatestTradeDate] = useState(null)
+
+  // 从后端检查是否允许同步
+  const [updateAllowed, setUpdateAllowed] = useState(true)
+  const [syncTimeMessage, setSyncTimeMessage] = useState('')
+
+  const checkSyncTime = async () => {
+    try {
+      const res = await oneClickUpdateApi.checkSyncTime()
+      setUpdateAllowed(res.allowed)
+      setSyncTimeMessage(res.message || '')
+    } catch (e) {
+      setUpdateAllowed(false)
+      setSyncTimeMessage('检查同步时间失败')
+    }
+  }
+
+  useEffect(() => {
+    checkSyncTime()
+    const timer = setInterval(checkSyncTime, 60000)
+    return () => clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     checkHealth()
@@ -31,263 +49,209 @@ function App() {
     return () => clearInterval(timer)
   }, [])
 
-  useEffect(() => {
-    setDrawerOpen(false)
-  }, [location.pathname])
-
   const checkHealth = async () => {
     try {
-      await healthApi.check()
+      const res = await healthApi.check()
       setIsHealthy(true)
+      if (res?.latest_trade_date) {
+        setLatestTradeDate(res.latest_trade_date)
+      }
     } catch (e) {
       setIsHealthy(false)
     }
   }
 
-  const navItems = [
-    { path: '/', name: '市场监控', icon: '📊' },
-    { path: '/market-analysis', name: '市场分析', icon: '🔬' },
-    { path: '/analysis', name: '行情分析', icon: '📈' },
-    { path: '/settings', name: '数据管理', icon: '⚙️' }
-  ]
-
-  // 点击截图按钮 → 扫描当前页面区块 → 弹窗
-  const handleScreenshot = () => {
-    if (!screenshotRef.current) {
-      message.warning('未找到截图区域')
-      return
-    }
-    const sections = screenshotRef.current.querySelectorAll('[data-section]')
-    if (sections.length === 0) {
-      message.warning('当前页面没有可选区块')
-      return
-    }
-    const sectionList = Array.from(sections).map(el => ({
-      name: el.getAttribute('data-section'),
-      el,
-    }))
-    setScreenshotSections(sectionList)
-    setSelectedSections(sectionList.map(s => s.name))
-    setScreenshotModalOpen(true)
-  }
-
-  // 弹窗确认 → 隐藏未选区块 → 截图 → 恢复
-  const handleScreenshotConfirm = async () => {
-    if (selectedSections.length === 0) {
-      message.warning('请至少选择一个区块')
-      return
-    }
-    setScreenshotModalOpen(false)
-    setScreenshotLoading(true)
-
-    const hiddenEls = []
+  // 一键更新：使用统一任务接口 + notification显示进度
+  const handleOneClickUpdate = async () => {
+    if (oneClickRunning) return
+    
+    // 启动更新
     try {
-      // 隐藏未选中的区块
-      screenshotSections.forEach(s => {
-        if (!selectedSections.includes(s.name)) {
-          s.el.style.display = 'none'
-          hiddenEls.push(s.el)
+      const res = await oneClickUpdateApi.start()
+      if (!res?.success) {
+        message.warning(res?.message || '无法启动更新')
+        return
+      }
+      
+      setOneClickRunning(true)
+      
+      // 如果任务已在运行，直接显示当前进度
+      const key = 'update-progress'
+      if (res.already_running) {
+        // 使用统一任务查询获取当前状态
+        const taskStatus = await taskApi.getTaskStatus(res.task_id)
+        const stepText = taskStatus.total_count > 0 ? `[${taskStatus.completed_count}/${taskStatus.total_count}]` : ''
+        notification.info({
+          message: '更新任务正在进行中',
+          description: `${stepText} ${taskStatus.current_stock_name || '处理中...'}`,
+          duration: 0,
+          key,
+          closable: false,
+        })
+      } else {
+        // 显示开始通知
+        notification.info({
+          message: '一键更新已启动',
+          description: '正在准备...',
+          duration: 0,
+          key,
+          closable: false,
+        })
+      }
+
+      // 轮询进度
+      const pollInterval = setInterval(async () => {
+        try {
+          const status = await taskApi.getTaskStatus(res.task_id)
+
+          if (status.status === 'failed') {
+            notification.error({
+              message: '更新失败',
+              description: status.message || '未知错误',
+              duration: 0,
+              key,
+              closable: true,
+            })
+            clearInterval(pollInterval)
+            setOneClickRunning(false)
+            return
+          }
+
+          if (status.status === 'completed') {
+            notification.success({
+              message: '一键更新完成',
+              description: '数据已同步，RPS/PE已计算，基础数据已更新，请手动刷新页面',
+              duration: 0,
+              key,
+              closable: true,
+            })
+            clearInterval(pollInterval)
+            setOneClickRunning(false)
+            checkHealth()
+            return
+          }
+
+          if (status.status !== 'running') {
+            clearInterval(pollInterval)
+            setOneClickRunning(false)
+            return
+          }
+
+          // 更新进度通知（进行中不显示关闭按钮）
+          // 从 steps 数组计算进度
+          const steps2 = status.steps || []
+          const totalSteps2 = steps2.length
+          const completedSteps2 = steps2.filter(s => s.status === 'completed').length
+          const stepText2 = totalSteps2 > 0 ? `[${completedSteps2}/${totalSteps2}]` : ''
+          const currentStep2 = steps2[status.current_step]
+          const stepName2 = currentStep2 ? currentStep2.name : '处理中...'
+          notification.info({
+            message: `一键更新 ${stepText2}`,
+            description: stepName2,
+            duration: 0,
+            key,
+            closable: false,
+          })
+          
+        } catch (e) {
+          console.error('轮询进度失败:', e)
         }
-      })
-
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      const element = screenshotRef.current
-      const imageData = await toPng(element, {
-        pixelRatio: 2,
-        backgroundColor: '#ffffff',
-        skipAutoScale: true,
-        style: { overflow: 'visible' },
-      })
-
-      const res = await fetch('/api/screenshot/compress', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_data: imageData, max_size_kb: 500 }),
-      })
-
-      if (!res.ok) throw new Error('压缩失败')
-
-      const blob = await res.blob()
-      const sizeKB = Math.round(blob.size / 1024)
-
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-      const pageName = location.pathname === '/' ? '市场监控' :
-                       location.pathname === '/market-analysis' ? '市场分析' :
-                       location.pathname === '/analysis' ? '行情分析' : '页面'
-      link.download = `${pageName}_${date}.jpg`
-      link.href = url
-      link.click()
-      URL.revokeObjectURL(url)
-
-      message.success(`截图已保存 (${sizeKB}KB)`)
-    } catch (err) {
-      console.error('截图失败:', err)
-      message.error('截图失败，请重试')
-    } finally {
-      // 恢复被隐藏的区块
-      hiddenEls.forEach(el => { el.style.display = '' })
-      setScreenshotLoading(false)
+      }, 3000)
+      
+    } catch (e) {
+      console.error('启动更新失败:', e)
+      message.error('启动更新失败')
+      setOneClickRunning(false)
     }
-  }
-
-  const handleSelectAll = (checked) => {
-    setSelectedSections(checked ? screenshotSections.map(s => s.name) : [])
   }
 
   return (
-    <ScreenshotContext.Provider value={screenshotRef}>
     <div className="min-h-screen bg-gray-50">
       {/* 固定顶部导航栏 */}
       <nav className="fixed top-0 left-0 right-0 bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg z-50">
         <div className="max-w-7xl mx-auto px-3 md:px-4">
-          <div className="flex items-center justify-between h-14 md:h-16">
+          <div className="flex items-center justify-between h-12 sm:h-14 md:h-16">
+            {/* 左侧：Logo */}
             <div className="flex items-center space-x-2">
-              <span className="text-xl md:text-2xl">📊</span>
-              <span className="text-lg md:text-xl font-bold">A股量化系统</span>
+              <Link to="/" className="flex items-center space-x-1.5 sm:space-x-2 hover:opacity-80 transition-opacity">
+                <span className="text-lg sm:text-xl md:text-2xl">📊</span>
+                <span className="text-base sm:text-lg md:text-xl font-bold">A股量化</span>
+              </Link>
+            </div>
+
+            {/* 右侧：搜索 + 设置 + 一键更新 + 状态 */}
+            <div className="flex items-center space-x-1 sm:space-x-2 md:space-x-3">
+              {/* 搜索图标按钮 */}
               <Button
                 type="text"
-                icon={<CameraOutlined />}
-                onClick={handleScreenshot}
-                loading={screenshotLoading}
-                className="text-white/80 hover:text-white hover:bg-white/10 ml-2"
+                icon={<SearchOutlined />}
+                onClick={() => navigate('/search')}
+                className="text-white/80 hover:text-white hover:bg-white/10"
                 size="small"
               />
-            </div>
 
-            {/* 桌面端导航 */}
-            <div className="hidden md:flex items-center space-x-1">
-              {navItems.map(item => (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`px-4 py-2 rounded-lg transition-colors flex items-center space-x-1 ${
-                    location.pathname === item.path
-                      ? 'bg-white/20 text-white'
-                      : 'hover:bg-white/10'
-                  }`}
+              {/* 设置按钮 */}
+              <Tooltip title="管理指数、个股和板块">
+                <Button
+                  type="text"
+                  icon={<SettingOutlined />}
+                  onClick={() => navigate('/settings')}
+                  className="text-white/80 hover:text-white hover:bg-white/10"
+                  size="small"
                 >
-                  <span>{item.icon}</span>
-                  <span>{item.name}</span>
-                </Link>
-              ))}
-              <div className={`ml-4 flex items-center space-x-1 px-3 py-1 rounded-full ${
-                isHealthy ? 'bg-green-500/20' : 'bg-red-500/20'
-              }`}>
-                <span className={`w-2 h-2 rounded-full ${
-                  isHealthy ? 'bg-green-400' : 'bg-red-400'
-                }`}></span>
-                <span className="text-sm">
-                  {isHealthy ? '在线' : '离线'}
-                </span>
-              </div>
-            </div>
+                  <span className="hidden md:inline">设置</span>
+                </Button>
+              </Tooltip>
 
-            {/* 移动端：汉堡菜单 + 状态指示 */}
-            <div className="flex md:hidden items-center space-x-3">
-              <div className={`flex items-center space-x-1 px-2 py-0.5 rounded-full text-xs ${
+              {/* 一键更新按钮 */}
+              <Tooltip title={
+                oneClickRunning ? '更新进行中...' :
+                !updateAllowed ? syncTimeMessage || '当前不在同步时间窗口' :
+                '同步数据 → 计算RPS/PE → 同步基础数据'
+              }>
+                <Button
+                  type="primary"
+                  icon={<SyncOutlined />}
+                  loading={oneClickRunning}
+                  disabled={!updateAllowed && !oneClickRunning}
+                  onClick={handleOneClickUpdate}
+                  className={`!bg-white/20 !border-white/30 hover:!bg-white/30 !px-2 sm:!px-4 ${!updateAllowed && !oneClickRunning ? 'opacity-40 cursor-not-allowed' : ''}`}
+                  size="small"
+                >
+                  <span className="hidden md:inline">{oneClickRunning ? '更新中...' : '一键更新'}</span>
+                </Button>
+              </Tooltip>
+
+              {/* 健康状态 - 移动端只显示圆点 */}
+              <div className={`flex items-center space-x-1 px-1.5 sm:px-2 md:px-3 py-0.5 md:py-1 rounded-full text-xs md:text-sm ${
                 isHealthy ? 'bg-green-500/20' : 'bg-red-500/20'
               }`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${
+                <span className={`w-1.5 md:w-2 h-1.5 md:h-2 rounded-full ${
                   isHealthy ? 'bg-green-400' : 'bg-red-400'
                 }`}></span>
-                <span>{isHealthy ? '在线' : '离线'}</span>
+                <span className="hidden md:inline">{isHealthy ? '在线' : '离线'}</span>
               </div>
-              <Button
-                type="text"
-                icon={<MenuOutlined />}
-                onClick={() => setDrawerOpen(true)}
-                className="text-white border-white/30 hover:bg-white/10"
-              />
             </div>
           </div>
         </div>
       </nav>
 
-      {/* 移动端抽屉导航 */}
-      <Drawer
-        title={
-          <div className="flex items-center space-x-2">
-            <span className="text-xl">📊</span>
-            <span className="font-bold">A股量化系统</span>
-          </div>
-        }
-        placement="right"
-        onClose={() => setDrawerOpen(false)}
-        open={drawerOpen}
-        size="default"
-        className="md:hidden"
-      >
-        <div className="space-y-2">
-          {navItems.map(item => (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={`flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
-                location.pathname === item.path
-                  ? 'bg-blue-50 text-blue-600 font-semibold'
-                  : 'hover:bg-gray-50 text-gray-700'
-              }`}
-            >
-              <span className="text-lg">{item.icon}</span>
-              <span>{item.name}</span>
-            </Link>
-          ))}
-        </div>
-      </Drawer>
-
-      {/* 截图选择弹窗 */}
-      <Modal
-        title="选择截图区块"
-        open={screenshotModalOpen}
-        onOk={handleScreenshotConfirm}
-        onCancel={() => setScreenshotModalOpen(false)}
-        okText="生成截图"
-        cancelText="取消"
-        destroyOnClose
-      >
-        <div className="py-2">
-          <div className="mb-3 pb-2 border-b border-gray-100">
-            <Checkbox
-              checked={selectedSections.length === screenshotSections.length}
-              indeterminate={selectedSections.length > 0 && selectedSections.length < screenshotSections.length}
-              onChange={(e) => handleSelectAll(e.target.checked)}
-            >
-              全选
-            </Checkbox>
-          </div>
-          <Checkbox.Group
-            value={selectedSections}
-            onChange={setSelectedSections}
-            className="flex flex-col gap-2"
-          >
-            {screenshotSections.map(s => (
-              <Checkbox key={s.name} value={s.name} className="text-sm">
-                {s.name}
-              </Checkbox>
-            ))}
-          </Checkbox.Group>
-        </div>
-      </Modal>
-
       {/* 主内容区 - 给顶部导航留出空间 */}
-      <main className="max-w-7xl mx-auto px-3 md:px-4 pt-16 md:pt-24 pb-6 md:pb-8">
+      <main className="max-w-7xl mx-auto px-2 sm:px-3 md:px-4 pt-14 sm:pt-16 md:pt-20 pb-6 md:pb-8">
         <ErrorBoundary>
-          <div ref={screenshotRef}>
-            <Routes>
-              <Route path="/" element={<MarketMonitor />} />
-              <Route path="/market-analysis" element={<MarketAnalysis />} />
-              <Route path="/analysis" element={<StockAnalysis />} />
-              <Route path="/test-index" element={<TestIndexChart />} />
-              <Route path="/settings" element={<Settings />} />
-            </Routes>
-          </div>
+          <Routes>
+            <Route path="/" element={<CalendarReview latestTradeDate={latestTradeDate} />} />
+            <Route path="/review/:date" element={<ReviewDetail latestTradeDate={latestTradeDate} />} />
+            <Route path="/analysis" element={<StockAnalysis />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="/market-monitor" element={<MarketMonitor />} />
+            <Route path="/market-analysis" element={<MarketAnalysis />} />
+            <Route path="/test-index" element={<TestIndexChart />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
         </ErrorBoundary>
       </main>
     </div>
-    </ScreenshotContext.Provider>
   )
 }
 

@@ -45,7 +45,7 @@ MARKET_SH = 1
 MARKET_SZ = 0
 
 # 连接池配置
-CONNECTION_POOL_SIZE = 8  # 连接池大小
+CONNECTION_POOL_SIZE = 16  # 连接池大小，匹配线程池
 _connection_pool = Queue(maxsize=CONNECTION_POOL_SIZE)
 _pool_lock = threading.Lock()
 _pool_initialized = False
@@ -111,6 +111,61 @@ def _return_connection(api):
             api.disconnect()
         except Exception:
             pass
+
+
+def _get_connection_for_liutong():
+    """获取连接用于批量获取流通股本（不在连接池中，用完关闭）"""
+    api = TdxHq_API()
+    for host, port in TDX_SERVERS:
+        try:
+            if api.connect(host, port, time_out=5):
+                return api
+        except Exception:
+            continue
+    return None
+
+
+def _create_new_connection():
+    """创建新连接，遍历所有服务器IP"""
+    for host, port in TDX_SERVERS:
+        api = TdxHq_API()
+        try:
+            if api.connect(host, port, time_out=5):
+                return api
+        except Exception:
+            continue
+    return None
+
+
+def _retry_with_new_connection(func, *args, max_retries=2, **kwargs):
+    """
+    带重试的连接执行器
+    超时或连接失败时，自动切换IP重试
+    """
+    for attempt in range(max_retries):
+        api = _get_connection()
+        if not api:
+            # 无法获取连接，尝试创建新连接
+            api = _create_new_connection()
+        if not api:
+            return None
+
+        try:
+            result = func(api, *args, **kwargs)
+            _return_connection(api)
+            return result
+        except Exception as e:
+            # 连接超时或失效，关闭当前连接
+            try:
+                api.disconnect()
+            except Exception:
+                pass
+
+            if attempt < max_retries - 1:
+                # 还有重试次数，创建新连接（会遍历其他IP）
+                continue
+            else:
+                return None
 
 
 class PytdxSource:
@@ -296,63 +351,89 @@ class PytdxSource:
     # -------------------- 板块列表获取 --------------------
 
     @staticmethod
+    def _fetch_block_file(api, filename):
+        """内部函数：从指定连接获取板块文件"""
+        data = PytdxSource._download_block_file(api, filename)
+        if not data:
+            return None
+        blocks = PytdxSource._parse_block_file(data)
+        return blocks
+
+    @staticmethod
     def get_concept_blocks() -> Optional[List[Dict]]:
         """获取概念板块列表 + 成分股"""
         if not HAS_PYTDX:
             return None
-        api = _get_connection()
-        if not api:
-            return None
-        try:
-            data = PytdxSource._download_block_file(api, 'block_gn.dat')
-            if not data:
-                return None
-            blocks = PytdxSource._parse_block_file(data)
-            return blocks
-        except Exception:
-            return None
-        finally:
-            _return_connection(api)
+        return _retry_with_new_connection(
+            PytdxSource._fetch_block_file, 'block_gn.dat', max_retries=3
+        )
 
     @staticmethod
     def get_industry_blocks() -> Optional[List[Dict]]:
         """获取行业板块列表 + 成分股"""
         if not HAS_PYTDX:
             return None
-        api = _get_connection()
-        if not api:
-            return None
-        try:
-            data = PytdxSource._download_block_file(api, 'block_zs.dat')
-            if not data:
-                return None
-            blocks = PytdxSource._parse_block_file(data)
-            return blocks
-        except Exception:
-            return None
-        finally:
-            _return_connection(api)
+        return _retry_with_new_connection(
+            PytdxSource._fetch_block_file, 'block_zs.dat', max_retries=3
+        )
 
     @staticmethod
     def get_style_blocks() -> Optional[List[Dict]]:
         """获取风格板块列表 + 成分股"""
         if not HAS_PYTDX:
             return None
-        api = _get_connection()
-        if not api:
-            return None
-        try:
-            data = PytdxSource._download_block_file(api, 'block_fg.dat')
-            if not data:
-                return None
-            blocks = PytdxSource._parse_block_file(data)
-            return blocks
-        except Exception:
-            return None
-        finally:
-            _return_connection(api)
+        return _retry_with_new_connection(
+            PytdxSource._fetch_block_file, 'block_fg.dat', max_retries=3
+        )
 
     # -------------------- 板块指数日线获取 --------------------
+
+    @staticmethod
+    def _fetch_index_daily(api, tdx_code, market, start_date, end_date, max_bars):
+        """内部函数：从指定连接获取板块指数日线数据"""
+        all_bars = []
+        # 每次最多 800 条，循环获取，限制最大数量
+        for start in range(0, max_bars, 800):
+            bars = api.get_index_bars(9, market, tdx_code, start, 800)
+            if not bars:
+                break
+            all_bars.extend(bars)
+            if len(bars) < 800:
+                break
+
+        if not all_bars:
+            return None
+
+        df = api.to_df(all_bars)
+        if df.empty:
+            return None
+
+        # 转换列名
+        if 'datetime' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['datetime']).dt.strftime('%Y%m%d')
+        else:
+            df['trade_date'] = pd.to_datetime(
+                df.apply(lambda r: f"{int(r.get('year', 2020))}-{int(r.get('month', 1)):02d}-{int(r.get('day', 1)):02d}",
+                         axis=1)).dt.strftime('%Y%m%d')
+
+        # 统一字段名
+        rename_map = {
+            'open': 'open',
+            'close': 'close',
+            'high': 'high',
+            'low': 'low',
+            'vol': 'vol',
+            'amount': 'amount',
+        }
+        df = df.rename(columns=rename_map)
+
+        # 筛选日期范围
+        df = df[df['trade_date'] >= start_date].copy()
+        if end_date:
+            df = df[df['trade_date'] <= str(end_date)].copy()
+        df = df[['trade_date', 'open', 'close', 'high', 'low', 'vol', 'amount']].copy()
+        df['code'] = tdx_code
+        return df
 
     @staticmethod
     def get_tdx_index_daily(tdx_code: str, market: int = 1,
@@ -369,57 +450,11 @@ class PytdxSource:
         """
         if not HAS_PYTDX or not HAS_PANDAS:
             return None
-        api = _get_connection()
-        if not api:
-            return None
-        try:
-            all_bars = []
-            # 每次最多 800 条，循环获取，限制最大数量
-            for start in range(0, max_bars, 800):
-                bars = api.get_index_bars(9, market, tdx_code, start, 800)
-                if not bars:
-                    break
-                all_bars.extend(bars)
-                if len(bars) < 800:
-                    break
-
-            if not all_bars:
-                return None
-
-            df = api.to_df(all_bars)
-            if df.empty:
-                return None
-
-            # 转换列名
-            if 'datetime' in df.columns:
-                df['trade_date'] = pd.to_datetime(df['datetime']).dt.strftime('%Y%m%d')
-            else:
-                df['trade_date'] = pd.to_datetime(
-                    df.apply(lambda r: f"{int(r.get('year', 2020))}-{int(r.get('month', 1)):02d}-{int(r.get('day', 1)):02d}",
-                             axis=1)).dt.strftime('%Y%m%d')
-
-            # 统一字段名
-            rename_map = {
-                'open': 'open',
-                'close': 'close',
-                'high': 'high',
-                'low': 'low',
-                'vol': 'vol',
-                'amount': 'amount',
-            }
-            df = df.rename(columns=rename_map)
-
-            # 筛选日期范围
-            df = df[df['trade_date'] >= start_date].copy()
-            if end_date:
-                df = df[df['trade_date'] <= str(end_date)].copy()
-            df = df[['trade_date', 'open', 'close', 'high', 'low', 'vol', 'amount']].copy()
-            df['code'] = tdx_code
-            return df
-        except Exception:
-            return None
-        finally:
-            _return_connection(api)
+        # 使用重试机制，超时自动切换IP
+        return _retry_with_new_connection(
+            PytdxSource._fetch_index_daily, tdx_code, market, start_date, end_date, max_bars,
+            max_retries=3
+        )
 
     # -------------------- 个股日线获取 --------------------
 
@@ -434,10 +469,9 @@ class PytdxSource:
             return None
         # 市场推断：6 开头为沪市，其他为深市
         market = MARKET_SH if stock_code.startswith(('6', '8', '9')) else MARKET_SZ
-        api = _get_connection()
-        if not api:
-            return None
-        try:
+
+        def _fetch_stock_daily(api, stock_code, start_date, end_date, market):
+            """内部函数：从指定连接获取股票日线数据"""
             all_bars = []
             for start in range(0, 10000, 800):
                 bars = api.get_security_bars(9, market, stock_code, start, 800)
@@ -475,10 +509,12 @@ class PytdxSource:
             df = df[['trade_date', 'open', 'close', 'high', 'low', 'vol', 'amount']].copy()
             df['code'] = stock_code
             return df
-        except Exception:
-            return None
-        finally:
-            _return_connection(api)
+
+        # 使用重试机制，超时自动切换IP
+        return _retry_with_new_connection(
+            _fetch_stock_daily, stock_code, start_date, end_date, market,
+            max_retries=3
+        )
 
     # ==================== 板块名称-通达信指数智能匹配 ====================
 
@@ -1127,6 +1163,25 @@ class PytdxSource:
     }
 
     @staticmethod
+    def _scan_tdx_index_names_fetcher(api):
+        """内部函数：从指定连接扫描通达信指数名称"""
+        result = {}
+        count = api.get_security_count(1)
+        for start in range(0, min(count or 0, 30000), 1000):
+            items = api.get_security_list(1, start)
+            if not items:
+                continue
+            for s in items:
+                code = s.get('code', '')
+                name = s.get('name', '')
+                if code and name and (code.startswith('880') or
+                                        code.startswith('881')):
+                    result[name] = code
+                    # 也把 code 作为 key（便于直接通过 code 查找）
+                    result[code] = code
+        return result
+
+    @staticmethod
     def _scan_tdx_index_names() -> Optional[Dict[str, str]]:
         """
         扫描通达信服务器中所有 880XXX/881XXX 指数名称（使用连接池）
@@ -1134,29 +1189,10 @@ class PytdxSource:
         """
         if not HAS_PYTDX:
             return None
-        api = _get_connection()
-        if not api:
-            return None
-        try:
-            result = {}
-            count = api.get_security_count(1)
-            for start in range(0, min(count or 0, 30000), 1000):
-                items = api.get_security_list(1, start)
-                if not items:
-                    continue
-                for s in items:
-                    code = s.get('code', '')
-                    name = s.get('name', '')
-                    if code and name and (code.startswith('880') or
-                                            code.startswith('881')):
-                        result[name] = code
-                        # 也把 code 作为 key（便于直接通过 code 查找）
-                        result[code] = code
-            return result
-        except Exception:
-            return None
-        finally:
-            _return_connection(api)
+        # 使用重试机制，超时自动切换IP
+        return _retry_with_new_connection(
+            PytdxSource._scan_tdx_index_names_fetcher, max_retries=3
+        )
 
     @staticmethod
     def _match_block_to_tdx(block_name: str, tdx_name_to_code: Dict[str, str]) -> str:
@@ -1214,42 +1250,41 @@ class PytdxSource:
     # ==================== 兼容层 API（保持旧接口不变）====================
 
     @staticmethod
+    def _fetch_stock_basics(api):
+        """内部函数：从指定连接获取股票基础信息（不获取流通股本，保持快速）"""
+        all_stocks = []
+        for market in [MARKET_SH, MARKET_SZ]:
+            count = api.get_security_count(market)
+            if not count or count <= 0:
+                continue
+            for start in range(0, min(count, 50000), 1000):
+                items = api.get_security_list(market, start)
+                if not items:
+                    continue
+                for s in items:
+                    code = s.get('code', '')
+                    name = s.get('name', '')
+                    if code and name and len(code) == 6 and code.isdigit():
+                        all_stocks.append({
+                            'stock_code': code,
+                            'stock_name': name,
+                            'market': market,
+                            'list_date': '19900101',
+                            'is_st': 'ST' in name,
+                            'suspend': False,
+                        })
+        if not all_stocks:
+            return None
+        return pd.DataFrame(all_stocks)
+
     def get_stock_basics() -> Optional['pd.DataFrame']:
         """获取股票基础信息（新版 pytdx：使用 get_security_list 遍历两市，使用连接池）"""
         if not HAS_PYTDX or not HAS_PANDAS:
             return None
-        api = _get_connection()
-        if not api:
-            return None
-        try:
-            all_stocks = []
-            for market in [MARKET_SH, MARKET_SZ]:
-                count = api.get_security_count(market)
-                if not count or count <= 0:
-                    continue
-                for start in range(0, min(count, 50000), 1000):
-                    items = api.get_security_list(market, start)
-                    if not items:
-                        continue
-                    for s in items:
-                        code = s.get('code', '')
-                        name = s.get('name', '')
-                        if code and name and len(code) == 6 and code.isdigit():
-                            all_stocks.append({
-                                'stock_code': code,
-                                'stock_name': name,
-                                'market': market,
-                                'list_date': '19900101',
-                                'is_st': 'ST' in name,
-                                'suspend': False
-                            })
-            if not all_stocks:
-                return None
-            return pd.DataFrame(all_stocks)
-        except Exception:
-            return None
-        finally:
-            _return_connection(api)
+        # 使用重试机制，超时自动切换IP
+        return _retry_with_new_connection(
+            PytdxSource._fetch_stock_basics, max_retries=3
+        )
 
     @staticmethod
     def get_daily_data(stock_code: str, start_date: str, end_date: str):

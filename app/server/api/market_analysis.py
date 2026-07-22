@@ -6,7 +6,6 @@ from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, Query
 
 from app.data.db import get_db, get_collection
-from app.server.api.exclusions import get_excluded_set
 
 logger = logging.getLogger(__name__)
 
@@ -99,18 +98,20 @@ def get_market_analysis(
         prev_date = _get_previous_trade_date(db, date)
 
         # === 3) 个股分组统计（仅当有个股数据时）===
-        excluded_display_stocks = get_excluded_set('stock', 'display')
+        # 获取启用的股票代码
+        enabled_stock_codes = set(
+            doc['stock_code'] for doc in db['stock_basics'].find(
+                {'is_disable': {'$ne': True}},
+                {'_id': 0, 'stock_code': 1}
+            )
+        )
 
         rps_field = f'rps_{rps_period}'
         today_stocks = {d['stock_code']: d for d in db['stock_daily'].find(
-            {'trade_date': date, 'close': {'$gt': 0}, 'amount': {'$gt': 0}},
+            {'trade_date': date, 'close': {'$gt': 0}, 'amount': {'$gt': 0}, 'stock_code': {'$in': list(enabled_stock_codes)}},
             {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
              'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1}
         )}
-
-        # 过滤排除的股票
-        if excluded_display_stocks:
-            today_stocks = {k: v for k, v in today_stocks.items() if k not in excluded_display_stocks}
 
         has_stock_data = bool(today_stocks)
         stats_response = {
@@ -120,44 +121,43 @@ def get_market_analysis(
             'rps_stats': [],
             'amount_stats': [],
             'price_stats': [],
+            'float_mv_stats': [],
         }
 
         if has_stock_data:
             # 直接使用预计算的chg_pct字段，无需查询前一日数据
+            # 获取股票流通股本（用于计算流通市值）
+            liutong_map = {}
+            for doc in db['stock_basics'].find(
+                {'stock_code': {'$in': list(today_stocks.keys())}},
+                {'_id': 0, 'stock_code': 1, 'liutongguben': 1}
+            ):
+                if doc.get('liutongguben'):
+                    liutong_map[doc['stock_code']] = doc['liutongguben']
+
             merged = []
             for code, row in today_stocks.items():
                 chg_pct = row.get('chg_pct')
                 if chg_pct is not None:
+                    # 计算流通市值（亿元）= 流通股本 × 收盘价 / 1e8
+                    liutongguben = liutong_map.get(code, 0)
+                    float_mv = round(liutongguben * row['close'] / 1e8, 2) if liutongguben > 0 else 0
                     merged.append({
                         'stock_code': code,
                         'chg_pct': chg_pct,
                         'close': row['close'],
                         'amount': row['amount'],
-                        'rps': row.get(rps_field)
+                        'rps': row.get(rps_field),
+                        'float_mv': float_mv,
                     })
 
             stats_response['total_stocks'] = len(merged)
             logger.info(f"交易日 {date}: 共 {len(merged)} 只股票参与统计，RPS周期: {rps_period}")
 
             if merged:
-                # RPS 分组（使用动态周期）
+                # RPS 分组（使用动态周期，按等分位分组）
                 rps_data = [{'chg_pct': d['chg_pct'], 'sort_val': d['rps']} for d in merged if d.get('rps') is not None and d.get('rps') > 0]
-                rps_stats = []
-                for i in range(50):
-                    low = i * 2
-                    high = (i + 1) * 2
-                    if i == 0:
-                        group = [d for d in rps_data if d['sort_val'] <= 2]
-                    else:
-                        group = [d for d in rps_data if low < d['sort_val'] <= high]
-                    if group:
-                        avg_chg = sum(g['chg_pct'] for g in group) / len(group)
-                        rps_stats.append({
-                            'category_label': f'({low},{high}]',
-                            'avg_chg': round(avg_chg, 2),
-                            'count': len(group)
-                        })
-                stats_response['rps_stats'] = rps_stats
+                stats_response['rps_stats'] = _quantile_groups(rps_data, n_groups=50)
 
                 # 成交额分组
                 amount_data = [{'chg_pct': d['chg_pct'], 'sort_val': d['amount']} for d in merged]
@@ -166,6 +166,10 @@ def get_market_analysis(
                 # 股价分组
                 price_data = [{'chg_pct': d['chg_pct'], 'sort_val': d['close']} for d in merged]
                 stats_response['price_stats'] = _quantile_groups(price_data, n_groups=50)
+
+                # 流通市值分组
+                mv_data = [{'chg_pct': d['chg_pct'], 'sort_val': d['float_mv']} for d in merged if d.get('float_mv', 0) > 0]
+                stats_response['float_mv_stats'] = _quantile_groups(mv_data, n_groups=50)
 
         # === 4) 气泡图 ===
         if mode == 'stock':
@@ -282,14 +286,20 @@ def get_market_bubble(
 
 def _bubble_stock_mode(db, date, prev_date, rps_period=20) -> list:
     """个股气泡：rps, close_pct, amount_pct, chg%, name, code"""
-    # 获取排除列表
-    excluded_display = get_excluded_set('stock', 'display')
+    # 获取启用的股票代码
+    enabled_stock_codes = set(
+        doc['stock_code'] for doc in db['stock_basics'].find(
+            {'is_disable': {'$ne': True}},
+            {'_id': 0, 'stock_code': 1}
+        )
+    )
 
     rps_field = f'rps_{rps_period}'
     # 直接使用预计算的 close_pct, amount_pct, chg_pct 字段
     today_cursor = db['stock_daily'].find(
         {
-            'trade_date': date, 'close': {'$gt': 0}, 'amount': {'$gt': 0}
+            'trade_date': date, 'close': {'$gt': 0}, 'amount': {'$gt': 0},
+            'stock_code': {'$in': list(enabled_stock_codes)}
         },
         {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, rps_field: 1,
          'close_pct': 1, 'amount_pct': 1, 'chg_pct': 1}
@@ -308,8 +318,6 @@ def _bubble_stock_mode(db, date, prev_date, rps_period=20) -> list:
 
     nodes = []
     for code, row in today_data.items():
-        if code in excluded_display:
-            continue
         rps = row.get(rps_field)
         if rps is None: continue
         name = stock_names.get(code, code)
@@ -324,15 +332,17 @@ def _bubble_stock_mode(db, date, prev_date, rps_period=20) -> list:
 
 def _bubble_sector_mode(db, date, prev_date, rps_period=20) -> list:
     """板块气泡：RPS X 轴，板块涨跌幅 Y 轴，板块成交额做气泡大小"""
-    # 获取排除列表
-    excluded_display = get_excluded_set('sector', 'display')
+    # 获取启用的板块代码
+    enabled_sector_codes = set(
+        doc['code'] for doc in db['sector_basics'].find(
+            {'is_disable': {'$ne': True}},
+            {'_id': 0, 'code': 1}
+        )
+    )
 
-    excluded_names = {'沪深300', '中证500', '上证50', '创业板指', '科创50',
-                      '上证180', '深证成指', '上证指数', '通达信88'}
-
-    # 1) 直接从 sector_daily 查询当日板块行情（使用预计算的chg_pct）
+    # 1) 直接从 sector_daily 查询当日板块行情（使用预计算的chg_pct，只取启用的板块）
     today_sectors = {d['stock_code']: d for d in db['sector_daily'].find(
-        {'trade_date': date, 'close': {'$gt': 0}},
+        {'trade_date': date, 'close': {'$gt': 0}, 'stock_code': {'$in': list(enabled_sector_codes)}},
         {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
          'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
     )}
@@ -342,17 +352,11 @@ def _bubble_sector_mode(db, date, prev_date, rps_period=20) -> list:
                 for s in db['sector_basics'].find(
                     {}, {'_id': 0, 'code': 1, 'name': 1})}
 
-    # 3) 逐板块计算指标（使用预计算的chg_pct）
+    # 3) 逐板块计算指标（使用预计算的chg_pct），只显示RPS>85的板块
     sector_metrics = []
 
     for code, t in today_sectors.items():
         name = name_map.get(code, code)
-
-        # 排除指数类 / 用户排除
-        if any(kw in name for kw in excluded_names):
-            continue
-        if code in excluded_display:
-            continue
 
         # 直接使用预计算的chg_pct
         chg_pct = t.get('chg_pct') or 0.0
@@ -366,6 +370,10 @@ def _bubble_sector_mode(db, date, prev_date, rps_period=20) -> list:
             'rps_50': t.get('rps_50'),
         }
         rps = rps_map.get(f'rps_{rps_period}')
+        
+        # 只显示RPS>85的板块
+        if rps is None or rps <= 85:
+            continue
 
         sector_metrics.append({
             'code': code,
@@ -421,18 +429,22 @@ def get_active_stock_pool(
             if not date:
                 raise HTTPException(status_code=404, detail="没有找到交易数据")
 
-        # 过滤排除的股票
-        excluded_display_stocks = get_excluded_set('stock', 'display')
+        # 获取启用的股票代码
+        enabled_stock_codes = set(
+            doc['stock_code'] for doc in db['stock_basics'].find(
+                {'is_disable': {'$ne': True}},
+                {'_id': 0, 'stock_code': 1}
+            )
+        )
 
-        # 直接使用预计算的 is_active 字段查询活跃股
+        # 直接使用预计算的 is_active 字段查询活跃股（只取启用的股票）
         query = {
             'trade_date': date,
             'close': {'$gt': 0},
             'amount': {'$gt': 0},
-            'is_active': True
+            'is_active': True,
+            'stock_code': {'$in': list(enabled_stock_codes)}
         }
-        if excluded_display_stocks:
-            query['stock_code'] = {'$nin': list(excluded_display_stocks)}
 
         # 查询活跃股数据
         today_stocks = list(db['stock_daily'].find(

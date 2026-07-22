@@ -21,6 +21,7 @@ client/dist/
 .idea/
 .vscode/
 .trae/
+.mimocode/
 *.swp
 *.swo
 *~

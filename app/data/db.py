@@ -169,6 +169,18 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
         return
 
     earliest_date = str(sorted_records[0]['trade_date'])
+    latest_date = str(sorted_records[-1]['trade_date'])
+
+    # 预查：哪些日期当前 is_final=false（晚间收盘后需要清除RPS重算）
+    dates_needing_rps_clear = set()
+    try:
+        cursor_ic = coll.find(
+            {'stock_code': stock_code, 'trade_date': {'$gte': earliest_date, '$lte': latest_date}, 'is_final': False},
+            {'_id': 0, 'trade_date': 1}
+        )
+        dates_needing_rps_clear = {d['trade_date'] for d in cursor_ic}
+    except Exception:
+        pass
 
     # 查历史数据（用于计算MA/VOL_MA/区间涨幅）
     vol_field = 'volume' if data_type == 'sector' else 'vol'
@@ -205,7 +217,9 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
     operations = []
     for i in range(hist_count, n):
         trade_date_str = dates[i]
-        is_final = True if trade_date_str < today_local else (local_now.hour >= 15 if trade_date_str == today_local else False)
+        # 盘后（15:30后）才标记为已收盘，留30分钟缓冲等交易所清算
+        after_market = local_now.hour > 15 or (local_now.hour == 15 and local_now.minute >= 30)
+        is_final = True if trade_date_str < today_local else (after_market if trade_date_str == today_local else False)
 
         doc = {
             'stock_code': stock_code,
@@ -230,6 +244,13 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
         if curr_close <= 0:
             operations.append(UpdateOne({'stock_code': stock_code, 'trade_date': trade_date_str}, {'$set': doc}, upsert=True))
             continue
+
+        update_doc = {'$set': doc}
+        # is_final从false变true时清除RPS字段，确保下次用收盘价重算
+        if is_final and trade_date_str in dates_needing_rps_clear:
+            rps_unset = {f: '' for f in ['rps_10', 'rps_20', 'rps_50', 'rps_120', 'rps_250',
+                                          'chg_10', 'chg_20', 'chg_50', 'chg_120', 'chg_250']}
+            update_doc['$unset'] = rps_unset
 
         # chg_pct
         if i > 0 and closes[i - 1] > 0:
@@ -415,6 +436,20 @@ def bulk_patch_is_final() -> Dict[str, int]:
         total_patched_not_final += r2.modified_count
 
         total_count += col.estimated_document_count()
+
+    # 补丁 base_data_daily（日期字段是 date 不是 trade_date）
+    bdd = get_db()['base_data_daily']
+    r1 = bdd.update_many(
+        {'date': {'$lt': today_local}, 'is_final': {'$ne': True}},
+        {'$set': {'is_final': True}}
+    )
+    total_patched_final += r1.modified_count
+    r2 = bdd.update_many(
+        {'date': {'$gte': today_local}, 'is_final': {'$ne': False}},
+        {'$set': {'is_final': False}}
+    )
+    total_patched_not_final += r2.modified_count
+    total_count += bdd.estimated_document_count()
 
     return {
         'patched_final': total_patched_final,

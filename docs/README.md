@@ -1,8 +1,8 @@
-# A 股量化仿真与前端看板系统 - 文档索引
+# A股量化系统 - 文档索引
 
 ## 📚 项目概述
 
-一套专业的 A 股量化回测与分析系统，已升级为 **React + FastAPI 分离架构，提供更优秀的用户体验！
+一套专业的 A 股量化分析系统，已升级为 **React + FastAPI 分离架构，提供更优秀的用户体验！
 
 ### 核心特性
 - ✅ 防幸存者偏差的历史截面成分股逻辑
@@ -31,7 +31,6 @@
 - [数据管理器](features/data-manager.md) - 数据获取、缓存、清洗逻辑
 - [因子引擎](features/factor-engine.md) - 技术指标和因子计算
 - [舆情分析引擎](features/sentiment-engine.md) - 舆情文本数据处理
-- [回测引擎](features/backtest-engine.md) - 仿真回测核心逻辑
 - [前端应用](features/frontend-app.md) - React 前端应用
 
 ### 📅 开发计划 (plans/)
@@ -51,67 +50,40 @@
 ## 🏗️ 代码结构
 
 ```
-YuQuant/
+A股量化系统/
 ├── app/
-│   ├── data_manager.py       # 数据管理器
-│   ├── factor_engine.py      # 因子引擎
-│   ├── sentiment_engine.py  # 舆情分析引擎
-│   ├── backtest_engine.py    # 回测引擎
-│   ├── app.py              # Streamlit 前端（保留，可选使用
+│   ├── data/                    # 数据层
+│   │   ├── db.py               # MongoDB 连接
+│   │   ├── manager.py          # 数据同步管理器
+│   │   └── sources/            # 数据源驱动
 │   │
-│   ├── server/             # ✨ FastAPI 后端
-│   │   ├── __init__.py
-│   │   ├── main.py         # FastAPI 入口
-│   │   ├── models.py       # Pydantic 模型
-│   │   └── api/            # API 路由
+│   ├── server/                  # FastAPI 后端
+│   │   ├── main.py             # 应用入口
+│   │   ├── models.py           # Pydantic 模型
+│   │   └── api/                # API 路由
 │   │       ├── stocks.py
 │   │       ├── factors.py
-│   │       ├── backtest.py
-│   │       └── sync.py
+│   │       ├── sync.py
+│   │       ├── market_analysis.py
+│   │       └── market_review.py
 │   │
-│   └── client/             # ✨ React 前端
-│       ├── package.json
-│       ├── vite.config.js
-│       ├── tailwind.config.js
-│       └── src/
-│           ├── components/    # 组件
-│           ├── pages/       # 页面
-│           │   ├── MarketMonitor.jsx
-│           │   ├── StockAnalysis.jsx
-│           │   └── Backtest.jsx
-│           ├── App.jsx
-│           ├── api.js
-│           └── main.jsx
+│   ├── client/                  # React 前端
+│   │   └── src/
+│   │       ├── pages/          # 页面组件
+│   │       ├── components/     # 通用组件
+│   │       ├── App.jsx         # 主应用
+│   │       └── api.js          # API 封装
+│   │
+│   ├── factor_engine.py        # 因子引擎
+│   └── rps_calculator.py       # RPS 计算器
 │
-├── data/                     # 本地数据存储
-│   ├── sqlite/              # SQLite 数据库
-│   └── hdf5/               # HDF5 数据缓存
-│
-├── docs/                     # 项目文档
-│   ├── architecture/        # 架构设计
-│   ├── database/          # 数据模型
-│   ├── api/              # API 接口
-│   ├── features/         # 功能说明
-│   ├── plans/            # 开发计划
-│   ├── deployment/      # 部署文档
-│   └── getting-started/ # 快速开始
-│
-├── agents/                  # AI 代理配置
-│   ├── ProjectManagerAgent.md
-│   ├── ArchitectAgent.md
-│   ├── FrontendAgent.md
-│   ├── BackendAgent.md
-│   └── DeployAgent.md
-│
-├── tests/                   # 测试用例
-│   ├── test_data_manager.py
-│   ├── test_factor_engine.py
-│   └── ...
-│
-├── requirements.txt         # Python 依赖
-├── start.sh                # 一键启动脚本
-├── README.md              # 项目说明
-└── AGENTS.md              # 代理配置
+├── data/                        # 数据存储目录
+├── docs/                        # 项目文档
+├── tests/                       # 测试用例
+├── start.sh                     # 启动脚本
+├── stop.sh                      # 停止脚本
+├── requirements.txt             # Python 依赖
+└── AGENTS.md                    # 代理配置
 ```
 
 ---

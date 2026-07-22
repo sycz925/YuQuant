@@ -64,14 +64,14 @@ const formatDate = (dateStr) => {
   return s
 }
 
-function MarketMonitor() {
+function MarketMonitor({ queryDate: propQueryDate }) {
   const [cr5Data, setCr5Data] = useState([])
   const [indexConfig, setIndexConfig] = useState([])
   const [selectedIndex, setSelectedIndex] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadingText, setLoadingText] = useState('加载中...')
   const [period, setPeriod] = useState('day')
-  const [queryDate, setQueryDate] = useState(null)
+  const [queryDate, setQueryDate] = useState(propQueryDate || null)
   const [latestDate, setLatestDate] = useState(null)
   const dateRef = useRef(null)
   const [, forceUpdate] = useState(0)
@@ -93,6 +93,14 @@ function MarketMonitor() {
     initLoad()
   }, [])
 
+  // 外部传入的queryDate变化时更新
+  useEffect(() => {
+    if (propQueryDate && propQueryDate !== queryDate) {
+      setQueryDate(propQueryDate)
+      dateRef.current = propQueryDate
+    }
+  }, [propQueryDate])
+
   // 周期或指数切换时重新加载趋势对比图
   useEffect(() => {
     if (initializedRef.current && selectedIndex) {
@@ -106,7 +114,7 @@ function MarketMonitor() {
         factorApi.getIndices({ filter_mode: 'enabled' }),
         healthApi.check()
       ])
-      const indices = idxRes.indices || []
+      const indices = idxRes.items || idxRes.indices || []
       const latest = healthRes?.latest_trade_date || null
 
       if (indices.length > 0) {
@@ -176,33 +184,6 @@ function MarketMonitor() {
 
   return (
     <div className="space-y-3 md:space-y-4">
-      {/* 标题栏 */}
-      <div data-section="标题栏" className="bg-white rounded-xl shadow-sm p-3 md:p-4">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <h1 className="text-lg md:text-xl font-bold text-gray-800">市场监控</h1>
-          <div className="flex items-center space-x-2">
-            <DatePicker
-              value={dateRef.current ? dayjs(dateRef.current, 'YYYYMMDD') : null}
-              onChange={(d) => { dateRef.current = d ? d.format('YYYYMMDD') : null; forceUpdate(n => n + 1) }}
-              format="YYYYMMDD"
-              placeholder="选择交易日"
-              allowClear
-              className="w-32 md:w-40"
-              size="small"
-            />
-            <Button type="primary" onClick={handleQuery} loading={loading} size="small">
-              查询
-            </Button>
-          </div>
-        </div>
-
-        {/* 数据概览 */}
-        <div className="mt-2 md:mt-3 pt-2 md:pt-3 border-t border-gray-100 text-xs md:text-sm text-gray-500 flex flex-wrap gap-x-3">
-          <span>交易日: <span className="font-mono font-medium text-gray-700">{queryDate || latestDate || '-'}</span></span>
-          <span>统计: <span className="font-medium text-gray-700">{totalStocks}</span> 只</span>
-        </div>
-      </div>
-
       {/* 趋势对比图 */}
       <div data-section="趋势对比图" className="bg-white rounded-xl shadow-sm overflow-hidden">
         <div className="p-3 md:p-4 pb-2">

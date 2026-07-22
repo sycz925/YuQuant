@@ -1,162 +1,92 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { Modal, Table, Switch, Button, Space, Input, Typography, message, Tooltip, Select } from 'antd'
-import { SearchOutlined, ReloadOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
-import { exclusionApi, stockApi, factorApi } from '../api'
+import React, { useState, useEffect, useRef } from 'react'
+import { Modal, Table, Switch, Button, Space, Input, Select, message, Form } from 'antd'
+import { SearchOutlined, ReloadOutlined, PlusOutlined } from '@ant-design/icons'
+import { stockApi, factorApi } from '../api'
 
-const { Text } = Typography
-
-export default function ManagementDialog({ open, onClose, category, title, fetchData }) {
+export default function ManagementDialog({ open, onClose, category, title }) {
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState([])
   const [total, setTotal] = useState(0)
-  const [exclusions, setExclusions] = useState({})
   const [searchText, setSearchText] = useState('')
   const [saving, setSaving] = useState(false)
-  const [showAdd, setShowAdd] = useState(false)
-  const [addKeyword, setAddKeyword] = useState('')
-  const [addResults, setAddResults] = useState([])
-  const [addLoading, setAddLoading] = useState(false)
-  const [pageSize, setPageSize] = useState(50)
+  const [pageSize, setPageSize] = useState(10)
   const [currentPage, setCurrentPage] = useState(1)
   const [importLoading, setImportLoading] = useState(false)
-  const [scanLoading, setScanLoading] = useState(false)
   const [filterMode, setFilterMode] = useState('enabled')
-  const [committedFilter, setCommittedFilter] = useState('enabled')
-  const [committedKeyword, setCommittedKeyword] = useState('')
+  const [changedItems, setChangedItems] = useState({})
+  const [addVisible, setAddVisible] = useState(false)
+  const [addLoading, setAddLoading] = useState(false)
+  const [addForm] = Form.useForm()
   const fileInputRef = useRef(null)
+  const [importExcelLoading, setImportExcelLoading] = useState(false)
+
+  const resetConditions = () => {
+    setSearchText('')
+    setFilterMode('enabled')
+    setCurrentPage(1)
+    setChangedItems({})
+    setData([])
+    setTotal(0)
+  }
+
+  const handleClose = () => {
+    resetConditions()
+    onClose()
+  }
 
   useEffect(() => {
     if (open) {
       setCurrentPage(1)
-      setSearchText('')
-      setCommittedKeyword('')
-      setFilterMode('enabled')
-      setCommittedFilter('enabled')
-      setShowAdd(false)
-      setAddKeyword('')
-      setAddResults([])
-    }
-  }, [open, category])
-
-  useEffect(() => {
-    if (open) {
+      setChangedItems({})
       loadData(1, pageSize, '', 'enabled')
     }
-  }, [open, category])
+  }, [open])
 
-  const loadData = useCallback(async (page, size, keyword, filter) => {
+  useEffect(() => {
+    // 切换分类时清空数据，但不自动加载
+    setData([])
+    setTotal(0)
+    setCurrentPage(1)
+    setChangedItems({})
+  }, [category])
+
+  const loadData = async (page, size, keyword, filter) => {
     setLoading(true)
     try {
-      const params = { page, page_size: size }
-      if (keyword) params.keyword = keyword
-      if (filter && filter !== 'all') params.filter_mode = filter
-      const res = await fetchData(params)
-      let items = []
-      let serverTotal = 0
+      let res
       if (category === 'index') {
-        items = res?.indices || []
-        serverTotal = res?.total || items.length
+        res = await factorApi.getIndices({ page, page_size: size, keyword, filter_mode: filter })
       } else if (category === 'sector') {
-        items = res?.items || []
-        serverTotal = res?.total || items.length
-      } else {
-        items = res?.data || []
-        serverTotal = res?.total || items.length
+        res = await factorApi.getSectors({ page, page_size: size, keyword, filter_mode: filter, min_stock_count: 5 })
+      } else if (category === 'stock') {
+        res = await factorApi.getStockList({ page, page_size: size, keyword, filter_mode: filter })
       }
-      setData(items)
-      setTotal(serverTotal)
-
-      const exclRes = await exclusionApi.getExclusions({ category })
-      const exclMap = {}
-      ;(exclRes?.items || []).forEach(item => {
-        if (!item.code) return
-        exclMap[item.code] = {
-          code: item.code,
-          name: item.name || item.code,
-          disabled: item.exclude_sync || item.exclude_rps || item.exclude_display || false,
-        }
-      })
-      setExclusions(exclMap)
+      setData(res?.items || res?.data || [])
+      setTotal(res?.total || 0)
     } catch (e) {
       console.error('加载数据失败:', e)
       message.error('加载数据失败')
     } finally {
       setLoading(false)
     }
-  }, [category, fetchData, pageSize])
-
-  const handleImportCodes = async (file) => {
-    if (!file) return
-    setImportLoading(true)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await factorApi.importSectorCodes(formData)
-      if (res?.success) {
-        message.success(res.message)
-        loadData(currentPage, pageSize, committedKeyword, committedFilter)
-      } else {
-        message.error(res?.message || '导入失败')
-      }
-    } catch (e) {
-      console.error('导入失败:', e)
-      message.error('导入失败')
-    } finally {
-      setImportLoading(false)
-    }
-  }
-
-  const handleScan = async () => {
-    setScanLoading(true)
-    try {
-      const res = await stockApi.scanNewStocks()
-      if (res?.success) {
-        const count = res.new_count || 0
-        if (count > 0) {
-          message.success(`发现 ${count} 只新股票`)
-          loadData(currentPage, pageSize, committedKeyword, committedFilter)
-        } else {
-          message.info('没有发现新股票')
-        }
-      } else {
-        message.error(res?.message || '扫描失败')
-      }
-    } catch (e) {
-      console.error('扫描失败:', e)
-      message.error('扫描失败')
-    } finally {
-      setScanLoading(false)
-    }
-  }
-
-  const isDisabled = (code) => {
-    const e = exclusions[code]
-    return e && e.disabled
-  }
-
-  const handleToggleDisabled = (code, name, disabled) => {
-    setExclusions(prev => ({
-      ...prev,
-      [code]: { code, name, disabled }
-    }))
   }
 
   const handleSave = async () => {
+    if (Object.keys(changedItems).length === 0) {
+      message.info('没有需要保存的修改')
+      return
+    }
     setSaving(true)
     try {
-      const items = Object.values(exclusions)
-        .filter(item => item.code)
-        .map(item => ({
-          code: item.code,
-          name: item.name || item.code,
-          category,
-          exclude_sync: item.disabled || false,
-          exclude_rps: item.disabled || false,
-          exclude_display: item.disabled || false,
-        }))
-      await exclusionApi.updateExclusions(items)
-      message.success('保存成功')
-      onClose()
+      const items = Object.entries(changedItems).map(([code, disabled]) => ({
+        code,
+        category,
+        disabled
+      }))
+      await factorApi.updateDisableStatus(items)
+      message.success(`保存成功`)
+      setChangedItems({})
+      loadData(currentPage, pageSize, '', filterMode)
     } catch (e) {
       console.error('保存失败:', e)
       message.error('保存失败')
@@ -165,319 +95,186 @@ export default function ManagementDialog({ open, onClose, category, title, fetch
     }
   }
 
-  const handleAddItem = (item) => {
-    const code = item.code || item.stock_code
-    const name = item.name || item.stock_name
-    if (!code) return
-    if (data.some(d => (d.code || d.stock_code) === code)) {
-      message.info('该品种已存在')
-      return
-    }
-    setData(prev => [...prev, { code, name }])
-    setExclusions(prev => ({
-      ...prev,
-      [code]: { code, name, disabled: false }
-    }))
-    message.success(`已添加 ${name}`)
+  const handleSearch = () => {
+    setCurrentPage(1)
+    loadData(1, pageSize, searchText, filterMode)
   }
 
-  const handleSearchAdd = async () => {
-    if (!addKeyword.trim()) return
-    setAddLoading(true)
+  const handleFilterChange = (value) => {
+    setFilterMode(value)
+    setCurrentPage(1)
+  }
+
+  const handleImportExcel = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    
+    setImportExcelLoading(true)
     try {
-      let results = []
-      if (category === 'stock') {
-        const res = await stockApi.searchStocks(addKeyword.trim())
-        results = (res?.data || res?.items || []).map(s => ({
-          code: s.code || s.stock_code, name: s.name || s.stock_name
-        }))
-      } else if (category === 'index') {
-        const res = await factorApi.searchIndices(addKeyword.trim())
-        results = (res?.data || []).map(i => ({ code: i.code, name: i.name }))
-      } else if (category === 'sector') {
-        const res = await factorApi.getSectors({ keyword: addKeyword.trim(), limit: 500 })
-        results = (res?.items || []).map(s => ({ code: s.code, name: s.name }))
+      const formData = new FormData()
+      formData.append('file', file)
+      
+      const res = await factorApi.importSectorCodes(formData)
+      if (res?.success) {
+        message.success(res.message)
+        loadData(currentPage, pageSize, searchText, filterMode)
+      } else {
+        message.error(res?.message || '导入失败')
       }
-      setAddResults(results.filter(r => r.code))
     } catch (e) {
-      message.error('搜索失败')
+      console.error('导入失败:', e)
+      message.error(e.response?.data?.detail || '导入失败')
+    } finally {
+      setImportExcelLoading(false)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  const handleAdd = async () => {
+    try {
+      const values = await addForm.validateFields()
+      setAddLoading(true)
+      const res = await factorApi.createItem({
+        category,
+        code: values.code,
+        name: values.name,
+        source: values.source || '手动新增',
+      })
+      if (res?.success) {
+        message.success(res.message)
+        setAddVisible(false)
+        addForm.resetFields()
+        loadData(currentPage, pageSize, searchText, filterMode)
+      } else {
+        message.error(res?.message || '新增失败')
+      }
+    } catch (e) {
+      if (e.errorFields) return
+      message.error(e.response?.data?.detail || '新增失败')
     } finally {
       setAddLoading(false)
     }
   }
-
-  const handleToggleAll = (disabled) => {
-    const newExclusions = { ...exclusions }
-    data.forEach(item => {
-      const code = item.code || item.stock_code
-      if (!code) return
-      newExclusions[code] = {
-        code,
-        name: item.name || item.stock_name || code,
-        disabled,
-      }
-    })
-    setExclusions(newExclusions)
-  }
-
-  const disabledCount = data.filter(item => {
-    const code = item.code || item.stock_code
-    return isDisabled(code)
-  }).length
-
-  const allDisabled = data.length > 0 && data.every(item => {
-    const code = item.code || item.stock_code
-    return isDisabled(code)
-  })
 
   const columns = [
     {
       title: '代码',
       dataIndex: 'code',
       key: 'code',
-      width: 100,
+      width: 120,
       render: (text) => <span className="font-mono text-xs">{text}</span>
     },
     {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
-      width: 100,
+      render: (text, record) => record.stock_name || record.name || text
     },
     ...(category === 'sector' ? [
-      {
-        title: 'RPS10',
-        dataIndex: 'rps_10',
-        key: 'rps_10',
-        width: 70,
-        sorter: (a, b) => (a.rps_10 || 0) - (b.rps_10 || 0),
-        render: (val) => val != null ? <span className="text-xs font-mono">{val}</span> : <span className="text-xs text-gray-300">-</span>
-      },
-      {
-        title: 'RPS20',
-        dataIndex: 'rps_20',
-        key: 'rps_20',
-        width: 70,
-        sorter: (a, b) => (a.rps_20 || 0) - (b.rps_20 || 0),
-        render: (val) => val != null ? <span className="text-xs font-mono">{val}</span> : <span className="text-xs text-gray-300">-</span>
-      },
-      {
-        title: 'RPS50',
-        dataIndex: 'rps_50',
-        key: 'rps_50',
-        width: 70,
-        sorter: (a, b) => (a.rps_50 || 0) - (b.rps_50 || 0),
-        render: (val) => val != null ? <span className="text-xs font-mono">{val}</span> : <span className="text-xs text-gray-300">-</span>
-      },
+      { title: '数据源', dataIndex: 'source', key: 'source', width: 110, render: (t) => <span className="text-xs text-gray-500">{t || '-'}</span> },
+      { title: '成分股数', dataIndex: 'stock_count', key: 'stock_count', width: 100 },
     ] : []),
+    ...(category === 'index' ? [{ title: 'TDX代码', dataIndex: 'tdx_code', key: 'tdx_code', width: 100, render: (t) => <span className="font-mono text-xs">{t}</span> }] : []),
     {
-      title: (
-        <Tooltip title="切换所有">
-          <span
-            className="cursor-pointer select-none"
-            onClick={() => handleToggleAll(!allDisabled)}
-          >
-            禁用 {allDisabled ? '✓' : ''}
-          </span>
-        </Tooltip>
-      ),
+      title: '禁用',
       key: 'disabled',
-      width: 70,
-      align: 'center',
+      width: 80,
       render: (_, record) => {
         const code = record.code || record.stock_code
+        const isChanged = changedItems[code] !== undefined
+        const disabled = isChanged ? changedItems[code] : (record.exclude_sync || false)
         return (
           <Switch
             size="small"
-            checked={isDisabled(code)}
-            onChange={(v) => handleToggleDisabled(code, record.name, v)}
+            checked={disabled}
+            onChange={(checked) => setChangedItems(prev => ({ ...prev, [code]: checked }))}
           />
         )
       }
-    },
+    }
   ]
 
-  const handleSearch = () => {
-    setCurrentPage(1)
-    setCommittedKeyword(searchText)
-    setCommittedFilter(filterMode)
-    loadData(1, pageSize, searchText, filterMode)
-  }
-
-  const handleSearchClear = () => {
-    setSearchText('')
-    setCurrentPage(1)
-    setCommittedKeyword('')
-    setCommittedFilter(filterMode)
-    loadData(1, pageSize, '', filterMode)
-  }
-
-  const handleTableChange = (pagination) => {
-    const newPage = pagination.current
-    const newSize = pagination.pageSize
-    setCurrentPage(newPage)
-    setPageSize(newSize)
-    loadData(newPage, newSize, committedKeyword, committedFilter)
-  }
-
   return (
-    <Modal
-      title={
-        <div className="flex items-center justify-between">
-          <span>
-            {title} 管理
-            {disabledCount > 0 && (
-              <Text type="warning" className="ml-2 text-sm">
-                (禁用: {disabledCount}项)
-              </Text>
-            )}
-          </span>
-          <Space size={4} className="mr-8">
-            {category === 'stock' && (
-              <Button
-                type="link"
-                size="small"
-                loading={scanLoading}
-                onClick={handleScan}
-              >
-                检索
-              </Button>
-            )}
+    <Modal title={title} open={open} onCancel={handleClose} width={900} footer={null} destroyOnClose>
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-4">
+          <Space>
+            <Input prefix={<SearchOutlined />} placeholder="搜索..." value={searchText} onChange={(e) => setSearchText(e.target.value)} onPressEnter={handleSearch} style={{ width: 200 }} size="small" />
+            <Select value={filterMode} onChange={handleFilterChange} size="small" style={{ width: 100 }}>
+              <Select.Option value="enabled">已启用</Select.Option>
+              <Select.Option value="disabled">已禁用</Select.Option>
+            </Select>
+            <Button size="small" onClick={handleSearch}>搜索</Button>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => loadData(currentPage, pageSize, searchText, filterMode)} />
+          </Space>
+          <Space>
             {category === 'sector' && (
-              <Button
-                type="link"
-                size="small"
-                icon={<UploadOutlined />}
-                loading={importLoading}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                导入代码
+              <>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept=".xlsx,.xls,.csv"
+                  onChange={handleImportExcel}
+                  style={{ display: 'none' }}
+                />
+                <Button 
+                  size="small" 
+                  loading={importExcelLoading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  导入板块代码
+                </Button>
+              </>
+            )}
+            {(category === 'sector' || category === 'index') && (
+              <Button size="small" icon={<PlusOutlined />} onClick={() => setAddVisible(true)}>
+                新增
               </Button>
             )}
-            <Button type="link" size="small" icon={<PlusOutlined />} onClick={() => setShowAdd(!showAdd)}>
-              新增
-            </Button>
-            <Button type="link" size="small" icon={<ReloadOutlined />} onClick={() => loadData(currentPage, pageSize, committedKeyword, committedFilter)}>
-              刷新
-            </Button>
+            {Object.keys(changedItems).length > 0 && (
+              <Button type="primary" size="small" loading={saving} onClick={handleSave}>
+                保存 ({Object.keys(changedItems).length})
+              </Button>
+            )}
           </Space>
         </div>
-      }
-      open={open}
-      onCancel={onClose}
-      width={650}
-      footer={[
-        <Button key="cancel" onClick={onClose}>
-          取消
-        </Button>,
-        <Button key="save" type="primary" onClick={handleSave} loading={saving}>
-          保存配置
-        </Button>,
-      ]}
-    >
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".xlsx,.xls,.csv"
-        style={{ display: 'none' }}
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) handleImportCodes(file)
-          e.target.value = ''
-        }}
-      />
-      {showAdd && (
-        <div className="mb-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-          <div className="flex items-center space-x-2">
-            <Input
-              placeholder={category === 'stock' ? '搜索股票代码或名称...' : '搜索代码或名称...'}
-              value={addKeyword}
-              onChange={(e) => setAddKeyword(e.target.value)}
-              onPressEnter={handleSearchAdd}
-              style={{ flex: 1 }}
-              size="small"
-            />
-            <Button size="small" onClick={handleSearchAdd} loading={addLoading}>
-              搜索
-            </Button>
-          </div>
-          {addResults.length > 0 && (
-            <div className="mt-2 max-h-32 overflow-y-auto">
-              {addResults.map(item => {
-                const alreadyExists = data.some(d => (d.code || d.stock_code) === item.code)
-                return (
-                  <div key={item.code} className="flex items-center justify-between py-1 px-2 hover:bg-white rounded">
-                    <span className="text-xs">
-                      <span className="font-mono mr-2">{item.code}</span>
-                      {item.name}
-                    </span>
-                    {alreadyExists ? (
-                      <Text type="secondary" className="text-xs">已存在</Text>
-                    ) : (
-                      <Button type="link" size="small" onClick={() => handleAddItem(item)}>
-                        添加
-                      </Button>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-          {addKeyword && addResults.length === 0 && !addLoading && (
-            <Text type="secondary" className="text-xs mt-2 block">未找到匹配结果</Text>
-          )}
-        </div>
-      )}
 
-      <div className="mb-4 flex items-center gap-2">
-        <Select
-          size="small"
-          value={filterMode}
-          onChange={(v) => setFilterMode(v)}
-          style={{ width: 90 }}
-          options={[
-            { value: 'enabled', label: '启用' },
-            { value: 'disabled', label: '禁用' },
-            { value: 'all', label: '全部' },
-          ]}
+        <Table columns={columns} dataSource={data} rowKey={(r) => r.code || r.stock_code} loading={loading} size="small"
+          pagination={{ current: currentPage, pageSize, total, onChange: (p, s) => { setCurrentPage(p); setPageSize(s); loadData(p, s, searchText, filterMode) } }}
         />
-        <Input
-          placeholder="搜索代码或名称..."
-          prefix={<SearchOutlined />}
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          onPressEnter={handleSearch}
-          allowClear
-          onClear={handleSearchClear}
-          size="small"
-          style={{ flex: 1 }}
-        />
-        <Button size="small" type="primary" onClick={handleSearch}>搜索</Button>
-        <span className="text-xs text-gray-400 whitespace-nowrap">共 {total} 项</span>
-      </div>
-      
-      <div className="mb-3 text-xs text-gray-500">
-        打开开关后将禁用（不同步、不计算、不显示）
       </div>
 
-      <Table
-        dataSource={data}
-        columns={columns}
-        rowKey={(record) => record.code || record.stock_code}
-        loading={loading}
-        size="small"
-        pagination={{
-          current: currentPage,
-          pageSize: pageSize,
-          total: total,
-          showSizeChanger: true,
-          pageSizeOptions: ['50', '100', '200'],
-          showTotal: (t) => `共 ${t} 项`,
-        }}
-        onChange={handleTableChange}
-        bordered
-        scroll={{ y: 400 }}
-      />
+      {/* 新增弹窗 */}
+      <Modal
+        title={`新增${category === 'sector' ? '板块' : '指数'}`}
+        open={addVisible}
+        onCancel={() => { setAddVisible(false); addForm.resetFields() }}
+        onOk={handleAdd}
+        confirmLoading={addLoading}
+        destroyOnClose
+        width={400}
+      >
+        <Form form={addForm} layout="vertical" preserve={false}>
+          <Form.Item name="code" label="代码" rules={[{ required: true, message: '请输入代码' }]}>
+            <Input placeholder={category === 'sector' ? '如 885955' : '如 000300'} />
+          </Form.Item>
+          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
+            <Input placeholder={category === 'sector' ? '如 人工智能' : '如 沪深300'} />
+          </Form.Item>
+          {category === 'sector' && (
+            <Form.Item name="source" label="数据源" initialValue="手动新增">
+              <Select>
+                <Select.Option value="手动新增">手动新增</Select.Option>
+                <Select.Option value="通达信概念">通达信概念</Select.Option>
+                <Select.Option value="通达信行业">通达信行业</Select.Option>
+                <Select.Option value="同花顺">同花顺</Select.Option>
+              </Select>
+            </Form.Item>
+          )}
+        </Form>
+      </Modal>
     </Modal>
   )
 }

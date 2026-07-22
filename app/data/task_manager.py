@@ -26,31 +26,22 @@ class FailedStock:
     error: str
 
 
-def _sync_task_to_doc(task_id: str, status: str, total_count: int, completed_count: int,
-                       failed_count: int, skipped_count: int = 0,
-                       current_stock: Optional[str] = None,
-                       current_stock_name: Optional[str] = None,
+def _sync_task_to_doc(task_id: str, status: str, 
                        sources: Optional[Dict[str, int]] = None,
                        message: Optional[str] = None,
                        error: Optional[str] = None,
-                       failed_stocks: Optional[List[Dict]] = None,
                        created_at: Optional[str] = None,
-                       updated_at: Optional[str] = None) -> Dict:
+                       updated_at: Optional[str] = None,
+                       steps: Optional[List[Dict]] = None,
+                       current_step: int = 0) -> Dict:
     """把任务参数转换为 MongoDB 文档格式"""
     now = datetime.utcnow().isoformat()
     return {
         'task_id': task_id,
         'status': status,
-        'total_count': int(total_count),
-        'completed_count': int(completed_count),
-        'failed_count': int(failed_count),
-        'skipped_count': int(skipped_count),
-        'current_stock': current_stock,
-        'current_stock_name': current_stock_name,
         'sources': sources or {},
         'message': message,
         'error': error,
-        'failed_stocks': failed_stocks or [],
         'created_at': created_at or now,
         'updated_at': updated_at or now,
     }
@@ -82,27 +73,22 @@ class TaskManager:
             pass
         return col
 
-    def create_task(self, total_count: int) -> str:
+    def create_task(self) -> str:
         """创建一个新任务"""
         task_id = str(uuid.uuid4())
         col = self._get_col()
         now = datetime.utcnow().isoformat()
-        doc = _sync_task_to_doc(
-            task_id=task_id,
-            status=TaskStatus.PENDING.value,
-            total_count=total_count,
-            completed_count=0,
-            failed_count=0,
-            skipped_count=0,
-            current_stock=None,
-            current_stock_name=None,
-            sources={},
-            message=None,
-            error=None,
-            failed_stocks=[],
-            created_at=now,
-            updated_at=now
-        )
+        doc = {
+            'task_id': task_id,
+            'status': TaskStatus.PENDING.value,
+            'sources': {},
+            'message': None,
+            'error': None,
+            'created_at': now,
+            'updated_at': now,
+            'steps': [],
+            'current_step': 0,
+        }
         col.insert_one(doc)
         return task_id
 
@@ -260,6 +246,93 @@ class TaskManager:
         doc = col.find_one({'task_id': task_id}, {'status': 1, '_id': 0})
         return doc is not None and doc.get('status') == TaskStatus.CANCELLED.value
 
+    def create_task_with_steps(self, steps: List[Dict]) -> str:
+        """创建带步骤的任务"""
+        task_id = str(uuid.uuid4())
+        col = self._get_col()
+        now = datetime.utcnow().isoformat()
+        doc = {
+            'task_id': task_id,
+            'status': TaskStatus.RUNNING.value,
+            'sources': {},
+            'message': None,
+            'error': None,
+            'created_at': now,
+            'updated_at': now,
+            'steps': steps,
+            'current_step': 0,
+        }
+        col.insert_one(doc)
+        return task_id
+
+    def start_step(self, task_id: str, step_index: int):
+        """开始一个步骤"""
+        col = self._get_col()
+        doc = col.find_one({'task_id': task_id}, {'_id': 0, 'steps': 1})
+        step_name = doc['steps'][step_index]['name'] if doc and 'steps' in doc and step_index < len(doc['steps']) else f'步骤{step_index + 1}'
+        col.update_one(
+            {'task_id': task_id},
+            {'$set': {
+                'current_step': step_index,
+                'current_stock_name': f"正在执行: {step_name}",
+                'updated_at': datetime.utcnow().isoformat(),
+                f'steps.{step_index}.status': 'running',
+                f'steps.{step_index}.completed_count': 0,
+                f'steps.{step_index}.failed_count': 0,
+                f'steps.{step_index}.skipped_count': 0,
+            }}
+        )
+
+    def complete_step(self, task_id: str, step_index: int, message: str = ''):
+        """完成一个步骤"""
+        col = self._get_col()
+        doc = col.find_one({'task_id': task_id}, {'_id': 0, 'steps': 1})
+        if doc and 'steps' in doc and step_index < len(doc['steps']):
+            step = doc['steps'][step_index]
+            step_name = step['name']
+            total_count = step.get('total_count', 1)
+        else:
+            step_name = f'步骤{step_index + 1}'
+            total_count = 1
+        col.update_one(
+            {'task_id': task_id},
+            {'$set': {
+                'current_stock_name': f"完成: {step_name}",
+                'updated_at': datetime.utcnow().isoformat(),
+                f'steps.{step_index}.status': 'completed',
+                f'steps.{step_index}.completed_count': total_count,
+                f'steps.{step_index}.message': message
+            }}
+        )
+        # 检查是否所有步骤都已完成
+        self._check_all_steps_completed(task_id)
+
+    def fail_step(self, task_id: str, step_index: int, error: str):
+        """失败一个步骤"""
+        col = self._get_col()
+        doc = col.find_one({'task_id': task_id}, {'_id': 0, 'steps': 1})
+        step_name = doc['steps'][step_index]['name'] if doc and 'steps' in doc and step_index < len(doc['steps']) else f'步骤{step_index + 1}'
+        col.update_one(
+            {'task_id': task_id},
+            {'$set': {
+                'current_stock_name': f"失败: {step_name}",
+                'updated_at': datetime.utcnow().isoformat(),
+                'error': error,
+                f'steps.{step_index}.status': 'failed',
+                f'steps.{step_index}.error': error
+            }}
+        )
+
+    def _check_all_steps_completed(self, task_id: str):
+        """检查是否所有步骤都已完成"""
+        col = self._get_col()
+        doc = col.find_one({'task_id': task_id}, {'_id': 0, 'steps': 1, 'status': 1})
+        if doc and doc.get('status') == TaskStatus.RUNNING.value:
+            steps = doc.get('steps', [])
+            all_completed = all(s.get('status') == 'completed' for s in steps)
+            if all_completed:
+                self.complete_task(task_id, '所有步骤已完成')
+
 
 # 全局单例
 _task_manager = None
@@ -271,3 +344,4 @@ def get_task_manager() -> TaskManager:
     if _task_manager is None:
         _task_manager = TaskManager()
     return _task_manager
+

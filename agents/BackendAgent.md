@@ -12,6 +12,7 @@
 
 - @skills/autoproject（全栈工程孵化与文档同步引擎）
 - @skills/VibeSec-Skill（安全编码最佳实践）
+- @skills/vibecoding-refactor（Vibe Coding 工程化重构方法论，用于代码质量分析与重构）
 
 ## 核心原则
 
@@ -46,7 +47,6 @@
 app/
 ├── data_manager.py      - 数据管理（已存在，复用）
 ├── factor_engine.py     - 因子引擎（已存在，复用）
-├── backtest_engine.py   - 回测引擎（已存在，复用）
 ├── sentiment_engine.py  - 舆情引擎（已存在，复用）
 │
 └── server/
@@ -57,7 +57,6 @@ app/
         ├── __init__.py
         ├── stocks.py    - 股票 API
         ├── factors.py   - 因子 API
-        ├── backtest.py  - 回测 API
         └── sync.py      - 数据同步 API
 ```
 
@@ -65,7 +64,6 @@ app/
 - `GET /api/stocks` - 获取股票列表
 - `GET /api/stocks/{code}/daily` - 获取日线数据
 - `GET /api/factors/cr5` - 获取 CR5 因子
-- `POST /api/backtest/run` - 运行回测
 - `POST /api/sync/daily` - 同步数据
 - `GET /health` - 健康检查
 - `GET /docs` - Swagger 文档
@@ -117,4 +115,4 @@ logger.error("错误信息", exc_info=True)
 - `app/server/api/*.py` - API 路由
 - `app/data_manager.py`（仅在必要时，谨慎修改）
 - `app/factor_engine.py`（仅在必要时，谨慎修改）
-- `app/backtest_engine.py`（仅在必要时，谨慎修改）
+- `app/sentiment_engine.py`（仅在必要时，谨慎修改）

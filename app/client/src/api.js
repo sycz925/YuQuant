@@ -80,7 +80,32 @@ export const factorApi = {
   getStockRPS: (code, params = {}) =>
     api.get(`/factors/rps/${code}`, { params }),
   getRPSByDate: (date, params = {}) =>
-    api.get('/factors/rps', { params: { trade_date: date, ...params } })
+    api.get('/factors/rps', { params: { trade_date: date, ...params } }),
+  updateDisableStatus: (items) =>
+    api.post('/factors/disable', items),
+  createItem: (item) =>
+    api.post('/factors/create', item),
+  getStockList: (params = {}) =>
+    api.get('/stocks', { params }),
+  compareStocksStart: () =>
+    api.post('/factors/compare-stocks'),
+  compareSectorsStart: () =>
+    api.post('/factors/compare-sectors'),
+  compareStatus: (taskId) =>
+    api.get(`/factors/compare-status/${taskId}`),
+  getDeepseekTimeLimit: () =>
+    api.get('/factors/config/deepseek-time-limit'),
+  setDeepseekTimeLimit: (enabled) =>
+    api.post(`/factors/config/deepseek-time-limit?enabled=${enabled}`),
+  importStocks: (stocks) =>
+    api.post('/factors/import-stocks', stocks),
+  importSectors: (sectors) =>
+    api.post('/factors/import-sectors', sectors),
+  importSectorCodes: (formData) =>
+    api.post('/factors/sectors/import-excel', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    }),
+  clearSyncTasks: () => api.post('/factors/clear-sync-tasks')
 }
 
 export const syncApi = {
@@ -107,18 +132,56 @@ export const marketReviewApi = {
   getSignals: (date) => api.get('/market-review/signals', { params: { date } }),
   getNewHighBlocks: (date) => api.get('/market-review/new-high-blocks', { params: { date } }),
   getLowPositionSectors: (date) => api.get('/market-review/low-position-sectors', { params: { date } }),
+  getActiveSectors: (date) => api.get('/market-review/active-sectors', { params: { date } }),
   getBaseData: (params = {}) => api.get('/market-review/base-data', { params }),
   getAiAnalysis: (date) => api.get('/market-review/ai-analysis', { params: { date } }),
   generateAiAnalysis: (date) => api.post('/market-review/ai-analysis/generate', null, { params: { date } }),
   getAiAnalysisTask: (taskId) => api.get(`/market-review/ai-analysis/task/${taskId}`),
+  getAiInputData: (date) => api.get('/market-review/ai-analysis/input-data', { params: { date } }),
+  getGroupStats: (date) => api.get('/market-review/group-stats', { params: { date } }),
+  getSectorDetail: (sectorCode) => api.get('/market-review/sector-detail', { params: { sector_code: sectorCode } }),
   getReview: () => api.get('/market-review')
 }
 
-export const exclusionApi = {
-  getExclusions: (params = {}) => api.get('/exclusions', { params }),
-  updateExclusions: (items) => api.post('/exclusions', { items }),
-  deleteExclusion: (code) => api.delete(`/exclusions/${code}`),
-  getExcluded: (params = {}) => api.get('/exclusions/excluded', { params })
+export const calendarApi = {
+  getDailySummary: (year, month) => api.get('/calendar/daily-summary', { params: { year, month } }),
+  getLatestTradeDate: () => api.get('/calendar/latest-trade-date'),
+  getTradingDays: (startDate, endDate) => api.get('/calendar/trading-days', { params: { start_date: startDate, end_date: endDate } }),
+  getWeekStatus: (year, month) => api.get('/calendar/week-status', { params: { year, month } }),
+  getWeeklyCached: (year, month, weekIndex) => api.get('/calendar/weekly-cached', { params: { year, month, week_index: weekIndex } }),
+  getWeeklySummary: (year, month, weekIndex) => api.post('/calendar/weekly-summary', null, { params: { year, month, week_index: weekIndex } }),
+  getWeeklyTask: (taskId) => api.get(`/calendar/weekly-task/${taskId}`),
+  getWeeklyInputData: (year, month, weekIndex) => api.get('/calendar/weekly-input-data', { params: { year, month, week_index: weekIndex } }),
+  getMonthlyCached: (year, month) => api.get('/calendar/monthly-cached', { params: { year, month } }),
+  getMonthlySummary: (year, month) => api.post('/calendar/monthly-summary', null, { params: { year, month } }),
+  getMonthlyTask: (taskId) => api.get(`/calendar/monthly-task/${taskId}`),
+  getMonthlyInputData: (year, month) => api.get('/calendar/monthly-input-data', { params: { year, month } }),
+  // 月度重算
+  recalculateMonth: (year, month) => api.post('/calendar/recalculate-month', null, { params: { year, month } }),
+  getMonthlyRecalcStatus: () => api.get('/calendar/recalculate-month/status'),
+  // AI分析补全
+  fillAiAnalysis: (year, month) => api.post('/calendar/fill-ai-analysis', null, { params: { year, month } }),
+  getMonthlyAiStatus: () => api.get('/calendar/fill-ai-analysis/status'),
+  // 通用任务查询
+  getTaskStatus: (taskId) => api.get(`/calendar/task/${taskId}`),
+}
+
+export const searchApi = {
+  search: (keyword) => api.get('/search', { params: { keyword } })
+}
+
+export const oneClickUpdateApi = {
+  start: () => api.post('/one-click-update/start'),
+  getStatus: () => api.get('/one-click-update/status'),
+  checkSyncTime: () => api.get('/one-click-update/sync-time-check'),
+  // 按日期重算
+  recalculateDate: (targetDate) => api.post('/one-click-update/recalculate-date', null, { params: { target_date: targetDate } }),
+
+}
+
+// 通用任务查询
+export const taskApi = {
+  getTaskStatus: (taskId) => api.get(`/calendar/task/${taskId}`)
 }
 
 export default api

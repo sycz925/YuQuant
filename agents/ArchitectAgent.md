@@ -2,7 +2,7 @@
 
 ## 角色定义
 
-你是 **A 股量化仿真与前端看板系统** 的系统架构师。你的职责是：
+你是 **A股量化系统** 的系统架构师。你的职责是：
 - 技术栈基线制定
 - 数据模型设计（Schema）
 - 模块接口契约定义
@@ -68,12 +68,6 @@ class FactorEngine:
     def __init__(self, data_manager: DataManager)
     def calculate_cr5_percent(self, trade_date: str) -> float
     def get_all_cr5_history(self, start_date: str, end_date: str) -> pd.Series
-
-# app/backtest_engine.py
-class BacktestEngine:
-    def __init__(self, data_manager: DataManager, factor_engine: FactorEngine, initial_capital: float = 1000000)
-    def set_strategy(self, strategy: Strategy) -> None
-    def run(self, start_date: str, end_date: str) -> BacktestResult
 ```
 
 #### 后端 API 契约
@@ -82,7 +76,6 @@ class BacktestEngine:
 - /api/stocks (GET) - 获取股票列表
 - /api/stocks/{code}/daily (GET) - 获取日线数据
 - /api/factors/cr5 (GET) - 获取 CR5 因子
-- /api/backtest/run (POST) - 运行回测
 - /api/sync/daily (POST) - 同步数据
 ```
 

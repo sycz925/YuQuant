@@ -1,7 +1,7 @@
 # React + FastAPI 架构升级完成总结
 
 **日期**：2026-06-05  
-**项目**：YuQuant - A 股量化仿真与前端看板系统
+**项目**：A股量化系统
 
 ---
 
@@ -28,7 +28,6 @@
 - `app/server/api/__init__.py` - API 模块初始化
 - `app/server/api/stocks.py` - 股票数据 API
 - `app/server/api/factors.py` - 因子数据 API
-- `app/server/api/backtest.py` - 回测 API
 - `app/server/api/sync.py` - 数据同步 API
 
 **更新文件：**
@@ -48,7 +47,6 @@
 - `app/client/src/api.js` - API 客户端封装
 - `app/client/src/pages/MarketMonitor.jsx` - 市场监控页
 - `app/client/src/pages/StockAnalysis.jsx` - 个股分析页
-- `app/client/src/pages/Backtest.jsx` - 回测页
 
 ### 3. 智能体配置
 
@@ -90,7 +88,6 @@
          │
          ├── DataManager
          ├── FactorEngine
-         ├── BacktestEngine
          └── SentimentEngine
 ```
 

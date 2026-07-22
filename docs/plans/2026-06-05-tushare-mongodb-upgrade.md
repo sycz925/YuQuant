@@ -95,7 +95,6 @@
 - [ ] 前端完整功能测试（确保 API 接口兼容）
 - [ ] 市场监控页面测试
 - [ ] 个股技术分析页面测试
-- [ ] 策略回测页面测试
 - [ ] 更新 `README.md` - 反映新的架构和数据层
 - [ ] 更新 `docs/` 相关文档
 
@@ -196,30 +195,6 @@
 
 ---
 
-### Collection 6: `backtest_results` - 回测结果
-```javascript
-{
-  "_id": ObjectId,
-  "strategy_name": "MA策略",
-  "start_date": "20250101",
-  "end_date": "20260605",
-  "initial_capital": 1000000.0,
-  "final_capital": 1234567.89,
-  "total_return": 0.2345,
-  "annual_return": 0.18,
-  "max_drawdown": 0.12,
-  "sharpe_ratio": 1.5,
-  "win_rate": 0.55,
-  "total_trades": 45,
-  "equity_curve": [...],
-  "trade_logs": [...],
-  "create_time": ISODate("2026-06-05T...")
-}
-```
-**索引**：`{ create_time: -1 }`
-
----
-
 ## 📚 数据源调度策略
 
 ### 优先级说明
@@ -276,7 +251,7 @@ MONGODB_DB_NAME=yuquant
 ## 📁 新架构目录结构（变更部分）
 
 ```
-YuQuant/
+A股量化系统/
 ├── app/
 │   ├── data/                    # ✨ 新增：数据层模块
 │   │   ├── __init__.py
@@ -291,7 +266,6 @@ YuQuant/
 │   │
 │   ├── data_manager.py         # ❌ 旧版将重写/移除
 │   ├── factor_engine.py        # 保留，适配新 DataManager
-│   ├── backtest_engine.py      # 保留，适配新 DataManager
 │   │
 │   └── server/
 │       └── api/

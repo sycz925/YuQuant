@@ -1,7 +1,7 @@
 #!/bin/bash
 # 重启脚本 - 重启前后端服务
 
-echo "🔄 重启 YuQuant 服务..."
+echo "🔄 重启 A股量化系统 服务..."
 
 SCRIPT_DIR="$(dirname "$0")"
 

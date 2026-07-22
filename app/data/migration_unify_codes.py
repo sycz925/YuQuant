@@ -126,32 +126,6 @@ def migrate_sector_stock_codes(db):
     print(f'  sector_basics stock_codes 无需迁移（已是纯数字）')
 
 
-def migrate_exclusions(db):
-    """exclusions: sh/sz/SECTOR_ 前缀 → 纯数字"""
-    docs = list(db['exclusions'].find({}))
-    ops = []
-    for doc in docs:
-        old_code = doc['code']
-        new_code = old_code
-        if old_code.startswith('sh'):
-            new_code = old_code[2:]
-        elif old_code.startswith('sz'):
-            new_code = old_code[2:]
-        elif old_code.startswith('SECTOR_'):
-            new_code = old_code[7:]
-
-        if new_code != old_code:
-            ops.append(UpdateOne(
-                {'_id': doc['_id']},
-                {'$set': {'code': new_code}}
-            ))
-            print(f'  exclusions: {old_code} → {new_code}')
-
-    if ops:
-        db['exclusions'].bulk_write(ops, ordered=False)
-    print(f'  exclusions 迁移完成: {len(ops)} 条更新')
-
-
 def main():
     db = get_db()
 
@@ -166,9 +140,6 @@ def main():
 
     print('\n=== 迁移 daily_data (板块) ===')
     migrate_daily_data_sector(db)
-
-    print('\n=== 迁移 exclusions ===')
-    migrate_exclusions(db)
 
     print('\n=== 迁移完成 ===')
 

@@ -9,11 +9,22 @@ from fastapi import APIRouter, HTTPException
 
 from app.data.manager import get_data_manager
 from app.data.task_manager import get_task_manager
+from app.data.db import get_db
 from app.server.models import SyncRequest, SyncResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
+
+
+def _check_sync_time():
+    """检查当前是否在允许同步的时间窗口内
+    非交易日：全天可同步
+    交易日：盘中 11:30-13:00，盘后 16:00-23:59
+    返回: (allowed: bool, message: str)
+    """
+    from app.server.utils.sync_window import check_sync_time
+    return check_sync_time()
 
 
 @router.post("/basics", response_model=SyncResponse)
@@ -74,39 +85,36 @@ def sync_daily_data(request: SyncRequest = SyncRequest()):
         )
 
 
-def _run_sync_task(task_id: str, start_date: str, end_date: str, max_workers: int = 16):
-    """后台任务：使用多线程同步日线数据"""
+def _run_sync_task(task_id: str, end_date: str, max_workers: int = 16, is_external: bool = False):
+    """后台任务：逐天回溯同步日线数据"""
     try:
         dm = get_data_manager()
         tm = get_task_manager()
         
-        # 获取所有股票代码和名称
         stock_df = dm.get_stock_list()
         if stock_df.empty:
             tm.fail_task(task_id, "没有找到股票数据，请先同步股票基础信息")
             return
         
-        stock_codes = stock_df['stock_code'].tolist()
-
-        # 排除禁用同步的股票
-        from app.server.api.exclusions import get_excluded_set
-        excluded = get_excluded_set('stock', 'sync')
-        if excluded:
-            before = len(stock_codes)
-            stock_codes = [c for c in stock_codes if c not in excluded]
-            logger.info(f"排除 {before - len(stock_codes)} 只禁用股票，实际同步 {len(stock_codes)} 只")
+        # 直接从数据库查询启用的股票代码
+        db = get_db()
+        stock_codes = [
+            doc['stock_code'] for doc in db['stock_basics'].find(
+                {'is_disable': {'$ne': True}},
+                {'_id': 0, 'stock_code': 1}
+            )
+        ]
+        logger.info(f"获取到 {len(stock_codes)} 只启用股票")
 
         total = len(stock_codes)
+        logger.info(f"开始逐天回溯同步股票日线数据，共 {total} 只，线程数: {max_workers}")
         
-        logger.info(f"开始多线程同步股票日线数据，共 {total} 只，线程数: {max_workers}，日期范围: {start_date} - {end_date}")
-        
-        # 使用 manager 的多线程同步方法
         result = dm.sync_daily_data(
             stock_codes=stock_codes,
-            start_date=start_date,
             end_date=end_date,
             task_id=task_id,
-            max_workers=max_workers
+            max_workers=max_workers,
+            is_external=is_external
         )
         
         source_msg = ', '.join([f"{k}: {v}" for k, v in result.get('sources', {}).items()])
@@ -121,7 +129,8 @@ def _run_sync_task(task_id: str, start_date: str, end_date: str, max_workers: in
         except Exception as e:
             logger.error(f"计算涨幅字段失败: {e}")
 
-        tm.complete_task(task_id, message, result.get('sources', {}))
+        if not is_external:
+            tm.complete_task(task_id, message, result.get('sources', {}))
 
         # 刷新交易日缓存
         try:
@@ -129,6 +138,15 @@ def _run_sync_task(task_id: str, start_date: str, end_date: str, max_workers: in
             refresh_trade_dates()
         except Exception:
             pass
+
+        # 注意：不再在这里预计算market_daily
+        # market_daily应该在一键更新的最后一步才生成
+        # 这里只刷新交易日缓存
+        try:
+            from app.server.cache import refresh_trade_dates
+            refresh_trade_dates()
+        except Exception as e:
+            logger.error(f"刷新交易日缓存失败: {e}")
 
     except Exception as e:
         logger.exception(f"同步所有股票日线数据失败: {e}")
@@ -138,73 +156,80 @@ def _run_sync_task(task_id: str, start_date: str, end_date: str, max_workers: in
 
 @router.post("/daily/all")
 def sync_all_daily_data(request: SyncRequest = SyncRequest()):
-    """同步所有股票的日线数据（后台任务）"""
+    """同步所有股票的日线数据 — 逐天回溯模式（后台任务）"""
     try:
+        allowed, msg = _check_sync_time()
+        if not allowed:
+            return {"success": False, "message": msg, "task_id": None}
+
         dm = get_data_manager()
         tm = get_task_manager()
 
-        # 设置默认日期 - end_date 默认今天，start_date 从请求参数获取（无默认值）
-        if not request.end_date:
-            request.end_date = datetime.now().strftime("%Y%m%d")
-        if not request.start_date:
-            request.start_date = "20180101"
+        end_date = request.end_date or datetime.now().strftime("%Y%m%d")
 
-        # 获取所有股票代码
-        stock_df = dm.get_stock_list()
-        if stock_df.empty:
+        # 直接从数据库查询启用的股票代码
+        db = get_db()
+        stock_codes = [
+            doc['stock_code'] for doc in db['stock_basics'].find(
+                {'is_disable': {'$ne': True}},
+                {'_id': 0, 'stock_code': 1}
+            )
+        ]
+        if not stock_codes:
             raise HTTPException(status_code=404, detail="没有找到股票数据，请先同步股票基础信息")
         
-        stock_codes = stock_df['stock_code'].tolist()
+        logger.info(f"获取到 {len(stock_codes)} 只启用股票")
 
-        # 排除禁用同步的股票
-        from app.server.api.exclusions import get_excluded_set
-        excluded = get_excluded_set('stock', 'sync')
-        if excluded:
-            before = len(stock_codes)
-            stock_codes = [c for c in stock_codes if c not in excluded]
-            logger.info(f"排除 {before - len(stock_codes)} 只禁用股票，实际同步 {len(stock_codes)} 只")
-
-        # 如果指定了最小上市天数，过滤不满足条件的股票
+        # 最小上市天数过滤
         min_days = request.min_days
         if min_days and min_days > 0:
             from datetime import datetime as dt
-            end_date_obj = dt.strptime(request.end_date, "%Y%m%d")
-            
-            # 从stock_basics获取上市日期（比查询daily_data快100倍）
+            end_date_obj = dt.strptime(end_date, "%Y%m%d")
             from app.data.db import get_db
             db = get_db()
-            
-            # 批量获取上市日期
             basics_cursor = db['stock_basics'].find(
                 {}, {'_id': 0, 'stock_code': 1, 'list_date': 1}
             )
             list_date_map = {d['stock_code']: d.get('list_date') for d in basics_cursor}
-            
             filtered_codes = []
             for code in stock_codes:
                 list_date = list_date_map.get(code)
                 if list_date:
                     try:
                         list_date_obj = dt.strptime(str(list_date), "%Y%m%d")
-                        days_listed = (end_date_obj - list_date_obj).days
-                        if days_listed >= min_days:
+                        if (end_date_obj - list_date_obj).days >= min_days:
                             filtered_codes.append(code)
                     except Exception:
                         filtered_codes.append(code)
                 else:
-                    # 没有上市日期的股票也加入
                     filtered_codes.append(code)
-            
             logger.info(f"过滤股票：原始 {len(stock_codes)} 只，过滤后 {len(filtered_codes)} 只（最小上市天数: {min_days}）")
             stock_codes = filtered_codes
 
-        # 创建任务
-        task_id = tm.create_task(len(stock_codes))
+        # 检查是否有正在运行的同步任务
+        from app.data.db import get_db
+        db = get_db()
+        running_task = db['sync_tasks'].find_one(
+            {'status': 'running', 'current_stock_name': {'$regex': '同步|sync'}},
+            sort=[('created_at', -1)]
+        )
+        
+        if running_task:
+            # 复用正在运行的任务
+            task_id = running_task['task_id']
+            return {
+                "success": True,
+                "task_id": task_id,
+                "message": "任务正在运行中，共用task_id",
+                "total_count": running_task.get('total_count', 0),
+                "already_running": True
+            }
+        
+        task_id = tm.create_task()
 
-        # 在后台线程中执行同步
         thread = threading.Thread(
             target=_run_sync_task,
-            args=(task_id, request.start_date, request.end_date, request.max_workers)
+            args=(task_id, end_date, request.max_workers)
         )
         thread.daemon = True
         thread.start()
@@ -212,7 +237,7 @@ def sync_all_daily_data(request: SyncRequest = SyncRequest()):
         return {
             "success": True,
             "task_id": task_id,
-            "message": f"后台同步任务已启动，共 {len(stock_codes)} 只股票需要同步，线程数: {request.max_workers}",
+            "message": f"逐天回溯同步已启动，共 {len(stock_codes)} 只股票",
             "total_count": len(stock_codes)
         }
 
@@ -220,10 +245,7 @@ def sync_all_daily_data(request: SyncRequest = SyncRequest()):
         raise
     except Exception as e:
         logger.error(f"启动同步任务失败: {e}")
-        return {
-            "success": False,
-            "message": f"启动同步失败: {str(e)}"
-        }
+        return {"success": False, "message": f"启动同步失败: {str(e)}"}
 
 
 @router.get("/task/{task_id}")

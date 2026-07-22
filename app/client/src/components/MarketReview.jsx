@@ -247,7 +247,7 @@ function MarketReview() {
           <h2 className="text-lg font-black text-white tracking-tight">全栈量化复盘报告</h2>
           <span className="text-xs text-gray-500 font-mono">{formatDate(trade_date)}</span>
         </div>
-        <span className="text-xs text-gray-600">Powered by YuQuant</span>
+        <span className="text-xs text-gray-600">Powered by A股量化系统</span>
       </div>
 
       <div className="p-6 space-y-6">

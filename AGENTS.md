@@ -1,4 +1,6 @@
-# A 股量化仿真与前端看板系统 - 代理配置
+# A股量化系统 - 代理配置
+
+> **@skills 路径约定**：`@skills/<name>` = 项目根目录下 `/.trae/skills/<name>/SKILL.md`
 
 ## 核心指令
 - 你每次回复的开头必须先叫我：主人
@@ -17,6 +19,7 @@
 * **autoproject**: @skills/autoproject（全栈工程孵化与文档同步引擎）
 * **ui-ux-pro-max**: @skills/ui-ux-pro-max（UI/UX 设计智能，用于前端界面开发）
 * **VibeSec-Skill**: @skills/VibeSec-Skill（安全编码最佳实践，用于安全审计）
+* **vibecoding-refactor**: @skills/vibecoding-refactor（Vibe Coding 工程化重构方法论，六阶段工作流：项目分区→关键识别→架构分析→模块分析→执行重构→验证归档）
 
 ## 2. 代理拓扑矩阵
 

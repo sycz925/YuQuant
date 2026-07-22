@@ -1,15 +1,23 @@
 """
 FastAPI后端主入口
 """
-import logging
+# 加载 .env 环境变量（必须在其他导入之前）
+from dotenv import load_dotenv
 import os
-import sys
-from datetime import datetime
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+load_dotenv(os.path.join(_project_root, '.env'))
 
+import logging
+import sys
+from contextlib import asynccontextmanager
+from datetime import datetime
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.server.config import get_settings
 from app.server.models import HealthResponse
-from app.server.api import stocks, factors, backtest, sync, market_analysis, exclusions, market_review
+from app.server.api import stocks, factors, sync, market_analysis, market_review, screenshot, calendar, search, one_click_update
 from app.server.cache import init_trade_dates, get_latest_trade_date
 
 # 配置日志 - 输出到 logs/ 目录
@@ -35,36 +43,63 @@ root_logger.addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时
+    logger.info("应用启动中...")
+    init_trade_dates()
+    logger.info("应用启动完成")
+    yield
+    # 关闭时
+    logger.info("应用关闭中...")
+
+
 # 创建FastAPI应用
+settings = get_settings()
 app = FastAPI(
-    title="A股量化回测系统",
-    description="React + FastAPI分离架构的量化回测系统",
-    version="1.0.0"
+    title="A股量化系统",
+    description="React + FastAPI分离架构的量化系统",
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # 配置CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+# 全局异常处理器
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局异常处理 - 统一错误响应格式"""
+    logger.error(f"未处理的异常: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "code": 500,
+            "message": "服务器内部错误",
+            "detail": str(exc)
+        }
+    )
+
+
 # 注册路由
 app.include_router(stocks.router)
 app.include_router(factors.router)
-app.include_router(backtest.router)
 app.include_router(sync.router)
 app.include_router(market_analysis.router)
-app.include_router(exclusions.router)
 app.include_router(market_review.router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时初始化缓存"""
-    init_trade_dates()
+app.include_router(screenshot.router)
+app.include_router(calendar.router)
+app.include_router(search.router)
+app.include_router(one_click_update.router)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -86,7 +121,7 @@ def health_check():
 def root():
     """根路由"""
     return {
-        "message": "欢迎使用A股量化回测系统API",
+        "message": "欢迎使用A股量化系统API",
         "docs": "/docs",
         "redoc": "/redoc"
     }

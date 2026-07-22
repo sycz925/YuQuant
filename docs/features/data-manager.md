@@ -86,7 +86,6 @@ result = dm.calculate_rps(target='all')
 | `daily_data` | 日线行情数据（含RPS） |
 | `sector_basics` | 板块基础信息 |
 | `index_basics` | 指数基础信息 |
-| `exclusions` | 排除设置 |
 | `sync_tasks` | 同步任务状态 |
 
 ---

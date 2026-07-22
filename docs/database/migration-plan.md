@@ -1,7 +1,7 @@
 # 数据迁移方案
 
 **日期**：2026-06-05  
-**项目**：YuQuant - A股量化仿真与前端看板系统
+**项目**：A股量化系统
 
 ---
 
@@ -109,8 +109,6 @@ db['factor_results'].create_index(
 )
 db['factor_results'].create_index([('trade_date', ASCENDING)])
 db['factor_results'].create_index([('factor_name', ASCENDING)])
-
-db['backtest_results'].create_index([('create_time', DESCENDING)])
 ```
 
 ---

@@ -1,15 +1,76 @@
 import React, { useState, useEffect } from 'react'
-import { Spin, Modal, Table } from 'antd'
+import { Spin, Modal, Table, Button, Tooltip } from 'antd'
+import { useNavigate } from 'react-router-dom'
 import { marketReviewApi } from '../api'
+import { DownOutlined, UpOutlined } from '@ant-design/icons'
+
+// 从股票字符串解析当日涨幅，返回颜色class
+// 涨停(>=9.9%)红、下跌(<0)绿、其他蓝
+const getStockColor = (stock) => {
+  if (!stock) return 'bg-blue-50 text-blue-700 border-blue-200'
+  // 匹配 "今日+13.3%" 或 "(+20.0%)" 中的最后一个数字
+  const match = stock.match(/今日([+-]?\d+\.?\d*)%/) || stock.match(/\(([+-]?\d+\.?\d*)%\)/)
+  if (match) {
+    const chg = parseFloat(match[1])
+    if (chg >= 9.9) return 'bg-red-50 text-red-700 border-red-200'
+    if (chg < 0) return 'bg-green-50 text-green-700 border-green-200'
+  }
+  return 'bg-blue-50 text-blue-700 border-blue-200'
+}
+
+// 从股票字符串中提取股票代码
+const extractStockCode = (stock) => {
+  if (!stock) return null
+  // 匹配括号中的数字代码，如 "平安银行(000001)" 或 "平安银行(000001 今日+1.5%)"
+  const match = stock.match(/\((\d{6})/)
+  return match ? match[1] : null
+}
+
+// 从股票字符串中提取股票名称
+const extractStockName = (stock) => {
+  if (!stock) return null
+  // 匹配括号前的名称
+  const match = stock.match(/^(.+?)\(/)
+  return match ? match[1] : stock
+}
+
+const StockTag = ({ stock, className = '' }) => {
+  const navigate = useNavigate()
+  const stockCode = extractStockCode(stock)
+  const stockName = extractStockName(stock)
+  
+  const handleClick = () => {
+    if (stockCode) {
+      // 如果有股票代码，直接用代码搜索
+      navigate(`/search?code=${stockCode}&name=${encodeURIComponent(stockName || stockCode)}`)
+    } else if (stockName) {
+      // 如果没有股票代码但有名称，用关键词搜索
+      navigate(`/search?keyword=${encodeURIComponent(stockName)}`)
+    }
+  }
+  
+  return (
+    <span 
+      className={`font-mono text-[11px] px-1.5 py-0.5 rounded border mr-1 mb-1 inline-block whitespace-nowrap ${getStockColor(stock)} ${(stockCode || stockName) ? 'cursor-pointer hover:opacity-80' : ''} ${className}`}
+      onClick={handleClick}
+    >
+      {stock}
+    </span>
+  )
+}
 
 function MarketSignals({ date }) {
+  const navigate = useNavigate()
   const [signalsData, setSignalsData] = useState(null)
   const [blocksData, setBlocksData] = useState(null)
+  const [lpsData, setLpsData] = useState(null)
+  const [activeData, setActiveData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [modalVisible, setModalVisible] = useState(false)
   const [modalTitle, setModalTitle] = useState('')
   const [modalData, setModalData] = useState([])
+  const [clustersExpanded, setClustersExpanded] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -19,12 +80,16 @@ function MarketSignals({ date }) {
     setLoading(true)
     setError(null)
     try {
-      const [signalsRes, blocksRes] = await Promise.all([
+      const [signalsRes, blocksRes, lpsRes, activeRes] = await Promise.all([
         marketReviewApi.getSignals(date),
-        marketReviewApi.getNewHighBlocks(date)
+        marketReviewApi.getNewHighBlocks(date),
+        marketReviewApi.getLowPositionSectors(date),
+        marketReviewApi.getActiveSectors(date)
       ])
       setSignalsData(signalsRes)
       setBlocksData(blocksRes)
+      setLpsData(lpsRes)
+      setActiveData(activeRes)
     } catch (e) {
       console.error('加载市场数据失败:', e)
       setError(e.response?.data?.detail || '加载失败')
@@ -50,10 +115,12 @@ function MarketSignals({ date }) {
     )
   }
 
-  if (!signalsData || !signalsData.indicators) return null
+  if (!signalsData || !blocksData) return null
 
   const { indicators, interpretation, trade_date } = signalsData
-  const { total_new_high_count, industry_clusters } = blocksData || {}
+  const { industry_clusters } = blocksData || {}
+  const lps_sectors = lpsData?.sectors || []
+  const active_sectors = activeData?.sectors || []
 
   const formatDate = (d) => {
     if (!d || d.length !== 8) return d
@@ -121,142 +188,387 @@ function MarketSignals({ date }) {
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       {/* 标题栏 */}
-      <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="w-1 h-5 bg-emerald-500 rounded-full"></div>
-          <h2 className="text-base font-black text-gray-900 tracking-tight">A股运行状态与新高板块效应</h2>
+      <div className="px-3 md:px-6 py-3 md:py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="flex items-center space-x-2 md:space-x-3">
+          <div className="w-1 h-4 md:h-5 bg-emerald-500 rounded-full"></div>
+          <h2 className="text-xs md:text-base font-black text-gray-900 tracking-tight">A股运行状态与板块效应</h2>
         </div>
-        <div className="flex items-center space-x-3">
-          <span className="text-xs text-gray-400 font-mono">{formatDate(trade_date)}</span>
-          {total_new_high_count > 0 && (
-            <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-bold rounded-full">
-              {total_new_high_count} 只新高
-            </span>
-          )}
+        <div className="flex items-center space-x-2 md:space-x-3">
+          <span className="text-[10px] md:text-xs text-gray-400 font-mono">{formatDate(trade_date)}</span>
         </div>
       </div>
 
-      {/* 第一部分：量化指标 */}
-      <div className="p-6 border-b border-gray-100">
-        <div className="flex items-center space-x-2 mb-4">
-          <div className="w-1 h-4 bg-emerald-500 rounded-full"></div>
-          <h3 className="text-sm font-bold text-gray-700">量化指标</h3>
-        </div>
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-gray-100">
-              <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-1/3">指标</th>
-              <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-1/3">数据</th>
-              <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-1/3 pl-4">信号解读</th>
-            </tr>
-          </thead>
-          <tbody>
-            {indicators.map((item, idx) => (
-              <tr
-                key={idx}
-                className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors"
-              >
-                <td className="py-3">
-                  <span className="text-sm font-bold text-gray-800">{item.name}</span>
-                </td>
-                <td className="py-3">
-                  <span 
-                    className="text-base font-mono font-black text-gray-900 cursor-pointer hover:text-indigo-600 transition-colors"
-                    onClick={() => {
-                      const stocks = item.stocks || []
-                      if (stocks.length > 0) {
-                        showStockModal(item.name + '个股列表', stocks)
-                      }
-                    }}
-                  >
-                    {item.data}
-                  </span>
-                  {item.name.includes('50日线') && getIndicatorBar(item.data_value, 100)}
-                </td>
-                <td className="py-3 pl-4">
-                  <span className={`text-xs ${getSignalColor(item.signal)}`}>{item.signal}</span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* 第二部分：板块效应聚类 */}
+      {/* 第二部分：板块效应聚类 - 收起展开效果 */}
       {industry_clusters && industry_clusters.length > 0 && (
-        <div className="p-6 border-b border-gray-100">
-          <div className="flex items-center space-x-2 mb-4">
-            <div className="w-1 h-4 bg-amber-500 rounded-full"></div>
-            <h3 className="text-sm font-bold text-gray-700">新高板块效应聚类</h3>
+        <div className="p-3 md:p-6 border-b border-gray-100">
+          <div className="flex items-center justify-between mb-2 md:mb-4">
+            <div className="flex items-center space-x-1.5 md:space-x-2">
+              <div className="w-1 h-3 md:h-4 bg-amber-500 rounded-full"></div>
+              <h3 className="text-xs md:text-sm font-bold text-gray-700">新高强力板块</h3>
+              <Tooltip title="筛选规则：先筛选RPS10/RPS20/RPS50其中之一>90的板块，再在这些板块中取当日收盘价创历史新高的个股，按行业聚类统计数量，取Top5">
+                <span className="text-[10px] md:text-xs text-gray-400 cursor-help">({industry_clusters.length}个)</span>
+              </Tooltip>
+            </div>
+            {industry_clusters.length > 5 && (
+              <Button
+                type="text"
+                size="small"
+                onClick={() => setClustersExpanded(!clustersExpanded)}
+                className="text-xs text-gray-500 hover:text-amber-600"
+              >
+                {clustersExpanded ? '收起' : '展开全部'}
+                {clustersExpanded ? <UpOutlined className="ml-1" /> : <DownOutlined className="ml-1" />}
+              </Button>
+            )}
           </div>
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">板块方向</th>
-                <th className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24">新高个股</th>
-                <th className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24">平均涨幅</th>
-                <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">代表个股</th>
-                <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24 pl-4">特征</th>
-              </tr>
-            </thead>
-            <tbody>
-              {industry_clusters.map((item, idx) => (
-                <tr
+          
+          {/* 移动端：紧凑卡片列表 */}
+          <div className="md:hidden space-y-3">
+            {(clustersExpanded ? industry_clusters : industry_clusters.slice(0, 5)).map((item, idx) => {
+              const originalIdx = clustersExpanded ? idx : idx
+              return (
+                <div
                   key={idx}
-                  className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors ${
-                    idx === 0 ? 'bg-amber-50/30' : ''
+                  className={`p-3 rounded-xl border ${
+                    originalIdx === 0 ? 'bg-amber-50/50 border-amber-200' : 'bg-gray-50/50 border-gray-100'
                   }`}
                 >
-                  <td className="py-3">
-                    <div className="flex items-center space-x-2">
-                      {idx === 0 && <span className="text-amber-500 text-xs">👑</span>}
-                      <span className={`text-sm font-bold ${idx === 0 ? 'text-amber-700' : 'text-gray-900'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center space-x-1.5">
+                      {originalIdx === 0 && <span className="text-amber-500 text-xs">👑</span>}
+                      <span 
+                        className={`text-sm font-bold cursor-pointer hover:underline ${originalIdx === 0 ? 'text-amber-700' : 'text-gray-900'}`}
+                        onClick={() => navigate(`/search?keyword=${encodeURIComponent(item.industry)}`)}
+                      >
                         {item.industry}
                       </span>
                     </div>
-                  </td>
-                  <td className="py-3 text-center">
-                    <span 
-                      className={`text-base font-mono font-black cursor-pointer hover:text-indigo-600 transition-colors ${
-                        idx === 0 ? 'text-amber-600' : 'text-gray-900'
-                      }`}
-                      onClick={() => showStockModal(item.industry + '新高个股', item.stocks)}
-                    >
-                      {item.count}
-                    </span>
-                    <span className="text-[10px] text-gray-400 ml-0.5">只</span>
-                    <div className="text-[10px] text-gray-400 mt-0.5">{item.pct}%</div>
-                  </td>
-                  <td className="py-3 text-center">
-                    <span className={`text-sm font-mono font-bold ${
-                      item.avg_chg > 0 ? 'text-red-500' : item.avg_chg < 0 ? 'text-green-500' : 'text-gray-500'
-                    }`}>
-                      {item.avg_chg > 0 ? '+' : ''}{item.avg_chg}%
-                    </span>
-                  </td>
-                  <td className="py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {item.representative_stocks.map((stock, si) => (
-                        <span
-                          key={si}
-                          className="font-mono text-[11px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-700"
-                        >
-                          {stock}
-                        </span>
-                      ))}
+                    <div className="flex items-center space-x-2">
+                      <span 
+                        className={`text-sm font-mono font-black cursor-pointer ${
+                          originalIdx === 0 ? 'text-amber-600' : 'text-gray-900'
+                        }`}
+                        onClick={() => showStockModal(item.industry + '新高个股', item.stocks)}
+                      >
+                        {item.count}只
+                      </span>
+                      <span className={`text-xs font-mono font-bold ${
+                        (item.chg_pct || item.chg || 0) > 0 ? 'text-red-500' : (item.chg_pct || item.chg || 0) < 0 ? 'text-green-500' : 'text-gray-500'
+                      }`}>
+                        {(item.chg_pct || item.chg || 0) > 0 ? '+' : ''}{(item.chg_pct || item.chg || 0)}%
+                      </span>
                     </div>
-                  </td>
-                  <td className="py-3 pl-4">
-                    <span className={`text-[11px] font-bold ${
-                      idx === 0 ? 'text-amber-600' : 'text-indigo-500'
-                    }`}>
-                      {idx === 0 ? '主线方向' : '机构共振'}
-                    </span>
-                  </td>
+                  </div>
+                  <div style={{ lineHeight: '28px' }}>
+                    {(item.pioneer || item.representative_stocks || item.representative || []).slice(0, 3).map((stock, si) => (
+                      <StockTag key={si} stock={stock} />
+                    ))}
+                    {(item.main_force || item.core_stocks || item.core || []).slice(0, 2).map((stock, si) => (
+                      <StockTag key={`core-${si}`} stock={stock} />
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* 桌面端：完整表格 */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">板块方向</th>
+                  <th className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24">新高个股</th>
+                  <th className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24">涨幅</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">先锋</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">中军</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">后排</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {(clustersExpanded ? industry_clusters : industry_clusters.slice(0, 5)).map((item, idx) => {
+                  const originalIdx = clustersExpanded ? idx : idx
+                  return (
+                    <tr
+                      key={idx}
+                      className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors ${
+                        originalIdx === 0 ? 'bg-amber-50/30' : ''
+                      }`}
+                    >
+                      <td className="py-3">
+                        <div className="flex items-center space-x-2">
+                          {originalIdx === 0 && <span className="text-amber-500 text-xs">👑</span>}
+                          <span 
+                            className={`text-sm font-bold cursor-pointer hover:underline ${originalIdx === 0 ? 'text-amber-700' : 'text-gray-900'}`}
+                            onClick={() => navigate(`/search?keyword=${encodeURIComponent(item.industry)}`)}
+                          >
+                            {item.industry}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3 text-center">
+                        <span 
+                          className={`text-base font-mono font-black cursor-pointer hover:text-indigo-600 transition-colors ${
+                            originalIdx === 0 ? 'text-amber-600' : 'text-gray-900'
+                          }`}
+                          onClick={() => showStockModal(item.industry + '新高个股', item.stocks)}
+                        >
+                          {item.count}
+                        </span>
+                        <span className="text-[10px] text-gray-400 ml-0.5">只</span>
+                        <div className="text-[10px] text-gray-400 mt-0.5">{item.pct}%</div>
+                      </td>
+                      <td className="py-3 text-center">
+                        <span className={`text-sm font-mono font-bold ${
+                          (item.chg_pct || item.chg || 0) > 0 ? 'text-red-500' : (item.chg_pct || item.chg || 0) < 0 ? 'text-green-500' : 'text-gray-500'
+                        }`}>
+                          {(item.chg_pct || item.chg || 0) > 0 ? '+' : ''}{(item.chg_pct || item.chg || 0)}%
+                        </span>
+                      </td>
+                       <td className="py-3">
+                        <div style={{ lineHeight: '24px' }}>
+                          {(item.pioneer || item.representative_stocks || item.representative || []).map((stock, si) => (
+                            <StockTag key={si} stock={stock} />
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-3">
+                        <div style={{ lineHeight: '24px' }}>
+                          {(item.main_force || item.core_stocks || item.core || []).map((stock, si) => (
+                            <StockTag key={si} stock={stock} />
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-3">
+                        <div style={{ lineHeight: '24px' }}>
+                          {(item.followers || []).map((stock, si) => (
+                            <StockTag key={si} stock={stock} />
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 低位潜力板块 */}
+      {lps_sectors.length > 0 && (
+        <div className="p-3 md:p-6 border-b border-gray-100">
+          <div className="flex items-center space-x-1.5 md:space-x-2 mb-2 md:mb-4">
+            <div className="w-1 h-3 md:h-4 bg-emerald-500 rounded-full"></div>
+            <h3 className="text-xs md:text-sm font-bold text-gray-700">低位潜力板块</h3>
+            <Tooltip title="筛选规则：MA10>MA20 + RPS10>85(短线爆发力) + RPS50<70(长线低位) + 近3天有1天以上≥15%个股创20日新高 + 近5天有4天净新高>-10">
+              <span className="text-[10px] md:text-xs text-gray-400 cursor-help">({lps_sectors.length}个)</span>
+            </Tooltip>
+          </div>
+
+          {/* 桌面端表格 */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">板块方向</th>
+                  <th className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24">新高个股</th>
+                  <th className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24">涨幅</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">先锋</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">中军</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">后排</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lps_sectors.map((item, idx) => (
+                  <tr key={idx} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors">
+                    <td className="py-3">
+                      <div className="flex items-center space-x-2">
+                        <span 
+                          className="text-sm font-bold text-gray-900 cursor-pointer hover:underline"
+                          onClick={() => navigate(`/search?keyword=${encodeURIComponent(item.name)}`)}
+                        >
+                          {item.name}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3 text-center">
+                      <span className="text-base font-mono font-black text-gray-900">{item.count}</span>
+                      <span className="text-[10px] text-gray-400 ml-0.5">只</span>
+                      <div className="text-[10px] text-gray-400 mt-0.5">{item.pct}%</div>
+                    </td>
+                    <td className="py-3 text-center">
+                      <span className={`text-sm font-mono font-bold ${item.chg_pct > 0 ? 'text-red-500' : item.chg_pct < 0 ? 'text-green-500' : 'text-gray-500'}`}>
+                        {item.chg_pct > 0 ? '+' : ''}{item.chg_pct}%
+                      </span>
+                    </td>
+                    <td className="py-3">
+                      <div style={{ lineHeight: '24px' }}>
+                                                  {(item.pioneer || []).map((stock, si) => (
+                          <StockTag key={si} stock={stock} />
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-3">
+                      <div style={{ lineHeight: '24px' }}>
+                        {(item.main_force || []).map((stock, si) => (
+                          <StockTag key={si} stock={stock} />
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-3">
+                      <div style={{ lineHeight: '24px' }}>
+                        {(item.followers || []).map((stock, si) => (
+                          <StockTag key={si} stock={stock} />
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 移动端卡片 */}
+          <div className="md:hidden space-y-3">
+            {lps_sectors.map((item, idx) => (
+              <div key={idx} className="p-3 rounded-xl border bg-emerald-50/50 border-emerald-100">
+                <div className="flex items-center justify-between mb-2">
+                  <span 
+                    className="text-sm font-bold text-gray-900 cursor-pointer hover:underline"
+                    onClick={() => navigate(`/search?keyword=${encodeURIComponent(item.name)}`)}
+                  >
+                    {item.name}
+                  </span>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-sm font-mono font-black text-gray-900">{item.count}只</span>
+                    <span className={`text-sm font-mono font-bold ${item.chg_pct > 0 ? 'text-red-500' : item.chg_pct < 0 ? 'text-green-500' : 'text-gray-500'}`}>
+                      {item.chg_pct > 0 ? '+' : ''}{item.chg_pct}%
+                    </span>
+                  </div>
+                </div>
+                <div style={{ lineHeight: '28px' }}>
+                  {(item.pioneer || []).slice(0, 3).map((stock, si) => (
+                    <StockTag key={si} stock={stock} />
+                  ))}
+                  {(item.main_force || []).slice(0, 2).map((stock, si) => (
+                    <StockTag key={`core-${si}`} stock={stock} />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 异动活跃板块 */}
+      {active_sectors.length > 0 && (
+        <div className="p-3 md:p-6 border-b border-gray-100">
+          <div className="flex items-center space-x-1.5 md:space-x-2 mb-2 md:mb-4">
+            <div className="w-1 h-3 md:h-4 bg-orange-500 rounded-full"></div>
+            <h3 className="text-xs md:text-sm font-bold text-gray-700">异动活跃板块</h3>
+            <Tooltip title="筛选规则：板块中大市值(流通市值Top10%)个股，60%以上今日涨幅≥5%且放量(涨停豁免量能)，符合条件数≥5只">
+              <span className="text-[10px] md:text-xs text-gray-400 cursor-help">({active_sectors.length}个)</span>
+            </Tooltip>
+          </div>
+
+          {/* 桌面端表格 */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">板块方向</th>
+                  <th className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24">符合条件</th>
+                  <th className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 w-24">涨幅</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">先锋</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">中军</th>
+                  <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">后排</th>
+                </tr>
+              </thead>
+              <tbody>
+                {active_sectors.map((item, idx) => (
+                  <tr key={idx} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors">
+                    <td className="py-3">
+                      <div className="flex items-center space-x-2">
+                        <span
+                          className="text-sm font-bold text-gray-900 cursor-pointer hover:underline"
+                          onClick={() => navigate(`/search?keyword=${encodeURIComponent(item.name)}`)}
+                        >
+                          {item.name}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3 text-center">
+                      <span className="text-base font-mono font-black text-gray-900">{item.count}</span>
+                      <span className="text-[10px] text-gray-400 ml-0.5">只</span>
+                      <div className="text-[10px] text-gray-400 mt-0.5">{item.pct}%</div>
+                    </td>
+                    <td className="py-3 text-center">
+                      <span className={`text-sm font-mono font-bold ${item.chg_pct > 0 ? 'text-red-500' : item.chg_pct < 0 ? 'text-green-500' : 'text-gray-500'}`}>
+                        {item.chg_pct > 0 ? '+' : ''}{item.chg_pct}%
+                      </span>
+                    </td>
+                    <td className="py-3">
+                      <div style={{ lineHeight: '24px' }}>
+                        {(item.pioneer || []).map((stock, si) => (
+                          <StockTag key={si} stock={stock} />
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-3">
+                      <div style={{ lineHeight: '24px' }}>
+                        {(item.main_force || []).map((stock, si) => (
+                          <StockTag key={si} stock={stock} />
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-3">
+                      <div style={{ lineHeight: '24px' }}>
+                        {(item.followers || []).map((stock, si) => (
+                          <StockTag key={si} stock={stock} />
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 移动端卡片 */}
+          <div className="md:hidden space-y-3">
+            {active_sectors.map((item, idx) => (
+              <div key={idx} className="p-3 rounded-xl border bg-orange-50/50 border-orange-100">
+                <div className="flex items-center justify-between mb-2">
+                  <span
+                    className="text-sm font-bold text-gray-900 cursor-pointer hover:underline"
+                    onClick={() => navigate(`/search?keyword=${encodeURIComponent(item.name)}`)}
+                  >
+                    {item.name}
+                  </span>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-sm font-mono font-black text-gray-900">{item.count}只</span>
+                    <span className={`text-sm font-mono font-bold ${item.chg_pct > 0 ? 'text-red-500' : item.chg_pct < 0 ? 'text-green-500' : 'text-gray-500'}`}>
+                      {item.chg_pct > 0 ? '+' : ''}{item.chg_pct}%
+                    </span>
+                  </div>
+                </div>
+                <div style={{ lineHeight: '28px' }}>
+                  {(item.pioneer || []).slice(0, 3).map((stock, si) => (
+                    <StockTag key={`pioneer-${si}`} stock={stock} />
+                  ))}
+                </div>
+                <div className="mt-1.5">
+                  <div className="text-[10px] text-gray-400 mb-1">中军</div>
+                  <div style={{ lineHeight: '28px' }}>
+                    {(item.main_force || []).slice(0, 2).map((stock, si) => (
+                      <StockTag key={`core-${si}`} stock={stock} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -267,6 +579,7 @@ function MarketSignals({ date }) {
         onCancel={() => setModalVisible(false)}
         footer={null}
         width={600}
+        className="max-w-[90vw]"
       >
         <Table
           dataSource={modalData}
@@ -275,22 +588,9 @@ function MarketSignals({ date }) {
           size="small"
           pagination={{ pageSize: 10 }}
           bordered
+          scroll={{ x: 400 }}
         />
       </Modal>
-
-      {/* 合并后的信号解读 */}
-      {combinedInterpretation && (
-        <div className="px-6 pb-6">
-          <div className="border-l-4 border-emerald-500 bg-emerald-50/60 rounded-r-lg p-4">
-            <div className="flex items-start space-x-2 mb-1">
-              <span className="text-emerald-600 text-xs font-bold uppercase tracking-widest whitespace-nowrap mt-0.5">综合分析</span>
-            </div>
-            <p className="text-sm text-gray-700 font-medium leading-relaxed whitespace-pre-line">
-              {renderHighlightedText(combinedInterpretation)}
-            </p>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

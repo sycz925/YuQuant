@@ -70,7 +70,7 @@ class BaoStockSource:
                         start_date=s_date,
                         end_date=e_date,
                         frequency="d",
-                        adjustflag="3"
+                        adjustflag="2"  # 前复权，与pytdx保持一致
                     )
                     data_list = []
                     while (rs.error_code == '0') & rs.next():

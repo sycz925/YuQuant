@@ -9,6 +9,7 @@
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -19,6 +20,8 @@ from app.data.db import get_db, get_collection
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+BJ_TZ = ZoneInfo('Asia/Shanghai')
+
 PERIODS = {
     'rps_10': 10,
     'rps_20': 20,
@@ -27,13 +30,13 @@ PERIODS = {
     'rps_250': 250
 }
 
-# 个股RPS周期：20/50/120/250（不含10日）
-STOCK_RPS_FIELDS = ['rps_20', 'rps_50', 'rps_120', 'rps_250']
-STOCK_RPS_PERIODS = {'rps_20': 20, 'rps_50': 50, 'rps_120': 120, 'rps_250': 250}
+# 个股RPS周期：10/20/50/120/250
+STOCK_RPS_FIELDS = ['rps_10', 'rps_20', 'rps_50', 'rps_120', 'rps_250']
+STOCK_RPS_PERIODS = {'rps_10': 10, 'rps_20': 20, 'rps_50': 50, 'rps_120': 120, 'rps_250': 250}
 
-# 板块RPS周期：10/20/50
-SECTOR_RPS_FIELDS = ['rps_10', 'rps_20', 'rps_50']
-SECTOR_RPS_PERIODS = {'rps_10': 10, 'rps_20': 20, 'rps_50': 50}
+# 板块RPS周期：10/20/50/120/250
+SECTOR_RPS_FIELDS = ['rps_10', 'rps_20', 'rps_50', 'rps_120', 'rps_250']
+SECTOR_RPS_PERIODS = {'rps_10': 10, 'rps_20': 20, 'rps_50': 50, 'rps_120': 120, 'rps_250': 250}
 
 # 均线周期
 MA_PERIODS = [10, 20, 50, 120]
@@ -51,140 +54,113 @@ class FactorEngine:
     def calculate_rps(self, data_type: str = 'stock', max_dates: Optional[int] = None,
                        progress_callback=None, excluded_codes: Optional[List[str]] = None) -> Dict[str, int]:
         """
-        计算 RPS（相对强度）— 窗口批量模式
+        计算 RPS（相对强度）— 递归边界模式
 
-        核心思路：
-        1. 找出有空RPS数据的最小日期（需要计算的起始日期）
-        2. 加载全部历史数据构建价格矩阵
-        3. 批量计算所有日期的RPS
-        4. 数据不足的周期记为-1
-        5. 批量写入
+        从最新交易日往前：
+        - chg_* 缺失 → 跳过该记录
+        - 有 chg_* 无 RPS → 计算
+        - 有 RPS → 停止
         """
         from app.data.db import get_collection
+        from pymongo import UpdateOne
+        from datetime import timedelta
+
         coll = get_collection(data_type)
 
-        # 1. 扫描日期范围
-        if progress_callback:
-            progress_callback("正在扫描日期范围...", 0, 100, "扫描")
-
-        all_dates = sorted(coll.distinct(
-            'trade_date', {'close': {'$exists': True, '$gt': 0}}
-        ))
-        if not all_dates:
-            return {'dates': 0, 'codes': 0, 'updates': 0, 'skipped': 0}
-
-        # 根据类型选择判断字段和周期
         if data_type == 'sector':
-            periods = SECTOR_RPS_PERIODS
             rps_check_field = 'rps_10'
+            chg_fields = ['chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'chg_250d']
+            chg_field_map = {'chg_10d': 'rps_10', 'chg_20d': 'rps_20', 'chg_50d': 'rps_50', 'chg_120d': 'rps_120', 'chg_250d': 'rps_250'}
         else:
-            periods = STOCK_RPS_PERIODS
-            rps_check_field = 'rps_20'
+            rps_check_field = 'rps_10'
+            chg_fields = ['chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'chg_250d']
+            chg_field_map = {'chg_10d': 'rps_10', 'chg_20d': 'rps_20', 'chg_50d': 'rps_50', 'chg_120d': 'rps_120', 'chg_250d': 'rps_250'}
 
-        # 找出有空RPS数据的最小日期
-        # 查询每个日期的rps_check_field是否存在（排除-1，-1表示数据不足）
-        pipeline = [
-            {'$match': {'close': {'$exists': True, '$gt': 0}}},
-            {'$group': {
-                '_id': '$trade_date',
-                'total': {'$sum': 1},
-                'with_rps': {'$sum': {'$cond': [{'$and': [
-                    {'$gte': [f'${rps_check_field}', 0]},
-                    {'$ne': [f'${rps_check_field}', -1]}
-                ]}, 1, 0]}}
-            }}
-        ]
-        date_stats = {r['_id']: (r['total'], r['with_rps']) for r in coll.aggregate(pipeline)}
-
-        # 找出需要计算的日期（有空RPS数据的）
-        # 只检查最近30天，历史日期跳过
-        recent_dates = [d for d in all_dates if d >= all_dates[-30]] if len(all_dates) > 30 else all_dates
-        dates_to_calc = []
-        for d in recent_dates:
-            if d in date_stats:
-                total, with_rps = date_stats[d]
-                if total != with_rps:
-                    dates_to_calc.append(d)
-
-        if not dates_to_calc:
-            logger.info(f"[RPS-{data_type}] 无需更新")
-            return {'dates': 0, 'codes': 0, 'updates': 0, 'skipped': len(all_dates)}
-
-        logger.info(f"[RPS-{data_type}] 需计算 {len(dates_to_calc)} 天: {dates_to_calc[0]}~{dates_to_calc[-1]}")
-
-        # 2. 加载数据：所有缺失日期 + 前250天历史（用于chg_250d排名）
-        if progress_callback:
-            progress_callback(f"正在加载数据...", 0, len(dates_to_calc))
-
-        from datetime import datetime as _dt, timedelta
-        target_date = dates_to_calc[0]
-        try:
-            pre_start = (_dt.strptime(target_date, '%Y%m%d') - timedelta(days=300)).strftime('%Y%m%d')
-        except Exception:
-            pre_start = target_date
-
-        query = {
-            'trade_date': {'$in': dates_to_calc},
-            'close': {'$exists': True, '$gt': 0}
-        }
-        if excluded_codes:
-            query['stock_code'] = {'$nin': excluded_codes}
-
-        # 加载涨幅字段用于RPS排名
-        if data_type == 'sector':
-            chg_fields = ['chg_10d', 'chg_20d', 'chg_50d']
-        else:
-            chg_fields = ['chg_20d', 'chg_50d', 'chg_120d', 'chg_250d']
-
-        projection = {'_id': 0, 'stock_code': 1, 'trade_date': 1, 'close': 1}
-        for f in chg_fields:
-            projection[f] = 1
-
-        cursor = coll.find(query, projection)
-        raw_data = list(cursor)
-        if not raw_data:
+        # 获取最新交易日
+        latest = coll.find_one(
+            {'close': {'$exists': True, '$gt': 0}},
+            sort=[('trade_date', -1)],
+            projection={'trade_date': 1, '_id': 0}
+        )
+        if not latest:
             return {'dates': 0, 'codes': 0, 'updates': 0, 'skipped': 0}
 
-        logger.info(f"[RPS-{data_type}] 加载 {len(raw_data)} 条记录")
-
-        if progress_callback:
-            progress_callback(f"计算 {len(raw_data)} 条数据的RPS...", 0, 1)
-
-        df = pd.DataFrame(raw_data)
-        del raw_data
-
-        # 字段映射
-        chg_field_map = {f'chg_{p}d': f'rps_{p}' for p in [20, 50, 120, 250]}
-        if data_type == 'sector':
-            chg_field_map = {f'chg_{p}d': f'rps_{p}' for p in [10, 20, 50]}
-
-        total_ops = []
         total_updates = 0
-        calc_dates = sorted(df['trade_date'].unique())
-        n_dates = len(calc_dates)
+        days_calculated = 0
+        day = latest['trade_date']
+        is_first_day = True
 
-        # 向量化计算：按日期分组后批量排名
-        for d_idx, trade_date in enumerate(calc_dates):
-            if progress_callback and d_idx % 10 == 0:
-                progress_callback(f"{trade_date} 计算中...", d_idx + 1, n_dates)
+        while True:
+            # 超过10年停止
+            try:
+                day_dt = datetime.strptime(day, '%Y%m%d')
+                if (datetime.now(BJ_TZ).date() - day_dt.date()).days > 3650:
+                    break
+            except Exception:
+                break
 
-            day_df = df[df['trade_date'] == trade_date]
-            stock_codes = day_df['stock_code'].values
+            # 检查这天有没有交易数据
+            day_count = coll.count_documents({'trade_date': day, 'close': {'$gt': 0}})
+            if day_count == 0:
+                # 交易日没有交易数据，报错
+                from app.data.holidays import is_workday
+                if is_workday(day):
+                    raise ValueError(f"{day} 是交易日但没有交易数据，请先同步该天数据。")
+                # 非交易日，跳到上一天
+                day = (day_dt - timedelta(days=1)).strftime('%Y%m%d')
+                continue
 
-            # 对每个周期计算排名
+            # 检查这天 chg_* 是否完整
+            projection = {'_id': 0, 'stock_code': 1, 'trade_date': 1}
+            for f in chg_fields:
+                projection[f] = 1
+            projection[rps_check_field] = 1  # 需要检查RPS字段
+
+            query = {'trade_date': day, 'close': {'$gt': 0}}
+            if excluded_codes:
+                query['stock_code'] = {'$nin': excluded_codes}
+
+            day_data = list(coll.find(query, projection))
+            if not day_data:
+                day = (day_dt - timedelta(days=1)).strftime('%Y%m%d')
+                continue
+
+            # 从 day_data 中过滤掉 chg_* 不完整的记录（数据不足的板块跳过）
+            valid_data = []
+            for d in day_data:
+                if all(f in d and d[f] is not None for f in chg_fields):
+                    valid_data.append(d)
+            if len(valid_data) < len(day_data):
+                logger.debug(f"[RPS-{data_type}] {day} 跳过{len(day_data)-len(valid_data)}只缺chg的{data_type}")
+            day_data = valid_data
+
+            # 检查 RPS 是否已存在（>= 95% 有RPS则停止）
+            # 最新交易日永远重算，只有上一天也有才停止
+            if not is_first_day:
+                with_rps = sum(1 for d in day_data if d.get(rps_check_field) is not None and d.get(rps_check_field) >= 0)
+                if with_rps >= len(day_data) * 0.95:
+                    logger.info(f"[RPS-{data_type}] {day} RPS 已有 {with_rps}/{len(day_data)}（>=95%），停止")
+                    break
+            is_first_day = False
+
+            # 计算当天 RPS
+            if progress_callback:
+                progress_callback(f"{day} 计算中...", days_calculated + 1, 0)
+
+            logger.info(f"[RPS-{data_type}] 计算 {day}（{len(day_data)} 条）")
+
+            stock_codes = [d['stock_code'] for d in day_data]
             set_doc_base = {'update_time': datetime.utcnow()}
-            for chg_field, rps_field in chg_field_map.items():
-                if chg_field not in day_df.columns:
-                    continue
+            ops = []
 
-                vals = day_df[chg_field].values.astype(float)
+            for chg_field, rps_field in chg_field_map.items():
+                vals = np.array([d.get(chg_field) for d in day_data], dtype=float)
                 valid_mask = ~np.isnan(vals) & (vals != 0)
                 valid_count = valid_mask.sum()
 
                 if valid_count == 0:
                     continue
 
-                # numpy快速排名
                 ranks = np.zeros(len(vals), dtype=int)
                 valid_vals = vals[valid_mask]
                 sorted_idx = np.argsort(valid_vals)
@@ -193,31 +169,26 @@ class FactorEngine:
                 ranks[valid_mask] = np.round(rank_positions / valid_count * 100).astype(int)
                 ranks = np.clip(ranks, 1, 100)
 
-                # 批量构建更新操作
-                for i in range(len(stock_codes)):
-                    total_ops.append(
-                        UpdateOne(
-                            {'stock_code': stock_codes[i], 'trade_date': trade_date},
-                            {'$set': {rps_field: int(ranks[i]), **set_doc_base}}
-                        )
-                    )
+                for i, code in enumerate(stock_codes):
+                    ops.append(UpdateOne(
+                        {'stock_code': code, 'trade_date': day},
+                        {'$set': {rps_field: int(ranks[i]), **set_doc_base}}
+                    ))
 
-            # 每10天批量写入一次
-            if len(total_ops) >= 50000:
-                coll.bulk_write(total_ops, ordered=False)
-                total_updates += len(total_ops)
-                total_ops = []
+            if ops:
+                coll.bulk_write(ops, ordered=False)
+                total_updates += len(ops)
 
-        # 写入剩余
-        if total_ops:
-            coll.bulk_write(total_ops, ordered=False)
-            total_updates += len(total_ops)
+            days_calculated += 1
+
+            # 返回上一天继续
+            day = (day_dt - timedelta(days=1)).strftime('%Y%m%d')
 
         if progress_callback:
-            progress_callback(f"RPS计算完成", n_dates, n_dates)
+            progress_callback("RPS计算完成", days_calculated, days_calculated)
 
-        logger.info(f"[RPS-{data_type}] 计算完成: {n_dates} 天, {total_updates} 条更新")
-        return {'dates': n_dates, 'codes': len(df['stock_code'].unique()), 'updates': total_updates, 'skipped': 0}
+        logger.info(f"[RPS-{data_type}] 计算完成: {days_calculated} 天, {total_updates} 条更新")
+        return {'dates': days_calculated, 'codes': 0, 'updates': total_updates, 'skipped': 0}
 
     def calculate_derived_fields(self, data_type: str = 'stock', trade_date: str = None,
                                   progress_callback=None, backfill: bool = False) -> Dict[str, int]:
@@ -254,12 +225,13 @@ class FactorEngine:
             progress_callback("加载数据...", 0, 100, "加载")
 
         # 确定成交量字段
-        vol_field = 'volume' if data_type == 'sector' else 'vol'
+        # 板块数据优先使用vol字段（因为volume字段可能为0）
+        vol_field = 'vol' if data_type == 'sector' else 'vol'
 
         cursor = coll.find(
             {'trade_date': {'$in': dates_to_calc}, 'close': {'$gt': 0}},
             {'_id': 0, 'stock_code': 1, 'trade_date': 1, 'close': 1, vol_field: 1, 'amount': 1,
-             'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1}
+             'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1}
         )
         raw_data = list(cursor)
         if not raw_data:
@@ -525,7 +497,7 @@ class FactorEngine:
             if total_amount == 0:
                 return None
 
-            cr5 = (top5_amount / total_amount) * 100
+            cr5 = round((top5_amount / total_amount) * 100, 2)
             logger.info(f"CR5% {trade_date}: {cr5:.2f}% ({len(amounts)} 只)")
             return cr5
         except Exception as e:

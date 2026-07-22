@@ -60,23 +60,52 @@ function MarketOverview({ date }) {
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       {/* 标题栏 */}
-      <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="w-1 h-5 bg-indigo-500 rounded-full"></div>
-          <h2 className="text-base font-black text-gray-900 tracking-tight">主要大盘指数涨跌幅</h2>
+      <div className="px-3 md:px-6 py-3 md:py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="flex items-center space-x-2 md:space-x-3">
+          <div className="w-1 h-4 md:h-5 bg-indigo-500 rounded-full"></div>
+          <h2 className="text-sm md:text-base font-black text-gray-900 tracking-tight">主要大盘指数涨跌幅</h2>
         </div>
-        <span className="text-xs text-gray-400 font-mono">{formatDate(trade_date)}</span>
+        <span className="text-[10px] md:text-xs text-gray-400 font-mono">{formatDate(trade_date)}</span>
       </div>
 
-      {/* 指数表格 */}
-      <div className="p-6">
-        <table className="w-full">
+      {/* 指数列表 */}
+      <div className="p-3 md:p-6">
+        {/* 移动端：紧凑卡片列表 */}
+        <div className="md:hidden space-y-2">
+          {indices.map((item, idx) => (
+            <div
+              key={item.code}
+              className={`flex items-center justify-between py-2 px-3 rounded-lg ${
+                idx === 0 ? 'bg-indigo-50/50' : 'bg-gray-50/30'
+              }`}
+            >
+              <div className="flex items-center space-x-2 min-w-0">
+                <span className={`text-xs font-bold truncate ${idx === 0 ? 'text-indigo-600' : 'text-gray-900'}`}>
+                  {item.name}
+                </span>
+              </div>
+              <div className="flex items-center space-x-3 flex-shrink-0">
+                <span className="text-xs font-mono font-bold text-gray-600">
+                  {item.close?.toFixed(2)}
+                </span>
+                <span className={`text-xs font-mono font-bold min-w-[60px] text-right ${getChgColor(item.pct_chg)}`}>
+                  {item.pct_chg > 0 ? '+' : ''}{item.pct_chg?.toFixed(2)}%
+                </span>
+                {item.pe_ttm && <span className="text-[10px] font-mono text-gray-400">PE:{item.pe_ttm.toFixed(1)}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* 桌面端：完整表格 */}
+        <table className="hidden md:table w-full">
           <thead>
             <tr className="border-b border-gray-100">
               <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">指数名称</th>
               <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">代码</th>
               <th className="text-right text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">最新价</th>
               <th className="text-right text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">涨跌幅</th>
+              <th className="text-right text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">PE_TTM</th>
               <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 pl-4">点评</th>
             </tr>
           </thead>
@@ -106,15 +135,20 @@ function MarketOverview({ date }) {
                     {item.pct_chg > 0 ? '+' : ''}{item.pct_chg?.toFixed(2)}%
                   </span>
                 </td>
+                <td className="py-3 text-right">
+                  <span className="text-xs font-mono text-gray-500">
+                    {item.pe_ttm ? item.pe_ttm.toFixed(2) : '-'}
+                  </span>
+                </td>
                 <td className="py-3 pl-4">
                   <span className={`text-xs font-medium ${
-                    item.comment.includes('爆发') ? 'text-orange-500' :
-                    item.comment.includes('最强') ? 'text-indigo-500' :
-                    item.comment.includes('偏强') ? 'text-red-500' :
-                    item.comment.includes('调整') ? 'text-green-500' :
+                    (item.comment || '').includes('爆发') ? 'text-orange-500' :
+                    (item.comment || '').includes('最强') ? 'text-indigo-500' :
+                    (item.comment || '').includes('偏强') ? 'text-red-500' :
+                    (item.comment || '').includes('调整') ? 'text-green-500' :
                     'text-gray-500'
                   }`}>
-                    {item.comment}
+                    {item.comment || '-'}
                   </span>
                 </td>
               </tr>
@@ -122,20 +156,6 @@ function MarketOverview({ date }) {
           </tbody>
         </table>
       </div>
-
-      {/* 核心结论 */}
-      {conclusion && (
-        <div className="px-6 pb-6">
-          <div className="border-l-4 border-slate-400 bg-slate-50 rounded-r-lg p-4">
-            <div className="flex items-start space-x-2">
-              <span className="text-slate-500 text-xs font-bold uppercase tracking-widest whitespace-nowrap mt-0.5">核心结论</span>
-            </div>
-            <p className="mt-2 text-sm text-gray-700 font-medium leading-relaxed">
-              {conclusion}
-            </p>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
