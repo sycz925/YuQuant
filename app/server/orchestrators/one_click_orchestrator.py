@@ -50,23 +50,29 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         return None
     
     def _get_date_range(self, last_date: Optional[str], today: str) -> List[str]:
-        """计算需要补算的日期范围"""
+        """计算需要补算的日期范围（仅包含交易日）"""
+        from app.data.holidays import is_workday
+        
         if not last_date:
             # 没有历史数据，从250天前开始
             start = datetime.strptime(today, '%Y%m%d') - timedelta(days=250)
-            return [start.strftime('%Y%m%d')]
+            last_date = start.strftime('%Y%m%d')
         
         if last_date >= today:
-            # 已经是最新，只更新今天
-            return [today]
+            # 已经是最新，只检查今天是否为交易日
+            if is_workday(today):
+                return [today]
+            return []
         
-        # 从 last_date+1 到今天
+        # 从 last_date+1 到今天，只保留交易日
         dates = []
         current = datetime.strptime(last_date, '%Y%m%d') + timedelta(days=1)
         end = datetime.strptime(today, '%Y%m%d')
         
         while current <= end:
-            dates.append(current.strftime('%Y%m%d'))
+            date_str = current.strftime('%Y%m%d')
+            if is_workday(date_str):
+                dates.append(date_str)
             current += timedelta(days=1)
         
         return dates
@@ -167,23 +173,9 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
     def _run(self, task_id: str, dates: List[str]) -> None:
         """后台执行流程"""
         from app.data.task_manager import get_task_manager
-        from app.data.holidays import is_workday
         tm = get_task_manager()
         
         for date_idx, date in enumerate(dates):
-            # 检查是否为交易日，非交易日跳过
-            if not is_workday(date):
-                logger.info(f"[一键更新] {date} 非交易日，跳过")
-                # 标记该日期的所有步骤为完成
-                for step_idx in range(len(self.STEP_KEYS)):
-                    global_step_idx = date_idx * len(self.STEP_KEYS) + step_idx
-                    self.task_repo.update_step_progress(
-                        task_id, global_step_idx,
-                        status='completed',
-                        message=f'{date} 非交易日，跳过'
-                    )
-                continue
-            
             logger.info(f"[一键更新] 开始处理日期: {date}")
             
             for step_idx, step_key in enumerate(self.STEP_KEYS):
