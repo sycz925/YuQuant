@@ -55,15 +55,21 @@ class BaseOrchestrator(ABC):
             self.task_repo.update_step_progress(task_id, i, status='running')
             self.task_repo.update_task_progress(task_id, current_step=i)
             
+            # 启动进度同步线程
+            sync_stop = threading.Event()
+            sync_thread = threading.Thread(
+                target=self._sync_progress,
+                args=(task_id, i, sync_stop),
+                daemon=True
+            )
+            sync_thread.start()
+            
             try:
                 self.execute_step(step_key, task_id, target_date)
-                self.task_repo.update_step_progress(
-                    task_id, i, 
-                    status='completed', 
-                    message=f'{step_name}完成'
-                )
             except Exception as e:
                 logger.error(f'步骤 {step_name} 失败: {e}')
+                sync_stop.set()
+                sync_thread.join(timeout=5)
                 self.task_repo.update_step_progress(
                     task_id, i,
                     status='failed',
@@ -71,9 +77,44 @@ class BaseOrchestrator(ABC):
                 )
                 self.task_repo.fail_task(task_id, f'步骤失败: {str(e)[:200]}')
                 return
+            finally:
+                sync_stop.set()
+                sync_thread.join(timeout=5)
+            
+            self.task_repo.update_step_progress(
+                task_id, i, 
+                status='completed', 
+                message=f'{step_name}完成'
+            )
         
         self.task_repo.complete_task(task_id, '全部完成')
         logger.info(f'[{self.__class__.__name__}] 全部完成')
+    
+    def _sync_progress(self, task_id: str, step_idx: int, stop_event: threading.Event) -> None:
+        """同步顶层进度到步骤级进度"""
+        from app.data.db import get_db
+        
+        db = get_db()
+        while not stop_event.is_set():
+            try:
+                # 读取顶层进度
+                task = db['sync_tasks'].find_one(
+                    {'task_id': task_id},
+                    {'_id': 0, 'completed_count': 1, 'total_count': 1, 'current_stock_name': 1}
+                )
+                if task:
+                    # 同步到步骤进度
+                    db['sync_tasks'].update_one(
+                        {'task_id': task_id},
+                        {'$set': {
+                            f'steps.{step_idx}.completed_count': task.get('completed_count', 0),
+                            f'steps.{step_idx}.total_count': task.get('total_count', 0),
+                            f'steps.{step_idx}.message': task.get('current_stock_name', '')
+                        }}
+                    )
+            except Exception:
+                pass
+            stop_event.wait(timeout=3)
     
     def _make_callback(self, task_id: str, step_idx: int) -> Callable:
         """构造进度回调闭包"""
