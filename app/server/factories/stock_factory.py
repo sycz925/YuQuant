@@ -4,7 +4,7 @@ Stock Factory - 个股工厂
 """
 import logging
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.server.factories.base import SyncResult, ComputeResult, PipelineResult, ProgressCallback
 from app.server.repositories.stock_repository import StockRepository
@@ -17,6 +17,155 @@ class StockFactory:
     
     def __init__(self, stock_repo: StockRepository = None):
         self.repo = stock_repo or StockRepository()
+    
+    def get_stock_rps(self, code: str, start_date: Optional[str] = None,
+                      end_date: Optional[str] = None, period: str = 'day') -> Optional[Dict[str, Any]]:
+        """获取个股/板块/指数的 RPS 数据"""
+        from app.data.db import get_db
+        
+        db = get_db()
+        
+        # 根据代码前缀判断集合
+        if code.startswith('88'):
+            coll = db['sector_daily']
+        elif code.startswith(('00', '30', '60', '68')):
+            coll = db['stock_daily']
+        else:
+            coll = db['index_daily']
+        
+        query = {"stock_code": code}
+        if start_date or end_date:
+            query["trade_date"] = {}
+            if start_date:
+                query["trade_date"]["$gte"] = start_date
+            if end_date:
+                query["trade_date"]["$lte"] = end_date
+        
+        cursor = coll.find(
+            query,
+            {"_id": 0, "stock_code": 1, "trade_date": 1,
+             "rps_10": 1, "rps_20": 1, "rps_50": 1, "rps_120": 1, "rps_250": 1,
+             "chg_10": 1, "chg_20": 1, "chg_50": 1, "chg_120": 1, "chg_250": 1}
+        ).sort("trade_date", 1)
+        data = list(cursor)
+        
+        if not data:
+            return None
+        
+        result = [
+            {
+                "date": item["trade_date"], "code": item["stock_code"],
+                "rps_10": item.get("rps_10"), "rps_20": item.get("rps_20"),
+                "rps_50": item.get("rps_50"), "rps_120": item.get("rps_120"),
+                "rps_250": item.get("rps_250"),
+                "chg_10": item.get("chg_10"), "chg_20": item.get("chg_20"),
+                "chg_50": item.get("chg_50"), "chg_120": item.get("chg_120"),
+                "chg_250": item.get("chg_250"),
+            }
+            for item in data
+        ]
+        
+        # 按周期聚合
+        if period == "week":
+            result = self._aggregate_by_week(result)
+        elif period == "month":
+            result = self._aggregate_by_month(result)
+        
+        return {"code": code, "period": period, "total": len(result), "data": result}
+    
+    def _aggregate_by_week(self, data: List[Dict]) -> List[Dict]:
+        """按周聚合 RPS 数据"""
+        aggregated = []
+        current_week = None
+        week_items = []
+        
+        for item in data:
+            dt = datetime.strptime(item["date"], "%Y%m%d")
+            year, week_num, _ = dt.isocalendar()
+            week_key = f"{year}-W{week_num:02d}"
+            
+            if current_week != week_key and week_items:
+                last_rps = week_items[-1].copy()
+                last_rps["date"] = week_items[0]["date"]
+                aggregated.append(last_rps)
+                week_items = []
+            
+            current_week = week_key
+            week_items.append(item)
+        
+        if week_items:
+            last_rps = week_items[-1].copy()
+            last_rps["date"] = week_items[0]["date"]
+            aggregated.append(last_rps)
+        
+        return aggregated
+    
+    def _aggregate_by_month(self, data: List[Dict]) -> List[Dict]:
+        """按月聚合 RPS 数据"""
+        aggregated = []
+        current_month = None
+        month_items = []
+        
+        for item in data:
+            month_key = item["date"][:6]
+            
+            if current_month != month_key and month_items:
+                last_rps = month_items[-1].copy()
+                last_rps["date"] = month_items[0]["date"]
+                aggregated.append(last_rps)
+                month_items = []
+            
+            current_month = month_key
+            month_items.append(item)
+        
+        if month_items:
+            last_rps = month_items[-1].copy()
+            last_rps["date"] = month_items[0]["date"]
+            aggregated.append(last_rps)
+        
+        return aggregated
+    
+    def get_rps_by_date(self, trade_date: str, min_rps: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """获取指定日期的 RPS 数据"""
+        from app.data.db import get_db
+        
+        db = get_db()
+        query = {"trade_date": trade_date}
+        rps_projection = {
+            "_id": 0, "stock_code": 1, "trade_date": 1,
+            "rps_10": 1, "rps_20": 1, "rps_50": 1, "rps_120": 1, "rps_250": 1,
+            "chg_10": 1, "chg_20": 1, "chg_50": 1, "chg_120": 1, "chg_250": 1,
+        }
+        
+        data = []
+        for coll_name in ['stock_daily', 'sector_daily', 'index_daily']:
+            cursor = db[coll_name].find(query, rps_projection)
+            data.extend(list(cursor))
+        
+        if not data:
+            return None
+        
+        result = []
+        for item in data:
+            rps_record = {
+                "code": item["stock_code"], "date": item["trade_date"],
+                "rps_10": item.get("rps_10"), "rps_20": item.get("rps_20"),
+                "rps_50": item.get("rps_50"), "rps_120": item.get("rps_120"),
+                "rps_250": item.get("rps_250"),
+                "chg_10": item.get("chg_10"), "chg_20": item.get("chg_20"),
+                "chg_50": item.get("chg_50"), "chg_120": item.get("chg_120"),
+                "chg_250": item.get("chg_250"),
+            }
+            if min_rps is not None:
+                has_valid_rps = any(
+                    rps_record[r] is not None and rps_record[r] >= min_rps
+                    for r in ["rps_10", "rps_20", "rps_50", "rps_120", "rps_250"]
+                )
+                if not has_valid_rps:
+                    continue
+            result.append(rps_record)
+        
+        return {"trade_date": trade_date, "total": len(result), "data": result}
     
     def sync_daily(self, target_date: Optional[str] = None,
                    max_workers: int = 4,

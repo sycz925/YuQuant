@@ -17,6 +17,120 @@ class IndexFactory:
     
     def __init__(self, index_repo: IndexRepository = None):
         self.repo = index_repo or IndexRepository()
+        self._config_cache = {}  # 配置缓存
+    
+    def get_config_from_db(self) -> List[Dict[str, Any]]:
+        """从数据库获取指数配置"""
+        cache_key = 'index_config'
+        if cache_key in self._config_cache:
+            return self._config_cache[cache_key]
+        
+        from app.data.db import get_db
+        from app.server.api.constants import INDEX_CONFIG_SEED
+        
+        db = get_db()
+        cursor = db['index_basics'].find({}, {'_id': 0}).sort('code', 1)
+        results = list(cursor)
+        
+        if results:
+            self._config_cache[cache_key] = results
+            return results
+        
+        # 回退：用种子数据初始化
+        for cfg in INDEX_CONFIG_SEED:
+            db['index_basics'].update_one(
+                {'code': cfg['code']},
+                {'$set': cfg},
+                upsert=True
+            )
+        
+        fallback = [dict(c) for c in INDEX_CONFIG_SEED]
+        self._config_cache[cache_key] = fallback
+        return fallback
+    
+    def get_sync_config(self) -> List[Dict[str, Any]]:
+        """获取同步配置"""
+        cfgs = self.get_config_from_db()
+        return [
+            {
+                'code': c.get('code', ''),
+                'name': c.get('name', ''),
+                'tdx_code': c.get('tdx_code', c.get('code', '')),
+                'market': c.get('market', 1),
+            }
+            for c in cfgs
+        ]
+    
+    def get_index_data(self, index_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """获取指数历史数据"""
+        from app.data.db import get_db
+        
+        db = get_db()
+        pipeline = [
+            {'$match': {
+                'stock_code': index_code,
+                'trade_date': {'$gte': start_date, '$lte': end_date}
+            }},
+            {'$sort': {'trade_date': 1}},
+            {'$project': {
+                '_id': 0, 'trade_date': 1, 'close': 1,
+                'open': 1, 'high': 1, 'low': 1
+            }}
+        ]
+        return list(db.index_daily.aggregate(pipeline))
+    
+    def normalize_index_data(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """标准化指数数据"""
+        if not data:
+            return []
+        base_value = data[0]['close']
+        return [
+            {
+                'trade_date': item['trade_date'],
+                'value': ((item['close'] / base_value) - 1) * 100 + 50,
+                'close': item['close']
+            }
+            for item in data
+        ]
+    
+    def get_indices_list(self, page: Optional[int] = None, page_size: int = 50,
+                         keyword: Optional[str] = None, filter_mode: Optional[str] = None) -> Dict[str, Any]:
+        """获取指数列表"""
+        from app.data.db import get_db
+        
+        db = get_db()
+        query = {}
+        
+        if keyword:
+            query['$or'] = [
+                {'code': {'$regex': keyword, '$options': 'i'}},
+                {'name': {'$regex': keyword, '$options': 'i'}}
+            ]
+        
+        if filter_mode == 'enabled':
+            query['is_disable'] = False
+        elif filter_mode == 'disabled':
+            query['is_disable'] = True
+        
+        total = db['index_basics'].count_documents(query)
+        cursor = db['index_basics'].find(query, {'_id': 0}).sort('code', 1)
+        
+        if page is not None:
+            skip = (page - 1) * page_size
+            cursor = cursor.skip(skip).limit(page_size)
+        
+        data = list(cursor)
+        
+        return {
+            'total': total,
+            'data': data,
+            'page': page,
+            'page_size': page_size
+        }
+    
+    def search_indices(self, keyword: str) -> Dict[str, Any]:
+        """搜索指数"""
+        return self.get_indices_list(keyword=keyword)
     
     def sync_kline(self, target_date: Optional[str] = None,
                    task_id: str = None,
@@ -42,18 +156,18 @@ class IndexFactory:
             fs = get_factor_service()
             
             # 获取同步配置
-            index_cfg = fs._get_sync_index_config()
+            sync_cfg = self.get_sync_config()
             enabled_codes = set(idx['code'] for idx in enabled_indices)
-            sync_cfg = [c for c in index_cfg if c.get('code') in enabled_codes]
+            sync_cfg = [c for c in sync_cfg if c.get('code') in enabled_codes]
             
             # 如果没有传入 task_id，生成临时的
             if not task_id:
                 import uuid
                 task_id = str(uuid.uuid4())
             
-            # 调用同步方法
+            # 调用同步方法 - 只同步目标日期的数据
             end_date = target_date or datetime.now().strftime('%Y%m%d')
-            start_date = '19900101'  # 从最早开始
+            start_date = end_date  # 只同步目标日期
             
             fs._run_sync_indices(task_id, sync_cfg, start_date, end_date, is_external=True)
             

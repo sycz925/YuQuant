@@ -2,8 +2,10 @@
 Sector Factory - 板块工厂
 管理板块数据的同步与衍生计算
 """
+import io
 import logging
-from typing import Callable, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
 
 from app.server.factories.base import SyncResult, ComputeResult, PipelineResult, ProgressCallback
 from app.server.repositories.sector_repository import SectorRepository
@@ -16,6 +18,138 @@ class SectorFactory:
     
     def __init__(self, sector_repo: SectorRepository = None):
         self.repo = sector_repo or SectorRepository()
+    
+    def get_sector_list(self, page: Optional[int] = None, page_size: int = 50,
+                        keyword: Optional[str] = None, filter_mode: Optional[str] = None,
+                        limit: Optional[int] = None, min_stock_count: int = 0) -> Dict[str, Any]:
+        """获取板块列表"""
+        from app.data.db import get_db
+        
+        db = get_db()
+        query = {}
+        
+        if min_stock_count:
+            query['stock_count'] = {'$gte': min_stock_count}
+        
+        if filter_mode == 'enabled':
+            query['is_disable'] = False
+        elif filter_mode == 'disabled':
+            query['is_disable'] = True
+        
+        cursor = db['sector_basics'].find(
+            query,
+            {'_id': 0, 'code': 1, 'name': 1, 'source': 1, 'stock_count': 1, 'is_disable': 1}
+        )
+        items = list(cursor)
+        
+        # 获取最新 RPS 数据
+        sector_coll = db['sector_daily']
+        latest_doc = sector_coll.find_one({}, sort=[('trade_date', -1)], projection={'trade_date': 1, '_id': 0})
+        if latest_doc:
+            latest_date = latest_doc['trade_date']
+            rps_cursor = sector_coll.find(
+                {'trade_date': latest_date},
+                {'_id': 0, 'stock_code': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1},
+            )
+            rps_map = {d['stock_code']: d for d in rps_cursor}
+            for item in items:
+                rps = rps_map.get(item['code'], {})
+                item['rps_10'] = rps.get('rps_10')
+                item['rps_20'] = rps.get('rps_20')
+                item['rps_50'] = rps.get('rps_50')
+                item['exclude_sync'] = item.get('is_disable', False)
+        
+        # 关键词搜索
+        if keyword:
+            from pypinyin import lazy_pinyin, Style
+            kw = keyword.lower()
+            
+            def get_pinyin(name: str) -> str:
+                try:
+                    return ''.join(lazy_pinyin(name, style=Style.FIRST_LETTER)).lower()
+                except Exception:
+                    return ''
+            
+            items = [i for i in items if
+                     kw in i.get('code', '').lower() or
+                     kw in i.get('name', '').lower() or
+                     kw in get_pinyin(i.get('name', ''))]
+        
+        total = len(items)
+        if limit and page is None:
+            items = items[:limit]
+        elif page is not None:
+            start = (page - 1) * page_size
+            items = items[start:start + page_size]
+        
+        return {"success": True, "total": total, "items": items}
+    
+    def import_sector_codes(self, file_content: bytes, filename: str) -> Dict[str, Any]:
+        """导入板块代码"""
+        import pandas as pd
+        from app.data.db import get_db
+        
+        if filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(file_content))
+        elif filename.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(file_content))
+        else:
+            return {"success": False, "message": "请上传 Excel (.xlsx/.xls) 或 CSV 文件"}
+        
+        cols = [str(c).strip() for c in df.columns]
+        code_col = name_col = None
+        for c in cols:
+            cl = c.lower()
+            if cl in ('code', '代码', '板块代码', 'tdx_code', '数字代码'):
+                code_col = c
+            elif cl in ('name', '名称', '板块名称', '板块名'):
+                name_col = c
+        
+        if not code_col or not name_col:
+            if len(cols) >= 2:
+                code_col, name_col = cols[0], cols[1]
+            else:
+                return {"success": False, "message": "无法识别代码和名称列"}
+        
+        mapping = {}
+        skipped = 0
+        for _, row in df.iterrows():
+            code = str(row[code_col]).strip()
+            name = str(row[name_col]).strip()
+            if code and name and code != 'nan' and name != 'nan':
+                if code.startswith('880') or code.startswith('881'):
+                    mapping[name] = code
+                else:
+                    skipped += 1
+        
+        if not mapping:
+            return {"success": False, "message": "文件中没有有效的880/881板块代码"}
+        
+        db = get_db()
+        updated = added = migrated = 0
+        for name, code in mapping.items():
+            existing = db['sector_basics'].find_one({'$or': [{'code': code}, {'name': name}]})
+            if existing:
+                if existing.get('code') != code:
+                    old_code = existing['code']
+                    db['sector_basics'].update_one({'_id': existing['_id']}, {'$set': {'code': code, 'tdx_code': code}})
+                    result = db['sector_daily'].update_many({'stock_code': old_code}, {'$set': {'stock_code': code}})
+                    migrated += result.modified_count
+                    updated += 1
+            else:
+                db['sector_basics'].insert_one({
+                    'code': code, 'tdx_code': code, 'name': name,
+                    'source': '导入', 'stock_count': 0, 'stock_codes': [],
+                    'block_type': 2, 'update_time': datetime.utcnow(),
+                })
+                added += 1
+        
+        return {
+            "success": True,
+            "message": f"导入完成: 新增 {added} 个板块, 更新 {updated} 个, 迁移 {migrated} 条日线数据",
+            "added": added, "updated": updated,
+            "migrated": migrated, "total_mapping": len(mapping),
+        }
     
     def sync_daily(self, target_date: Optional[str] = None,
                    task_id: str = None,
