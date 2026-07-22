@@ -172,12 +172,11 @@ export const searchApi = {
 
 export const oneClickUpdateApi = {
   start: () => api.post('/one-click-update/start'),
-  getStatus: () => api.get('/one-click-update/status'),
   checkSyncTime: () => api.get('/one-click-update/sync-time-check'),
-  // 按日期重算
   recalculateDate: (targetDate) => api.post('/one-click-update/recalculate-date', null, { params: { target_date: targetDate } }),
-
 }
+
+// 任务状态查询统一使用 taskApi
 
 // 通用任务查询
 export const taskApi = {

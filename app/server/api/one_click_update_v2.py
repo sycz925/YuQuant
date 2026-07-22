@@ -1,5 +1,6 @@
 """
 一键更新API v2 - 使用 Orchestrator 编排层
+任务状态查询统一使用 /calendar/task/${taskId}
 """
 import logging
 from fastapi import APIRouter, Query
@@ -36,32 +37,6 @@ def start_update():
     task_id = orchestrator.execute()
     
     return {'success': True, 'message': '一键更新已启动', 'task_id': task_id}
-
-
-@router.get("/status")
-def get_status():
-    """获取更新任务状态"""
-    task_repo = TaskRepository()
-    running_task = task_repo.get_running_task()
-    
-    if running_task:
-        return {
-            'running': True,
-            'current_step': running_task.get('current_step', 0),
-            'total_steps': len(running_task.get('steps', [])),
-            'step_name': running_task.get('current_stock_name', ''),
-            'steps': running_task.get('steps', []),
-            'error': None
-        }
-    
-    return {
-        'running': False,
-        'current_step': 0,
-        'total_steps': 7,
-        'step_name': '',
-        'steps': [],
-        'error': None
-    }
 
 
 @router.get("/sync-time-check")
