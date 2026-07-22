@@ -33,11 +33,58 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         ]
     
     def _is_data_synced_for_date(self, collection_name: str, date_field: str, target_date: str) -> bool:
-        """检查指定日期的数据是否已同步"""
-        from app.data.db import get_db
-        db = get_db()
-        count = db[collection_name].count_documents({date_field: target_date})
-        return count > 0
+        """
+        检查指定日期的数据是否已同步
+        盘中（15:30前）：30分钟缓存，需要重新同步
+        盘后（15:30后）：永久缓存，已同步就跳过
+        """
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        now = datetime.now(ZoneInfo('Asia/Shanghai'))
+        today_str = now.strftime('%Y%m%d')
+        
+        # 非今天的数据，检查是否有数据
+        if target_date != today_str:
+            from app.data.db import get_db
+            db = get_db()
+            count = db[collection_name].count_documents({date_field: target_date})
+            return count > 0
+        
+        # 今天的数据
+        is_market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
+        
+        if is_market_closed:
+            # 盘后：永久缓存，检查是否有数据
+            from app.data.db import get_db
+            db = get_db()
+            count = db[collection_name].count_documents({date_field: target_date})
+            return count > 0
+        else:
+            # 盘中：30分钟缓存，检查最后更新时间
+            from app.data.db import get_db
+            db = get_db()
+            latest = db[collection_name].find_one(
+                {date_field: target_date},
+                sort=[('updated_at', -1)],
+                projection={'updated_at': 1, '_id': 0}
+            )
+            if not latest:
+                return False
+            
+            updated_at = latest.get('updated_at')
+            if not updated_at:
+                return False
+            
+            # 如果更新时间超过30分钟，需要重新同步
+            from datetime import timedelta
+            if isinstance(updated_at, str):
+                updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+            
+            if (now - updated_at) > timedelta(minutes=30):
+                return False
+            
+            return True
     
     def execute_step(self, step_key: str, task_id: str, target_date: Optional[str]) -> None:
         """执行单个步骤"""
