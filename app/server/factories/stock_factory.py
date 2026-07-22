@@ -167,12 +167,16 @@ class StockFactory:
         
         return {"trade_date": trade_date, "total": len(result), "data": result}
     
+    # 数据源优先级
+    DATA_SOURCES = ['pytdx', 'akshare', 'baostock', 'yfinance']
+    
     def sync_daily(self, target_date: Optional[str] = None,
                    max_workers: int = 4,
                    task_id: str = None,
                    progress_callback: Callable = None) -> SyncResult:
         """
-        同步个股日线数据（多备份方案）
+        同步个股日线数据（多数据源备份）
+        数据源优先级：pytdx → akshare → baostock → yfinance
         :param target_date: 指定日期 YYYYMMDD，None 同步到最新
         :param task_id: 任务ID，用于更新进度
         :return: SyncResult，失败率超过5%则标记失败
@@ -188,7 +192,7 @@ class StockFactory:
             
             callback.update(0, total, '开始同步个股日线...')
             
-            # 调用 data_manager 的同步逻辑
+            # 调用 data_manager 的同步逻辑（已包含多数据源备份）
             from app.data.manager import get_data_manager
             dm = get_data_manager()
             
@@ -205,6 +209,7 @@ class StockFactory:
             success_count = result.get('success', 0)
             fail_count = result.get('fail', 0)
             skipped_count = result.get('skipped', 0)
+            sources = result.get('sources', {})
             
             # 计算失败率
             if total > 0:
@@ -220,10 +225,11 @@ class StockFactory:
                         skipped=skipped_count
                     )
             
-            callback.complete(f'个股日线同步完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skipped_count}')
+            source_msg = ', '.join([f"{k}: {v}" for k, v in sources.items()])
+            callback.complete(f'个股日线同步完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skipped_count}。数据源: {source_msg}')
             return SyncResult(
                 success=True,
-                message=f'个股日线同步完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skipped_count}',
+                message=f'个股日线同步完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skipped_count}。数据源: {source_msg}',
                 total=total,
                 synced=success_count,
                 failed=fail_count,
