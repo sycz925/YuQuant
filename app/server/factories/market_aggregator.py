@@ -60,7 +60,9 @@ class MarketAggregator:
         try:
             callback.update(0, 100, '生成市场总览...')
             
-            # TODO: 从 market_review.generate_market_overview 迁移逻辑
+            # 调用原始的市场总览生成函数
+            from app.server.api.market_review import generate_market_overview
+            generate_market_overview(target_date)
             
             callback.complete('市场总览生成完成')
             return ComputeResult(success=True, message='市场总览生成完成')
@@ -76,7 +78,9 @@ class MarketAggregator:
         try:
             callback.update(0, 100, '分析新高板块...')
             
-            # TODO: 从 market_review.analyze_new_high_blocks 迁移逻辑
+            # 调用原始的新高板块分析函数
+            from app.server.api.market_review import analyze_new_high_blocks
+            analyze_new_high_blocks(target_date)
             
             callback.complete('新高板块分析完成')
             return ComputeResult(success=True, message='新高板块分析完成')
@@ -85,13 +89,14 @@ class MarketAggregator:
             return ComputeResult(success=False, message=str(e))
     
     def run_full_pipeline(self, target_date: str,
+                          task_id: str = None,
                           progress_callback: Callable = None) -> PipelineResult:
         """
         执行聚合全流程：precompute_base_data → generate_market_overview → analyze_new_high_blocks
         """
         result = PipelineResult()
         
-        result.add_step('base_data', self.precompute_base_data(target_date, progress_callback))
+        result.add_step('base_data', self.precompute_base_data(target_date, task_id, progress_callback))
         result.add_step('overview', self.generate_market_overview(target_date, progress_callback))
         result.add_step('new_high', self.analyze_new_high_blocks(target_date, progress_callback))
         
