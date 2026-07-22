@@ -167,9 +167,23 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
     def _run(self, task_id: str, dates: List[str]) -> None:
         """后台执行流程"""
         from app.data.task_manager import get_task_manager
+        from app.data.holidays import is_workday
         tm = get_task_manager()
         
         for date_idx, date in enumerate(dates):
+            # 检查是否为交易日，非交易日跳过
+            if not is_workday(date):
+                logger.info(f"[一键更新] {date} 非交易日，跳过")
+                # 标记该日期的所有步骤为完成
+                for step_idx in range(len(self.STEP_KEYS)):
+                    global_step_idx = date_idx * len(self.STEP_KEYS) + step_idx
+                    self.task_repo.update_step_progress(
+                        task_id, global_step_idx,
+                        status='completed',
+                        message=f'{date} 非交易日，跳过'
+                    )
+                continue
+            
             logger.info(f"[一键更新] 开始处理日期: {date}")
             
             for step_idx, step_key in enumerate(self.STEP_KEYS):
