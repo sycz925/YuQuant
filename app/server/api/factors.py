@@ -83,7 +83,32 @@ def sync_index_data(
         allowed, msg = _check_sync_time()
         if not allowed:
             return {"success": False, "message": msg}
-        return get_factor_service().sync_index_data(start_date, end_date, max_workers or 4)
+        # 使用 tdx_service 的同步逻辑
+        from app.server.services.tdx_service import get_tdx_service
+        from app.server.factories import get_index_factory
+        
+        tdx = get_tdx_service()
+        factory = get_index_factory()
+        
+        # 获取同步配置
+        sync_cfg = factory.get_sync_config()
+        enabled_codes = set(idx['code'] for idx in factory.repo.get_enabled_list())
+        sync_cfg = [c for c in sync_cfg if c.get('code') in enabled_codes]
+        
+        # 生成任务ID
+        import uuid
+        task_id = str(uuid.uuid4())
+        
+        # 设置日期范围
+        if not end_date:
+            end_date = datetime.now().strftime('%Y%m%d')
+        if not start_date:
+            start_date = '20180101'
+        
+        # 启动同步
+        tdx.sync_indices(task_id, sync_cfg, start_date, end_date, is_external=False)
+        
+        return {"success": True, "task_id": task_id, "message": f"指数同步任务已启动，共 {len(sync_cfg)} 个指数"}
     except Exception as e:
         logger.error(f"启动指数同步任务失败: {e}")
         return {"success": False, "message": str(e)}

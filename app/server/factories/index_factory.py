@@ -330,9 +330,9 @@ class IndexFactory:
             
             callback.update(0, total, '开始同步指数K线...')
             
-            # 调用 factor_service 的同步逻辑
-            from app.server.services.factor_service import get_factor_service
-            fs = get_factor_service()
+            # 调用 tdx_service 的同步逻辑
+            from app.server.services.tdx_service import get_tdx_service
+            tdx = get_tdx_service()
             
             # 获取同步配置
             sync_cfg = self.get_sync_config()
@@ -348,7 +348,7 @@ class IndexFactory:
             end_date = target_date or datetime.now().strftime('%Y%m%d')
             start_date = end_date  # 只同步目标日期
             
-            fs._run_sync_indices(task_id, sync_cfg, start_date, end_date, is_external=True)
+            tdx.sync_indices(task_id, sync_cfg, start_date, end_date, is_external=True)
             
             callback.complete(f'指数K线同步完成: {total} 个')
             return SyncResult(

@@ -145,9 +145,15 @@ function App() {
           const stepText2 = totalSteps2 > 0 ? `[${completedSteps2}/${totalSteps2}]` : ''
           const currentStep2 = steps2[status.current_step]
           const stepName2 = currentStep2 ? currentStep2.name : '处理中...'
+          
+          // 显示当前步骤的详细进度
+          const stepCompleted = currentStep2?.completed_count || 0
+          const stepTotal = currentStep2?.total_count || 0
+          const stepDetail = stepTotal > 0 ? ` [${stepCompleted}/${stepTotal}]` : ''
+          
           notification.info({
             message: `一键更新 ${stepText2}`,
-            description: stepName2,
+            description: `${stepName2}${stepDetail}`,
             duration: 0,
             key,
             closable: false,

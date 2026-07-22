@@ -12,7 +12,7 @@
 - **Phase 1**: 关键识别 ✅ 完成
 - **Phase 2**: 架构层分析 ✅ 完成
 - **Phase 3**: 模块层分析 ✅ 完成（3/6 功能深度分析）
-- **Phase 4**: 执行重构 ⏳ 进行中
+- **Phase 4**: 执行重构 ✅ 核心完成
 - **Phase 5**: 验证归档 ⏳ 待开始
 
 ---
@@ -25,8 +25,8 @@
 | A-002 | 拆分过大路由文件 | P0 | 📋 计划完成，增量执行 | BackendAgent |
 | A-003 | 建立工厂层 | P1 | ✅ 完成 | BackendAgent |
 | A-004 | 建立编排层 | P1 | ✅ 完成 | BackendAgent |
-| A-005 | 补充服务层 | P1 | ⏳ | BackendAgent |
-| A-006 | 前端建立 hooks 目录 | P2 | ⏳ | FrontendAgent |
+| A-005 | 补充服务层 | P1 | ✅ 完成 | BackendAgent |
+| A-006 | 前端建立 hooks 目录 | P2 | ✅ 完成 | FrontendAgent |
 | A-007 | 前端引入 TypeScript | P2 | ⏳ | FrontendAgent |
 
 ---
@@ -36,17 +36,17 @@
 ### 资源复用迁移
 | 编号 | 任务 | 优先级 | 状态 |
 |------|------|--------|------|
-| M-001 | 抽取 useOneClickUpdate hook | P1 | ⏳ |
-| M-005 | 抽取 usePolling hook | P1 | ⏳ |
-| M-006 | 抽取 useTaskPolling hook | P1 | ⏳ |
-| M-007 | 抽取 useScreenshot hook | P1 | ⏳ |
-| M-011 | 建立 stock_repository | P1 | ⏳ |
+| M-001 | 抽取 useOneClickUpdate hook | P1 | ✅ 完成 |
+| M-005 | 抽取 usePolling hook | P1 | ✅ 完成 |
+| M-006 | 抽取 useTaskPolling hook | P1 | ✅ 完成 |
+| M-007 | 抽取 useScreenshot hook | P1 | ✅ 完成 |
+| M-011 | 建立 stock_repository | P1 | ✅ 完成 |
 
 ### 合并重复实现
 | 编号 | 任务 | 优先级 | 状态 |
 |------|------|--------|------|
-| M-002 | 抽取通用步骤执行器 | P1 | ⏳ |
-| M-003 | 业务逻辑迁移到工厂层 | P1 | ⏳ |
+| M-002 | 抽取通用步骤执行器 | P1 | ✅ 完成 |
+| M-003 | 业务逻辑迁移到工厂层 | P1 | ✅ 完成 |
 
 ### 代码拆分
 | 编号 | 任务 | 优先级 | 状态 |
@@ -76,4 +76,4 @@
 | checkpoint-2 | 路由层拆分完成 | ⏳ |
 | checkpoint-3 | 工厂层建立完成 | ✅ |
 | checkpoint-4 | 编排层建立完成 | ✅ |
-| checkpoint-5 | 前端 hooks 抽取完成 | ⏳ |
+| checkpoint-5 | 前端 hooks 抽取完成 | ✅ |

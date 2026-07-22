@@ -78,17 +78,21 @@ def _run_update_task(task_id: str):
         step_idx = step_keys.index('sync_index') if 'sync_index' in step_keys else 0
         tm.start_step(task_id, step_idx)
         try:
-            from app.server.services.factor_service import get_factor_service
-            fs = get_factor_service()
-            # 同步执行：直接调用 _run_sync_indices 而不是启动线程
-            index_cfg = fs._get_sync_index_config()
+            from app.server.services.tdx_service import get_tdx_service
+            from app.server.factories import get_index_factory
+            
+            tdx = get_tdx_service()
+            factory = get_index_factory()
+            
+            # 同步执行：直接调用 sync_indices 而不是启动线程
+            index_cfg = factory.get_sync_config()
             enabled_codes = set(
                 doc['code'] for doc in db['index_basics'].find(
                     {'is_disable': {'$ne': True}}, {'_id': 0, 'code': 1}
                 )
             )
             sync_cfg = [c for c in index_cfg if c.get('code') in enabled_codes]
-            fs._run_sync_indices(task_id, sync_cfg, None, None, is_external=True)
+            tdx.sync_indices(task_id, sync_cfg, None, None, is_external=True)
             tm.complete_step(task_id, step_idx, f'{today} 指数同步完成')
         except Exception as e:
             logger.warning(f"同步指数失败: {e}")
@@ -368,13 +372,9 @@ def _run_recalc_task(task_id: str, target_date: str):
         rps_stock_step_idx = 0
         tm.start_step(task_id, rps_stock_step_idx)
         try:
-            from app.server.services.factor_service import get_factor_service
-            fs = get_factor_service()
-            fs.calculate_rps(
-                start_date=None, end_date=None, target_date=target_date,
-                target='stock', max_workers=4, min_days=200,
-                external_task_id=task_id
-            )
+            from app.server.factories import get_market_aggregator
+            aggregator = get_market_aggregator()
+            aggregator.calculate_rps(target='stock')
             tm.complete_step(task_id, rps_stock_step_idx, f'{target_date} 个股RPS 计算完成')
         except Exception as e:
             logger.warning(f"计算个股RPS失败: {e}")
@@ -385,9 +385,7 @@ def _run_recalc_task(task_id: str, target_date: str):
         rps_sector_step_idx = 1
         tm.start_step(task_id, rps_sector_step_idx)
         try:
-            fs.calculate_rps(
-                start_date=None, end_date=None, target_date=target_date,
-                target='sector', max_workers=4, min_days=20,
+            aggregator.calculate_rps(target='sector')
                 external_task_id=task_id
             )
             # 完成板块RPS步骤
