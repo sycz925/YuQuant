@@ -48,7 +48,8 @@ class StockFactory:
                 stock_codes=enabled_stocks,
                 end_date=end_date,
                 task_id=task_id,
-                max_workers=max_workers
+                max_workers=max_workers,
+                is_external=True
             )
             
             success_count = result.get('success', 0)

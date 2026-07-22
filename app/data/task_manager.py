@@ -304,8 +304,6 @@ class TaskManager:
                 f'steps.{step_index}.message': message
             }}
         )
-        # 检查是否所有步骤都已完成
-        self._check_all_steps_completed(task_id)
 
     def fail_step(self, task_id: str, step_index: int, error: str):
         """失败一个步骤"""
@@ -323,15 +321,6 @@ class TaskManager:
             }}
         )
 
-    def _check_all_steps_completed(self, task_id: str):
-        """检查是否所有步骤都已完成"""
-        col = self._get_col()
-        doc = col.find_one({'task_id': task_id}, {'_id': 0, 'steps': 1, 'status': 1})
-        if doc and doc.get('status') == TaskStatus.RUNNING.value:
-            steps = doc.get('steps', [])
-            all_completed = all(s.get('status') == 'completed' for s in steps)
-            if all_completed:
-                self.complete_task(task_id, '所有步骤已完成')
 
 
 # 全局单例

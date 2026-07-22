@@ -1,6 +1,10 @@
 """
 One Click Update Orchestrator - 一键更新编排器
 流程：指数同步 → 个股同步 → 板块同步 → 个股RPS → 板块RPS → PE同步 → 预计算
+
+逻辑：
+- 日线数据同步（步骤1-3）：如果今天已同步过则跳过
+- RPS计算、PE同步、预计算（步骤4-7）：每次都重算
 """
 import logging
 from typing import List, Dict, Optional
@@ -28,16 +32,47 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             {'key': 'precompute', 'name': '预计算基础数据'},
         ]
     
+    def _is_data_synced_for_date(self, collection_name: str, date_field: str, target_date: str) -> bool:
+        """检查指定日期的数据是否已同步"""
+        from app.data.db import get_db
+        db = get_db()
+        count = db[collection_name].count_documents({date_field: target_date})
+        return count > 0
+    
     def execute_step(self, step_key: str, task_id: str, target_date: Optional[str]) -> None:
         """执行单个步骤"""
         from app.server.factories import (
             get_index_factory, get_stock_factory, 
             get_sector_factory, get_market_aggregator
         )
+        from app.server.repositories.task_repository import TaskRepository
         
         step_idx = next(i for i, s in enumerate(self.get_steps()) if s['key'] == step_key)
         callback = self._make_callback(task_id, step_idx)
+        task_repo = TaskRepository()
         
+        # 获取目标日期
+        date = target_date or self._get_today()
+        
+        # 日线数据同步步骤：如果今天已同步过则跳过
+        if step_key in ['sync_index', 'sync_stocks', 'sync_sectors']:
+            if step_key == 'sync_index':
+                collection, field = 'index_daily', 'trade_date'
+            elif step_key == 'sync_stocks':
+                collection, field = 'stock_daily', 'trade_date'
+            else:  # sync_sectors
+                collection, field = 'sector_daily', 'trade_date'
+            
+            if self._is_data_synced_for_date(collection, field, date):
+                logger.info(f"[一键更新] {step_key} 日期 {date} 已有数据，跳过同步")
+                task_repo.update_step_progress(
+                    task_id, step_idx,
+                    status='completed',
+                    message=f'{date} 数据已存在，跳过同步'
+                )
+                return
+        
+        # 执行步骤
         if step_key == 'sync_index':
             factory = get_index_factory()
             factory.sync_kline(target_date, task_id=task_id, progress_callback=callback)
@@ -65,7 +100,6 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             factory.sync_pe(target_date, callback)
         
         elif step_key == 'precompute':
-            date = target_date or self._get_today()
             aggregator = get_market_aggregator()
             aggregator.precompute_base_data(date, task_id=task_id, progress_callback=callback)
     
