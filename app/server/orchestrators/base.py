@@ -129,7 +129,7 @@ class BaseOrchestrator(ABC):
         logger.info(f'[{self.__class__.__name__}] 任务 {task_id} 全部完成，共处理 {len(dates)} 个日期')
     
     def _sync_progress(self, task_id: str, step_idx: int, stop_event: threading.Event) -> None:
-        """同步顶层进度到步骤级进度"""
+        """同步顶层进度到步骤级进度（只同步 completed_count，不覆盖 total_count）"""
         from app.data.db import get_db
         
         db = get_db()
@@ -138,15 +138,14 @@ class BaseOrchestrator(ABC):
                 # 读取顶层进度
                 task = db['sync_tasks'].find_one(
                     {'task_id': task_id},
-                    {'_id': 0, 'completed_count': 1, 'total_count': 1, 'current_stock_name': 1}
+                    {'_id': 0, 'completed_count': 1, 'current_stock_name': 1}
                 )
                 if task:
-                    # 同步到步骤进度
+                    # 同步到步骤进度（只更新 completed_count，不覆盖 total_count）
                     db['sync_tasks'].update_one(
                         {'task_id': task_id},
                         {'$set': {
                             f'steps.{step_idx}.completed_count': task.get('completed_count', 0),
-                            f'steps.{step_idx}.total_count': task.get('total_count', 0),
                             f'steps.{step_idx}.message': task.get('current_stock_name', '')
                         }}
                     )
