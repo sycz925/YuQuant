@@ -27,10 +27,25 @@ class TaskRepository(BaseRepository):
     
     def create_task(self, task_id: str, steps: List[Dict]) -> str:
         """创建带步骤的任务"""
+        # 初始化每个步骤的默认值
+        initialized_steps = []
+        for step in steps:
+            initialized_step = {
+                'key': step.get('key', ''),
+                'name': step.get('name', ''),
+                'status': 'pending',
+                'completed_count': 0,
+                'total_count': 0,
+                'failed_count': 0,
+                'skipped_count': 0,
+                'message': ''
+            }
+            initialized_steps.append(initialized_step)
+        
         doc = {
             'task_id': task_id,
             'status': 'running',
-            'steps': steps,
+            'steps': initialized_steps,
             'created_at': datetime.now(),
             'current_step': 0,
             'total_count': 0,
