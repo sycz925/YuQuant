@@ -19,10 +19,12 @@ class IndexFactory:
         self.repo = index_repo or IndexRepository()
     
     def sync_kline(self, target_date: Optional[str] = None,
+                   task_id: str = None,
                    progress_callback: Callable = None) -> SyncResult:
         """
         同步指数 K 线数据（TDX 数据源）
         :param target_date: 指定日期 YYYYMMDD，None 同步到最新
+        :param task_id: 任务ID，用于更新进度
         """
         callback = ProgressCallback(progress_callback)
         
@@ -44,15 +46,16 @@ class IndexFactory:
             enabled_codes = set(idx['code'] for idx in enabled_indices)
             sync_cfg = [c for c in index_cfg if c.get('code') in enabled_codes]
             
-            # 生成临时 task_id 用于进度更新
-            import uuid
-            temp_task_id = str(uuid.uuid4())
+            # 如果没有传入 task_id，生成临时的
+            if not task_id:
+                import uuid
+                task_id = str(uuid.uuid4())
             
             # 调用同步方法
             end_date = target_date or datetime.now().strftime('%Y%m%d')
             start_date = '19900101'  # 从最早开始
             
-            fs._run_sync_indices(temp_task_id, sync_cfg, start_date, end_date, is_external=True)
+            fs._run_sync_indices(task_id, sync_cfg, start_date, end_date, is_external=True)
             
             callback.complete(f'指数K线同步完成: {total} 个')
             return SyncResult(

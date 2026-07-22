@@ -40,15 +40,15 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         
         if step_key == 'sync_index':
             factory = get_index_factory()
-            factory.sync_kline(target_date, callback)
+            factory.sync_kline(target_date, task_id=task_id, progress_callback=callback)
         
         elif step_key == 'sync_stocks':
             factory = get_stock_factory()
-            factory.sync_daily(target_date, progress_callback=callback)
+            factory.sync_daily(target_date, task_id=task_id, progress_callback=callback)
         
         elif step_key == 'sync_sectors':
             factory = get_sector_factory()
-            factory.sync_daily(target_date, callback)
+            factory.sync_daily(target_date, task_id=task_id, progress_callback=callback)
         
         elif step_key == 'rps_stock':
             factory = get_stock_factory()
