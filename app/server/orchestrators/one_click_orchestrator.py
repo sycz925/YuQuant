@@ -192,14 +192,9 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         task_id = str(uuid.uuid4())
         self.task_repo.create_task(task_id, steps)
         
-        # 启动后台线程
-        import threading
-        thread = threading.Thread(
-            target=self._run,
-            args=(task_id, dates),
-            daemon=True
-        )
-        thread.start()
+        # 使用线程池提交任务
+        from app.server.orchestrators.base import _executor
+        _executor.submit(self._run, task_id, dates)
         
         return task_id
     
