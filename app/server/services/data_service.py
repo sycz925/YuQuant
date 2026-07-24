@@ -101,6 +101,8 @@ class DataService:
                         records = self._parse_index_records(index_config, all_data, start_date, end_date)
                         if records:
                             self._save_records(db, 'index_daily', records, 'pytdx')
+                            # 更新历史数据的 is_final
+                            self._update_index_is_final(db['index_daily'])
                             logger.info(f"[pytdx] 成功同步 {index_config['name']} {len(records)} 条数据")
                             return {'success': True, 'records': len(records), 'source': 'pytdx', 'message': '同步完成'}
                     
@@ -152,6 +154,8 @@ class DataService:
             
             if records:
                 self._save_records(db, 'index_daily', records, 'akshare')
+                # 更新历史数据的 is_final
+                self._update_index_is_final(db['index_daily'])
                 logger.info(f"[akshare] 成功同步 {index_config['name']} {len(records)} 条数据")
                 return {'success': True, 'records': len(records), 'source': 'akshare', 'message': '同步完成'}
             
@@ -206,6 +210,8 @@ class DataService:
             
             if records:
                 self._save_records(db, 'index_daily', records, 'baostock')
+                # 更新历史数据的 is_final
+                self._update_index_is_final(db['index_daily'])
                 logger.info(f"[baostock] 成功同步 {index_config['name']} {len(records)} 条数据")
                 return {'success': True, 'records': len(records), 'source': 'baostock', 'message': '同步完成'}
             
@@ -217,6 +223,11 @@ class DataService:
     def _parse_index_records(self, index_config: Dict, data: List[Dict], 
                              start_date: str, end_date: str) -> List[Dict]:
         """解析指数数据为记录格式"""
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo('Asia/Shanghai'))
+        today_str = now.strftime('%Y%m%d')
+        is_market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
+        
         records = []
         for item in data:
             try:
@@ -248,6 +259,16 @@ class DataService:
                     close_val <= 0 or close_val > 100000):
                     continue
                 
+                # 设置 is_final 字段
+                # 历史日期：is_final=True
+                # 今天：盘后(15:30+)为True，盘中为False
+                if trade_date < today_str:
+                    is_final = True
+                elif trade_date == today_str:
+                    is_final = is_market_closed
+                else:
+                    is_final = False
+                
                 records.append({
                     'stock_code': index_config['code'],
                     'trade_date': trade_date,
@@ -255,10 +276,29 @@ class DataService:
                     'low': low_val, 'close': close_val,
                     'volume': float(item.get('vol', item.get('volume', 0))),
                     'amount': float(item.get('amount', 0)),
+                    'is_final': is_final,
                 })
             except Exception:
                 continue
         return records
+    
+    @staticmethod
+    def _update_index_is_final(index_coll):
+        """更新 index_daily 的 is_final 字段
+        规则：只把今天之前的日期标为 is_final=True
+        今天的 is_final 由 _parse_index_records 在写入时设置（盘后后=True）
+        """
+        try:
+            from zoneinfo import ZoneInfo
+            today_str = datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d')
+            # 只更新今天之前的日期
+            index_coll.update_many(
+                {'trade_date': {'$lt': today_str}, 'is_final': {'$ne': True}},
+                {'$set': {'is_final': True}}
+            )
+            # 今天的 is_final 保持不变（由同步时设置）
+        except Exception as e:
+            logger.error(f"更新index is_final失败: {e}")
     
     def _save_records(self, db, collection_name: str, records: List[Dict], source: str):
         """保存记录到数据库"""

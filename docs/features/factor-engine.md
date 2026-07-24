@@ -1,56 +1,62 @@
 # 因子引擎功能文档
 
+审计日期：2026-07-24
+
 ## 概述
 
-因子引擎（FactorEngine）负责技术指标和因子计算，包括 CR5% 拥挤度因子、移动平均线等。
+因子引擎（`app/engine/factor_engine.py` - `FactorEngine` 类）负责全市场维度的技术指标与因子计算。
+
+当前系统纯 MongoDB 架构，无 HDF5 依赖。
 
 ## 核心功能
 
-### 1. CR5% 拥挤度因子
+### 1. RPS 相对强度计算
 
-计算每日成交额前 5% 股票的成交额占全市场的比例，用于判断市场拥挤度。
+支持多周期 RPS 计算（10/20/50/120/250 日），写入 `stock_daily` / `sector_daily` 的 `rps_10` ~ `rps_250` 字段。
 
 ```python
-from app.data_manager import DataManager
-from app.factor_engine import FactorEngine
+from app.engine.factor_engine import FactorEngine
+from app.data.db import get_db
 
-dm = DataManager("data/sqlite/quant.db", "data/hdf5")
-fe = FactorEngine(dm)
-
-cr5 = fe.calculate_cr5_percent("20241201")
+db = get_db()
+fe = FactorEngine(db)
+result = fe.calculate_rps(stock_codes=["000001", "000002"])
 ```
 
-### 2. 移动平均线（MA）
+过滤规则：
+- 个股：上市满 120 个交易日才参与 RPS 截面排名
+- 板块：日线数据满 20 条才参与 RPS 排名
 
-计算单只股票的移动平均线：
+### 2. 均线计算
+
 ```python
-ma20 = fe.calculate_ma("000001", "20241201", 20)
+fe.calculate_ma(target='stock', trade_date='20260615')
+# 计算 MA10/20/50/120 + VOL_MA5/10/20/50
+# 写入 stock_daily / sector_daily 对应字段
 ```
 
-批量计算多只股票的 MA：
+### 3. 涨幅计算
+
 ```python
-ma_df = fe.batch_calculate_ma(
-    stock_codes=["000001", "000002"],
-    start_date="20240101",
-    end_date="20241231",
-    window=20
-)
+fe.calculate_chg_fields(target='stock', trade_date='20260615')
+# 计算 chg_pct, chg_5d ~ chg_250d
 ```
 
-### 3. 历史 CR5% 序列
+### 4. CR5%/CR10% 计算
 
-获取历史 CR5% 数据（用于可视化）：
+在 MarketAggregator 中通过 `precompute_base_data()` 触发：
+
 ```python
-cr5_series = fe.get_all_cr5_history("20240101", "20241231")
+from app.server.factories.market_aggregator import MarketAggregator
+aggregator = MarketAggregator()
+result = aggregator.precompute_base_data(target_date='20260615')
+# 计算 CR5/CR10/MA占比/NH-NL → 写入 base_data_daily
 ```
 
-### 4. 指数 MA
+## 调用入口
 
-计算指数移动平均线：
-```python
-index_ma20 = fe.calculate_index_ma("000001", "20241201", 20)
-```
+API 层统一通过 Factory 间接调用因子引擎：
+- `POST /api/factors/rps/calculate` → StockFactory/SectorFactory.compute_rps()
+- `POST /api/factors/precompute-base` → MarketAggregator.precompute_base_data()
 
-## 数据缓存
-
-计算结果自动缓存到 HDF5 文件，提高性能。
+所有预计算结果存入 `base_data_daily`（基础指标）和 `market_daily`（聚类/AI分析）。

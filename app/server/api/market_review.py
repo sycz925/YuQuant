@@ -2818,20 +2818,11 @@ def generate_ai_analysis(date: Optional[str] = Query(None, description="交易�
 
         # 如果是失败记录，清除它以便重新生成
         if existing_ai and existing_ai.get('source') == 'failed':
-            failed_error = existing_ai.get('error', '上次生成失败')
             db['market_daily'].update_one(
                 {'trade_date': trade_date},
                 {'$unset': {'ai_analysis': ''}}
             )
-            # 如果是盘后时间生成的失败记录，直接返回失败信息，不重新生成
-            if _is_after_market(existing_ai.get('generated_at', '')):
-                return {
-                    'success': False,
-                    'task_id': None,
-                    'trade_date': trade_date,
-                    'is_cached': False,
-                    'error': f'上次生成失败: {failed_error}',
-                }
+            # 清除失败记录后继续重新生成，不返回错误
 
         # 创建后台任务
         task_id = tm.create_task()

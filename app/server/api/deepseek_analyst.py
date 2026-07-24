@@ -129,6 +129,8 @@ class DeepSeekAnalyst:
             )
 
             user_message = self._build_user_message(market_data)
+            logger.info(f"[DeepSeek] 请求报文长度: {len(user_message)} 字符")
+            logger.info(f"[DeepSeek] 请求报文前500字: {user_message[:500]}")
 
             kwargs = {
                 'model': self.model,
@@ -138,7 +140,7 @@ class DeepSeekAnalyst:
                     {'role': 'user', 'content': user_message},
                 ],
                 'max_tokens': 4096,
-                'timeout': 60,
+                'timeout': 120,
             }
 
             if self.enable_thinking:
@@ -147,15 +149,29 @@ class DeepSeekAnalyst:
             else:
                 kwargs['temperature'] = self.temperature
 
+            logger.info(f"[DeepSeek] 调用 API, model={self.model}, enable_thinking={self.enable_thinking}")
             response = client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
+            logger.info(f"[DeepSeek] 响应长度: {len(content) if content else 0} 字符")
+            logger.info(f"[DeepSeek] 响应前500字: {content[:500] if content else 'None'}")
 
             if not content:
                 logger.warning("[DeepSeek] 返回空 content，重试一次")
                 response = client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content
+                logger.info(f"[DeepSeek] 重试响应长度: {len(content) if content else 0}")
 
-            result = json.loads(content)
+            # 尝试解析 JSON，失败则重试一次
+            try:
+                result = json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.warning(f"[DeepSeek] JSON 解析失败: {e}")
+                logger.warning(f"[DeepSeek] 原始响应: {content}")
+                logger.warning("[DeepSeek] 重试一次...")
+                response = client.chat.completions.create(**kwargs)
+                content = response.choices[0].message.content
+                logger.info(f"[DeepSeek] 重试响应前500字: {content[:500] if content else 'None'}")
+                result = json.loads(content)
 
             # 验证必要字段
             required_keys = ['market_phase_diagnosis', 'industry_cluster_evaluation', 'execution_strategy_advice']
@@ -163,6 +179,7 @@ class DeepSeekAnalyst:
                 if key not in result:
                     result[key] = ''
 
+            logger.info(f"[DeepSeek] 解析成功, 字段: {list(result.keys())}")
             return result
 
         except Exception as e:
@@ -441,96 +458,180 @@ class DeepSeekAnalyst:
         return '\n'.join(msg_parts)
 
     def _compute_group_stats(self, trade_date: str, is_trading: bool = False) -> str:
-        """从 stock_daily 计算 RPS/成交额/股价分组统计，返回格式化文本
-        is_trading: 是否是盘中时间，盘中时不返回成交额分组统计
-        """
+        """从 market_daily 缓存或 stock_daily 计算分组统计，返回格式化文本"""
         try:
             from app.data.db import get_db
             db = get_db()
 
-            stocks = list(db['stock_daily'].find(
-                {'trade_date': trade_date, 'close': {'$gt': 0}, 'amount': {'$gt': 0}},
-                {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
-                 'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
-            ))
-            if not stocks:
-                return ''
+            # 优先从 market_daily 缓存读取 group_stats
+            cached = db['market_daily'].find_one({'trade_date': trade_date}, {'_id': 0, 'group_stats': 1})
+            if cached and cached.get('group_stats'):
+                return self._format_cached_group_stats(cached['group_stats'], is_trading)
 
-            merged = []
-            for s in stocks:
-                chg = s.get('chg_pct')
-                if chg is None:
-                    continue
-                merged.append({
-                    'chg_pct': chg,
-                    'close': s.get('close', 0),
-                    'amount': s.get('amount', 0),
-                    'rps_20': s.get('rps_20'),
-                })
-            if not merged:
-                return ''
-
-            total = len(merged)
-            n_groups = 20
-            lines = []
-
-            # --- RPS20 分组（20个等分位，每组5%） ---
-            rps_items = [(d['rps_20'], d['chg_pct']) for d in merged if d.get('rps_20') is not None and d['rps_20'] > 0]
-            if rps_items:
-                rps_items.sort(key=lambda x: x[0])
-                group_size = len(rps_items) // n_groups
-                lines.append("  按RPS20分组（每组5%股票，从低到高，显示该组平均涨幅）：")
-                for i in range(n_groups):
-                    start = i * group_size
-                    end = start + group_size if i < n_groups - 1 else len(rps_items)
-                    grp = [c for _, c in rps_items[start:end]]
-                    if grp:
-                        avg = sum(grp) / len(grp)
-                        pct_lo = round(start / len(rps_items) * 100)
-                        pct_hi = round(end / len(rps_items) * 100)
-                        lines.append(f"    RPS20 {pct_lo:3d}%~{pct_hi:3d}%分位: 均涨{avg:+.2f}%")
-
-            # --- 成交额分组（20个等分位，每组5%） ---
-            # 盘中时不返回成交额分组统计
-            if not is_trading:
-                amt_items = [(d['amount'], d['chg_pct']) for d in merged if d['amount'] > 0]
-                if amt_items:
-                    amt_items.sort(key=lambda x: x[0])
-                    group_size = len(amt_items) // n_groups
-                    lines.append("")
-                    lines.append("  按成交额分组（每组5%股票，从低到高，显示该组平均涨幅）：")
-                    for i in range(n_groups):
-                        start = i * group_size
-                        end = start + group_size if i < n_groups - 1 else len(amt_items)
-                        grp = [c for _, c in amt_items[start:end]]
-                        if grp:
-                            avg = sum(grp) / len(grp)
-                            pct_lo = round(start / len(amt_items) * 100)
-                            pct_hi = round(end / len(amt_items) * 100)
-                            lines.append(f"    成交额{pct_lo:3d}%~{pct_hi:3d}%分位: 均涨{avg:+.2f}%")
-
-            # --- 股价分组（20个等分位，每组5%） ---
-            price_items = [(d['close'], d['chg_pct']) for d in merged if d['close'] > 0]
-            if price_items:
-                price_items.sort(key=lambda x: x[0])
-                group_size = len(price_items) // n_groups
-                lines.append("")
-                lines.append("  按股价分组（每组5%股票，从低到高，显示该组平均涨幅）：")
-                for i in range(n_groups):
-                    start = i * group_size
-                    end = start + group_size if i < n_groups - 1 else len(price_items)
-                    grp = [c for _, c in price_items[start:end]]
-                    if grp:
-                        avg = sum(grp) / len(grp)
-                        pct_lo = round(start / len(price_items) * 100)
-                        pct_hi = round(end / len(price_items) * 100)
-                        lines.append(f"    股价{pct_lo:3d}%~{pct_hi:3d}%分位: 均涨{avg:+.2f}%")
-
-            return '\n'.join(lines)
-
+            # 缓存不存在，从 stock_daily 重新计算
+            return self._compute_group_stats_from_db(trade_date, is_trading)
         except Exception as e:
-            logger.warning(f"[DeepSeek] 计算分组统计失败: {e}")
+            logger.warning(f"计算分组统计失败: {e}")
             return ''
+
+    def _format_cached_group_stats(self, group_stats: dict, is_trading: bool = False) -> str:
+        """从缓存的 group_stats 格式化为文本"""
+        lines = []
+
+        # RPS20 分组
+        rps_stats = group_stats.get('rps_stats', [])
+        if rps_stats:
+            lines.append("  按RPS20分组（每组5%股票，从低到高，显示该组平均涨幅）：")
+            for g in rps_stats:
+                label = g.get('category_label', '')
+                avg_chg = g.get('avg_chg', 0)
+                lines.append(f"    RPS20 {label}: 均涨{avg_chg:+.2f}%")
+
+        # 成交额分组（始终显示）
+        amount_stats = group_stats.get('amount_stats', [])
+        if amount_stats:
+            lines.append("")
+            lines.append("  按成交额分组（每组5%股票，从低到高，显示该组平均涨幅）：")
+            for g in amount_stats:
+                label = g.get('category_label', '')
+                avg_chg = g.get('avg_chg', 0)
+                lines.append(f"    成交额{label}: 均涨{avg_chg:+.2f}%")
+
+        # 流通市值分组（始终显示）
+        float_mv_stats = group_stats.get('float_mv_stats', [])
+        if float_mv_stats:
+            lines.append("")
+            lines.append("  按流通市值分组（每组5%股票，从低到高，显示该组平均涨幅）：")
+            for g in float_mv_stats:
+                label = g.get('category_label', '')
+                avg_chg = g.get('avg_chg', 0)
+                lines.append(f"    流通市值{label}: 均涨{avg_chg:+.2f}%")
+
+        # 股价分组
+        price_stats = group_stats.get('price_stats', [])
+        if price_stats:
+            lines.append("")
+            lines.append("  按股价分组（每组5%股票，从低到高，显示该组平均涨幅）：")
+            for g in price_stats:
+                label = g.get('category_label', '')
+                avg_chg = g.get('avg_chg', 0)
+                lines.append(f"    股价{label}: 均涨{avg_chg:+.2f}%")
+
+        return '\n'.join(lines) if lines else ''
+
+    def _compute_group_stats_from_db(self, trade_date: str, is_trading: bool = False) -> str:
+        """从 stock_daily 直接计算分组统计（缓存不存在时的备选方案）"""
+        from app.data.db import get_db
+        db = get_db()
+
+        stocks = list(db['stock_daily'].find(
+            {'trade_date': trade_date, 'close': {'$gt': 0}, 'amount': {'$gt': 0}},
+            {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
+             'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
+        ))
+        if not stocks:
+            return ''
+
+        # 获取流通股本数据
+        stock_codes = [s['stock_code'] for s in stocks]
+        liutong_map = {}
+        for doc in db['stock_basics'].find(
+            {'stock_code': {'$in': stock_codes}, 'liutongguben': {'$gt': 0}},
+            {'_id': 0, 'stock_code': 1, 'liutongguben': 1}
+        ):
+            liutong_map[doc['stock_code']] = doc['liutongguben']
+
+        merged = []
+        for s in stocks:
+            chg = s.get('chg_pct')
+            if chg is None:
+                continue
+            # 计算流通市值（亿元）
+            liutong = liutong_map.get(s['stock_code'], 0)
+            close = s.get('close', 0)
+            float_mv = round(liutong * close / 1e8, 2) if liutong > 0 and close > 0 else 0
+            merged.append({
+                'chg_pct': chg,
+                'close': close,
+                'amount': s.get('amount', 0),
+                'rps_20': s.get('rps_20'),
+                'float_mv': float_mv,
+            })
+        if not merged:
+            return ''
+
+        total = len(merged)
+        n_groups = 20
+        lines = []
+
+        # --- RPS20 分组（20个等分位，每组5%） ---
+        rps_items = [(d['rps_20'], d['chg_pct']) for d in merged if d.get('rps_20') is not None and d['rps_20'] > 0]
+        if rps_items:
+            rps_items.sort(key=lambda x: x[0])
+            group_size = len(rps_items) // n_groups
+            lines.append("  按RPS20分组（每组5%股票，从低到高，显示该组平均涨幅）：")
+            for i in range(n_groups):
+                start = i * group_size
+                end = start + group_size if i < n_groups - 1 else len(rps_items)
+                grp = [c for _, c in rps_items[start:end]]
+                if grp:
+                    avg = sum(grp) / len(grp)
+                    pct_lo = round(start / len(rps_items) * 100)
+                    pct_hi = round(end / len(rps_items) * 100)
+                    lines.append(f"    RPS20 {pct_lo:3d}%~{pct_hi:3d}%分位: 均涨{avg:+.2f}%")
+
+        # --- 成交额分组（20个等分位，每组5%） ---
+        amt_items = [(d['amount'], d['chg_pct']) for d in merged if d['amount'] > 0]
+        if amt_items:
+            amt_items.sort(key=lambda x: x[0])
+            group_size = len(amt_items) // n_groups
+            lines.append("")
+            lines.append("  按成交额分组（每组5%股票，从低到高，显示该组平均涨幅）：")
+            for i in range(n_groups):
+                start = i * group_size
+                end = start + group_size if i < n_groups - 1 else len(amt_items)
+                grp = [c for _, c in amt_items[start:end]]
+                if grp:
+                    avg = sum(grp) / len(grp)
+                    pct_lo = round(start / len(amt_items) * 100)
+                    pct_hi = round(end / len(amt_items) * 100)
+                    lines.append(f"    成交额{pct_lo:3d}%~{pct_hi:3d}%分位: 均涨{avg:+.2f}%")
+
+        # --- 流通市值分组（20个等分位，每组5%） ---
+        mv_items = [(d['float_mv'], d['chg_pct']) for d in merged if d['float_mv'] > 0]
+        if mv_items:
+            mv_items.sort(key=lambda x: x[0])
+            group_size = len(mv_items) // n_groups
+            lines.append("")
+            lines.append("  按流通市值分组（每组5%股票，从低到高，显示该组平均涨幅）：")
+            for i in range(n_groups):
+                start = i * group_size
+                end = start + group_size if i < n_groups - 1 else len(mv_items)
+                grp = [c for _, c in mv_items[start:end]]
+                if grp:
+                    avg = sum(grp) / len(grp)
+                    pct_lo = round(start / len(mv_items) * 100)
+                    pct_hi = round(end / len(mv_items) * 100)
+                    lines.append(f"    流通市值{pct_lo:3d}%~{pct_hi:3d}%分位: 均涨{avg:+.2f}%")
+
+        # --- 股价分组（20个等分位，每组5%） ---
+        price_items = [(d['close'], d['chg_pct']) for d in merged if d['close'] > 0]
+        if price_items:
+            price_items.sort(key=lambda x: x[0])
+            group_size = len(price_items) // n_groups
+            lines.append("")
+            lines.append("  按股价分组（每组5%股票，从低到高，显示该组平均涨幅）：")
+            for i in range(n_groups):
+                start = i * group_size
+                end = start + group_size if i < n_groups - 1 else len(price_items)
+                grp = [c for _, c in price_items[start:end]]
+                if grp:
+                    avg = sum(grp) / len(grp)
+                    pct_lo = round(start / len(price_items) * 100)
+                    pct_hi = round(end / len(price_items) * 100)
+                    lines.append(f"    股价{pct_lo:3d}%~{pct_hi:3d}%分位: 均涨{avg:+.2f}%")
+
+        return '\n'.join(lines) if lines else ''
 
     def _fallback(self, error_msg: str = None) -> Dict[str, Any]:
         """降级返回（API不可用时）"""

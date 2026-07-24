@@ -70,7 +70,7 @@ function NhNlOverlayChart() {
   const loadIndices = async () => {
     try {
       const res = await factorApi.getIndices({ filter_mode: 'enabled' })
-      setIndexConfig(res?.items || res?.indices || [])
+      setIndexConfig(res?.items || res?.indices || res?.data || [])
     } catch (e) {
       console.error('加载指数列表失败:', e)
     }

@@ -1,71 +1,68 @@
 # A股量化系统 - 文档索引
 
-## 📚 项目概述
+## 项目概述
 
-一套专业的 A 股量化分析系统，已升级为 **React + FastAPI 分离架构，提供更优秀的用户体验！
+一套专业的 A 股量化分析系统，基于 **React + FastAPI 分离架构**。
 
 ### 核心特性
 - ✅ 防幸存者偏差的历史截面成分股逻辑
-- ✅ 后复权价格处理，消除分红送转导致的价格断层
 - ✅ 成交额前 5% 拥挤度因子（CR5%）
-- ✅ 真实交易摩擦模拟（佣金、过户费、印花税）
-- ✅ T+1 制度、涨跌停限制、滑点模拟
-- ✅ 双向动态风控与全局择时
+- ✅ 250日 NH-NL 新高新低指数（Elder）
+- ✅ 多周期 RPS 相对强度（10/20/50/120/250）
+- ✅ 新高板块效应聚类 + 低位潜力板块
+- ✅ DeepSeek AI 综合研判
+- ✅ 日历快照 + 周/月 AI 总结
+- ✅ Factory + Orchestrator 两层架构
 
 ---
 
-## 📂 文档拓扑树
+## 文档拓扑树
 
-### 🏗️ 架构设计 (architecture/)
-- [系统架构概览](architecture/overview.md) - 整体系统架构、技术栈、模块关系
+### 架构设计 (architecture/)
+- [系统架构概览](architecture/overview.md) - 整体架构、技术栈、Factory+Orchestrator 模式
+- [数据源调度策略](architecture/data-source-strategy.md) - 多源优先级、降级逻辑、代码格式转换
 
-### 🗄️ 数据模型 (database/)
-- [数据库 Schema](database/SCHEMA.md) - 数据表结构、字段定义、索引设计
+### 数据模型 (database/)
+- [MongoDB 集合定义](database/SCHEMA.md) - 10个集合的结构、字段、索引
+- [MongoDB Schema 详细设计](database/mongodb-schema.md) - 各文档字段类型与约束
+- ~~数据迁移方案~~（已归档 - 迁移已完成）
 
-### 🔌 API 接口 (api/)
-- [模块接口规范](api/modules.md) - 各核心模块的公共接口定义
-- [REST API 规范](api/rest-api.md) - （待创建
+### API 接口 (api/)
+- [模块接口规范](api/modules.md) - 10个路由模块 76+ 端点定义
 
-### 🎯 业务功能 (features/)
-- [数据更新系统](features/data-update-system.md) - **通达信 pytdx 数据源**：板块文件解析、指数日线、数据同步编排（核心文档）
-- [数据管理器](features/data-manager.md) - 数据获取、缓存、清洗逻辑
+### 业务功能 (features/)
+- [数据更新系统](features/data-update-system.md) - 通达信 pytdx 数据源：板块文件解析、指数日线、数据同步编排
+- [数据管理器](features/data-manager.md) - 多源同步、RPS 计算、字段计算
 - [因子引擎](features/factor-engine.md) - 技术指标和因子计算
-- [舆情分析引擎](features/sentiment-engine.md) - 舆情文本数据处理
 - [前端应用](features/frontend-app.md) - React 前端应用
 
-### 📅 开发计划 (plans/)
+### 开发计划 (plans/)
 - [2026-06-04 开发计划](plans/2026-06-04-development-plan.md) - 原始单模块架构计划
-- [2026-06-05 React+FastAPI 架构升级](plans/2026-06-05-react-fastapi-migration.md) - 架构升级完成的计划
-- [2026-06-05 后续开发计划](plans/2026-06-05-next-steps.md) - （待创建
+- [2026-06-05 React+FastAPI 架构升级](plans/2026-06-05-react-fastapi-migration.md)
+- [2026-06-05 后续开发计划](plans/2026-06-05-next-steps.md)
 
-### 🚀 部署运维 (deployment/)
-- [本地开发环境](deployment/local.md) - 开发环境配置指南
-
-### 🛠️ 快速开始 (getting-started/)
-- [环境配置](getting-started/setup.md) - 环境依赖安装
-- [项目运行](getting-started/run.md) - 项目启动和调试
+### 快速开始 (getting-started/)
+- [环境配置](getting-started/setup.md) - 环境依赖安装与启动
 
 ---
 
-## 🏗️ 代码结构
+## 代码结构
 
 ```
 A股量化系统/
 ├── app/
 │   ├── data/                    # 数据层
-│   │   ├── db.py               # MongoDB 连接
-│   │   ├── manager.py          # 数据同步管理器
-│   │   └── sources/            # 数据源驱动
+│   │   ├── db.py               # MongoDB 连接 + DAO（COLLECTION_MAP 映射）
+│   │   ├── manager.py          # DataManager 多源同步编排
+│   │   ├── task_manager.py     # 后台任务管理
+│   │   └── sources/            # 7 个数据源驱动
 │   │
 │   ├── server/                  # FastAPI 后端
 │   │   ├── main.py             # 应用入口
-│   │   ├── models.py           # Pydantic 模型
-│   │   └── api/                # API 路由
-│   │       ├── stocks.py
-│   │       ├── factors.py
-│   │       ├── sync.py
-│   │       ├── market_analysis.py
-│   │       └── market_review.py
+│   │   ├── cache.py            # 交易日缓存
+│   │   ├── api/                # 10 个路由模块
+│   │   ├── factories/          # 4 个 Factory
+│   │   └── orchestrators/      # 4 个 Orchestrator
 │   │
 │   ├── client/                  # React 前端
 │   │   └── src/
@@ -74,37 +71,35 @@ A股量化系统/
 │   │       ├── App.jsx         # 主应用
 │   │       └── api.js          # API 封装
 │   │
-│   ├── factor_engine.py        # 因子引擎
-│   └── rps_calculator.py       # RPS 计算器
+│   └── engine/                  # 因子计算引擎
+│       └── factor_engine.py    # CR5/CR10/RPS/均线
 │
-├── data/                        # 数据存储目录
 ├── docs/                        # 项目文档
-├── tests/                       # 测试用例
-├── start.sh                     # 启动脚本
-├── stop.sh                      # 停止脚本
-├── requirements.txt             # Python 依赖
+├── scripts/                     # 数据修复脚本
+├── start.sh / stop.sh           # 启停脚本
+├── requirements.txt
 └── AGENTS.md                    # 代理配置
 ```
 
 ---
 
-## 🧰 技术栈
+## 技术栈
 
 | 层级 | 技术选型 |
 |------|----------|
 | **前端框架** | React 18 + Vite |
 | **后端框架** | FastAPI + Uvicorn |
-| **主数据源** | pytdx（通达信协议直连）— 板块文件 `block_gn.dat`/`block_zs.dat` + `880XXX/881XXX` 指数日线 |
-| **回退数据源** | TqCenter（Windows DLL） > AkShare（Web API） > BaoStock > yfinance |
-| **数据存储** | MongoDB（`stock_basics` / `sector_basics` / `daily_data` / `factor_results`） |
+| **主数据源** | PyTdX（通达信协议直连） |
+| **回退数据源** | AkShare → BaoStock → yfinance |
+| **数据存储** | MongoDB（10个集合） |
 | **数据处理** | NumPy + Pandas |
-| **样式方案** | Tailwind CSS |
+| **AI 引擎** | DeepSeek API |
 | **图表库** | Recharts / ECharts |
 | **HTTP 客户端** | Axios |
 
 ---
 
-## 📞 相关链接
+## 相关链接
 
 - [项目根目录 README](../README.md)
 - [代理配置](../AGENTS.md)

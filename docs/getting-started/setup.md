@@ -3,55 +3,90 @@
 ## 系统要求
 
 - Python 3.8 或更高版本
-- 操作系统：Windows / macOS / Linux
+- Node.js 16+
+- **MongoDB 5.0+**
+- 操作系统：macOS / Linux / Windows
 
 ## 安装步骤
 
-### 1. 克隆或下载项目
+### 1. 克隆项目并进入目录
 
 ```bash
 cd YuQuant
 ```
 
-### 2. 创建虚拟环境（推荐）
+### 2. 创建虚拟环境
 
 ```bash
-# 使用 conda
-conda create -n yuquant python=3.9
-conda activate yuquant
-
-# 或使用 venv
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # Linux/macOS
-venv\Scripts\activate     # Windows
+# venv\Scripts\activate   # Windows
 ```
 
-### 3. 安装依赖
+### 3. 安装后端依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. 运行应用
+### 4. 安装前端依赖
 
 ```bash
-streamlit run app/app.py
+cd app/client && npm install
 ```
 
-浏览器会自动打开 http://localhost:8501
+### 5. 环境配置
+
+创建 `.env` 文件（或设置环境变量）：
+
+```
+MONGODB_URI=mongodb://localhost:27017/
+MONGODB_DB_NAME=yuquant
+DEEPSEEK_API_KEY=your-key-here
+```
+
+### 6. 启动 MongoDB
+
+```bash
+# macOS (Homebrew)
+brew services start mongodb-community
+
+# 或使用 Docker
+docker run -d -p 27017:27017 --name mongodb-yuquant mongo:latest
+```
+
+### 7. 启动应用
+
+```bash
+# 一键启动（后端 + 前端）
+./start.sh
+
+# 或分别启动
+# 后端：uvicorn app.server.main:app --host 0.0.0.0 --port 8000 --reload
+# 前端：cd app/client && npm run dev
+```
+
+- 后端 API：http://localhost:8000
+- 前端页面：http://localhost:5173
+- API 文档：http://localhost:8000/docs
 
 ## 验证安装
 
-访问应用后，点击「🔄 同步最新数据」验证数据获取功能正常工作。
+打开前端页面 http://localhost:5173，左侧导航栏出现市场监控、市场分析、个股分析等功能菜单即表示后端连接正常。
+
+## 初始化数据
+
+在 Settings 页面依次点击：
+1. 同步指数 → 同步个股 → 同步板块 → 计算RPS → 同步PE → 同步基础数据
 
 ## 常见问题
 
-### 问题1：AkShare 数据获取失败
+### MongoDB 连接失败
 
-- 检查网络连接
-- 尝试更新 AkShare：`pip install --upgrade akshare`
+- 确认 MongoDB 已启动：`mongosh` 或 `docker ps`
+- 检查 `.env` 中的 MONGODB_URI 配置
 
-### 问题2：数据库权限错误
+### 前端启动失败
 
-- 确保有 data 目录的写权限
-- 手动创建 data/sqlite 和 data/hdf5 目录
+- 确认 Node.js >= 16
+- 删除 `node_modules` 重新 `npm install`

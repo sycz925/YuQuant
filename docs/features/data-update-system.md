@@ -31,9 +31,8 @@ app/data/
     ▼
 DataManager.sync_*()  ──►  数据源选择（按优先级）
     │
-    ├── TqCenter（Windows DLL，最高优先级）
-    ├── PytdxSource（通达信协议直连，主数据源）
-    ├── AkShare（同花顺/东财 Web API，回退）
+    ├── PytdxSource（通达信协议直连，首选数据源）
+    ├── AkShare（Web API，回退）
     ├── BaoStock（个股日线回退）
     └── yfinance（美股备用）
     │
@@ -50,13 +49,12 @@ TaskManager 更新进度状态
 
 | 优先级 | 数据源 | 用途 | 优点 | 限制 |
 |--------|--------|------|------|------|
-| 1 | **TqCenter** | 板块列表 + 板块指数日线 | 与通达信客户端一致，数据最完整 | 仅 Windows 环境，依赖 DLL |
-| 2 | **PytdxSource** | 板块列表 + 成分股 + 880/881 指数日线 + 个股日线 | 跨平台，直接协议连接通达信服务器 | 部分板块无对应指数代码 |
-| 3 | **AkShare** | 股票基础信息 | Web API，无需安装 | 速度慢，概念板块易失效 |
-| 4 | **BaoStock** | 个股日线 | 免费，历史数据长 | 仅个股，无板块 |
-| 5 | **yfinance** | 美股 ADR | 补充海外数据 | 非 A 股核心 |
+| 1 | **PytdxSource** | 板块列表 + 成分股 + 880/881 指数日线 + 个股日线 + 基础信息 | 跨平台，直接协议连接通达信服务器 | 部分板块无对应指数代码 |
+| 2 | **AkShare** | 股票基础信息 + 个股日线回退 | Web API，无需安装 | 速度慢，反爬限制 |
+| 3 | **BaoStock** | 个股日线 | 免费，历史数据长 | 仅个股，无板块 |
+| 4 | **yfinance** | 美股 ADR | 补充海外数据 | 非 A 股核心 |
 
-> **当前默认策略**：在 Linux/Mac 开发环境下，PytdxSource 是实际主数据源。TqCenter 仅在 Windows 生产环境启用。
+> **当前默认策略**：PyTdX 是唯一主数据源，跨 Linux/Mac/Windows 均可用。AkShare / BaoStock / yfinance 仅作回退。
 
 ---
 
@@ -251,7 +249,7 @@ BLOCK_ALIAS_MAP = {
     │      └─► 调用 _match_block_to_tdx() → 获得 tdx_code
     │      └─► 若 tdx_code 存在 → 调用 get_tdx_index_daily(tdx_code, start_date)
     │      └─► 无匹配 → 跳过（等待未来成分股等权合成）
-    └─► 批量 bulk_write upsert 到 daily_data（data_type='sector'）
+                    └─► 批量 bulk_write upsert 到 sector_daily（data_type='sector'）
 
 阶段 5：返回统计信息
     └─► { block_count: 354, sector_daily_count: 63878 }
@@ -263,10 +261,9 @@ BLOCK_ALIAS_MAP = {
 
 ```python
 # 查询该板块已有最新日期
-existing_latest = db['daily_data'].find_one(
-    {'stock_code': 'SECTOR_半导体', 'data_type': 'sector'},
+existing_latest = db['sector_daily'].find_one(
+    {'stock_code': 'SECTOR_半导体'},
     sort=[('trade_date', -1)]
-)
 
 # 如果有旧数据，从 latest_date - 7 天开始请求（避免交易日对齐误差）
 if existing_latest:
@@ -296,9 +293,9 @@ sync_daily_data()   → PytdxSource.get_stock_daily() 遍历每只股票
 
 ```
 calculate_rps(target='stock|sector|all')
-    └─► RPSCalculator（相对强弱指标）
-          └─► 计算所有个股 / 板块的 5/10/20/60/120 日 RPS
-          └─► 写入 factor_results 集合
+          └─► FactorEngine（相对强弱指标）
+                └─► 计算所有个股 / 板块的 10/20/50/120/250 日 RPS
+                └─► 写入 stock_daily / sector_daily 的 rps_* 字段
 ```
 
 **关键过滤规则（RPS 计算前）：**
@@ -308,7 +305,7 @@ calculate_rps(target='stock|sector|all')
 | `stock` (个股) | ≥ 120 个交易日 | 新股上市不足 120 天的不参与 RPS 截面排名，避免上市初期价格剧烈波动失真 |
 | `sector` (板块) | ≥ 20 个交易日 | 板块指数或板块聚合日线不足 20 天的不参与 RPS 计算，避免样本不足导致排名失真 |
 
-过滤逻辑同时在 [factor_engine.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/factor_engine.py)（主路径）与 [rps_calculator.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/rps_calculator.py)（备用路径）中实现，确保两处一致。判断依据为每只股票/每个板块在 `daily_data` 中的有效日线条数（trade_date 计数）。
+过滤逻辑在 [factor_engine.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/engine/factor_engine.py) 中实现。判断依据为每只股票/每个板块在 `stock_daily` / `sector_daily` 中的有效日线条数（trade_date 计数）。
 
 ---
 
@@ -319,27 +316,32 @@ calculate_rps(target='stock|sector|all')
 | 集合 | 用途 | 文档数（典型） |
 |------|------|----------------|
 | `stock_basics` | 股票基础信息（代码/名称/市场/上市日期） | ~5,000 只 |
+| `stock_daily` | 个股日线行情（含RPS/MA/CHG） | ~7-8M 条 |
 | `sector_basics` | 板块基础信息（名称/来源/成分股数） | ~350 个 |
-| `daily_data` | K 线数据（个股 + 板块，`data_type` 区分） | ~4-5M 条 |
-| `factor_results` | 因子计算结果（RPS 等） | 动态 |
-| `task_status` | 同步任务状态 | 运行时临时 |
-| `index_basics` | 指数基础信息 | 备用 |
-| `stock_universe` | 选股池（可扩展） | 备用 |
+| `sector_daily` | 板块日线行情（含RPS/MA/CHG/NH-NL） | ~60K 条 |
+| `index_basics` | 指数基础信息 | ~10 条 |
+| `index_daily` | 指数日线行情（含PE_TTM） | ~20K 条 |
+| `base_data_daily` | 预计算基础指标（CR5/MA/NH-NL） | ~2K 条 |
+| `market_daily` | 盘后快照 + AI分析 | ~2K 条 |
+| `exclusions` | 排除管理 | ~50 条 |
+| `sync_tasks` | 同步任务状态 | 运行时临时 |
 
 ### 5.2 关键索引设计
 
 ```javascript
-// daily_data
-{ stock_code: 1, trade_date: 1 }   // 复合唯一索引（K 线按代码+日期定位）
-{ data_type: 1 }                   // 过滤类型索引
-{ trade_date: 1 }                  // 日期范围查询
+// stock_daily / sector_daily / index_daily
+{ stock_code: 1, trade_date: -1 }  // 复合索引（K 线按代码+日期定位）
+{ trade_date: -1 }                 // 日期范围查询
 
 // sector_basics
 { code: 1 }                        // 板块代码唯一索引
 { source: 1 }                      // 按来源过滤（概念/行业）
 
-// factor_results
-{ stock_code: 1, factor_name: 1, trade_date: 1 }  // 复合索引
+// base_data_daily
+{ date: 1 }                        // 唯一索引
+
+// market_daily
+{ trade_date: 1 }                  // 唯一索引
 ```
 
 ### 5.3 字段规范
@@ -348,9 +350,9 @@ calculate_rps(target='stock|sector|all')
 |------|------|------|
 | `stock_code` | string | 统一使用 A 股代码（纯数字，6 位），如 "600519" |
 | `trade_date` | string | `YYYYMMDD` 格式字符串，如 "20260610" |
-| `data_type` | string | `"stock"` = 个股；`"sector"` = 板块 |
+| `data_type` | string | `"stock"` = 个股；`"sector"` = 板块；`"index"` = 指数 |
 | `code`（sector） | string | 内部统一格式：`"SECTOR_板块名"` |
-| `ths_code` | string | 预留字段（历史原因），当前为空字符串 |
+| `tdx_code` | string | 通达信 880/881 指数代码 |
 
 ---
 
@@ -423,8 +425,17 @@ Response: {
   "low": 1245.20,
   "volume": 28500000,
   "amount": 3580000000,
-  "data_type": "sector",
   "data_source": "tdx_880",
+  "is_final": true,
+  "chg_pct": 2.38,
+  "rps_10": 92,
+  "rps_20": 85,
+  "rps_50": 78,
+  "ma10": 1250.50,
+  "ma20": 1230.20,
+  "ma50": 1180.10,
+  "nh": 3,
+  "nl": 0,
   "update_time": ISODate("2026-06-10T...")
 }
 ```
@@ -449,24 +460,23 @@ Response: {
 ```bash
 # 1. 验证板块数量正确（应 >= 330）
 python3 -c "
-import sys; sys.path.insert(0, '_vendor/pytdx')
 from app.data.db import get_db
 db = get_db()
 print('板块总数:', db['sector_basics'].count_documents({}))
 print('概念板块:', db['sector_basics'].count_documents({'source': '概念'}))
 print('行业板块:', db['sector_basics'].count_documents({'source': '行业'}))
-print('有日线板块数:', len(list(db['daily_data'].aggregate([
-    {'$match': {'data_type': 'sector'}},
+print('有日线板块数:', len(list(db['sector_daily'].aggregate([
     {'$group': {'_id': '$stock_code'}}
-]))
+])))
 "
 
 # 2. 验证日线数据条数
 python3 -c "
 from app.data.db import get_db
 db = get_db()
-print('板块日线数:', db['daily_data'].count_documents({'data_type': 'sector'}))
-print('个股日线数:', db['daily_data'].count_documents({'data_type': 'stock'}))
+print('板块日线数:', db['sector_daily'].count_documents({}))
+print('个股日线数:', db['stock_daily'].count_documents({}))
+print('指数日线数:', db['index_daily'].count_documents({}))
 "
 ```
 
@@ -485,11 +495,9 @@ print('个股日线数:', db['daily_data'].count_documents({'data_type': 'stock'
 | **更新频率** | 实时（与通达信客户端一致） | 延迟 1-2 小时 |
 | **跨平台** | Linux/Mac/Windows 均可 | Web API 跨平台但不可靠 |
 
-### 9.2 为何保留 `ths_code` 字段
+### 9.2 关于 `ths_code` / `tdx_code` 字段
 
-**历史遗留**：早期版本使用同花顺数据源，板块代码格式为 `ths_xxxxx`。迁移到通达信后，为避免破坏已有数据结构，保留该字段（目前为空字符串）。
-
-**未来计划**：下一次 schema 迁移时可将 `ths_code` 重命名为 `tdx_code`，存储 880/881 指数代码。
+历史版本使用 `ths_code` 存储同花顺板块代码，当前架构已全面切换为通达信，`tdx_code` 字段存储 880/881 指数代码。
 
 ### 9.3 为何部分板块没有日线数据
 
@@ -539,7 +547,7 @@ print('个股日线数:', db['daily_data'].count_documents({'data_type': 'stock'
 2. 日线数据历史长度不足 120 天（RPS 最小时间窗口）
 
 **解决**：
-- 检查 `db.daily_data.count_documents({data_type: 'sector', stock_code: 'SECTOR_板块名'})`
+- 检查 `db['sector_daily'].count_documents({'stock_code': 'SECTOR_板块名'})`
 - 如无数据 → 考虑成分股等权合成（见 9.3）
 
 ### 10.3 通达信服务器连接失败
@@ -582,10 +590,10 @@ print('个股日线数:', db['daily_data'].count_documents({'data_type': 'stock'
 
 | 现象 | 原因 | 解决 |
 |------|------|------|
-| 板块名称乱码（"3008533"等） | 旧解析器未正确识别 GBK 编码范围 | 使用新版 `_parse_block_file()` |
+| 板块名称乱码 | 解析器未正确识别 GBK 编码范围 | 使用新版 `_parse_block_file()` |
 | 概念板块数 < 200 | `block_gn.dat` 下载不完整或解析不全 | 检查文件大小、重试下载 |
 | 板块日线数 0 | 未匹配到 880/881 指数代码 | 扩展 `BLOCK_ALIAS_MAP` |
-| 同日数据重复 | 代码 + 日期未建唯一索引 | 建立 `{stock_code:1, trade_date:1}` 唯一索引 |
+| 同日数据重复 | 代码 + 日期未建唯一索引 | 建立复合唯一索引 |
 | 数据缺失最近交易日 | 增量起始日期计算有误 | 调小 `latest_date - 7` 的安全窗口 |
 
 ---
@@ -623,8 +631,7 @@ print('个股日线数:', db['daily_data'].count_documents({'data_type': 'stock'
 
 | 模块 / 文件 | 行号范围 | 说明 |
 |------------|---------|------|
-| [app/data/manager.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/manager.py) | 1-200 | DataManager 定义、个股数据同步 |
-| [app/data/manager.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/manager.py) | 295-620 | **板块数据同步核心逻辑** |
+| [app/data/manager.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/manager.py) | 全文 | DataManager 定义、个股/板块数据同步 |
 | [app/data/sources/pytdx_source.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/sources/pytdx_source.py) | 1-30 | 服务器列表与模块初始化 |
 | [app/data/sources/pytdx_source.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/sources/pytdx_source.py) | 46-64 | `_connect()` 通达信服务器连接 |
 | [app/data/sources/pytdx_source.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/sources/pytdx_source.py) | 68-224 | **板块文件二进制解析器** |
@@ -633,7 +640,9 @@ print('个股日线数:', db['daily_data'].count_documents({'data_type': 'stock'
 | [app/data/sources/pytdx_source.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/sources/pytdx_source.py) | 360-417 | 个股日线获取 |
 | [app/data/sources/pytdx_source.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/sources/pytdx_source.py) | 419-1300+ | **板块名称智能匹配 + BLOCK_ALIAS_MAP**（900+ 条别名） |
 | [app/data/db.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/db.py) | 全文 | MongoDB 连接与 CRUD 封装 |
-| [app/server/api/factors.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/server/api/factors.py) | 600-680 | API 路由（板块同步 + RPS 计算） |
+| [app/server/api/factors.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/server/api/factors.py) | 全文 | API 路由（板块同步 + RPS 计算 + 预计算） |
+| [app/server/factories/](file:///Users/yubo/Desktop/work/study/YuQuant/app/server/factories/) | 全文 | Factory 层：IndexFactory / StockFactory / SectorFactory / MarketAggregator |
+| [app/server/orchestrators/](file:///Users/yubo/Desktop/work/study/YuQuant/app/server/orchestrators/) | 全文 | Orchestrator 层：OneClickUpdate / DailyRecalc / MonthlyRecalc / SettingsTask |
 | [app/data/task_manager.py](file:///Users/yubo/Desktop/work/study/YuQuant/app/data/task_manager.py) | 全文 | 后台任务状态管理 |
 
 ---
@@ -644,9 +653,8 @@ print('个股日线数:', db['daily_data'].count_documents({'data_type': 'stock'
 # 核心依赖
 pip install pymongo pandas pytdx python-dotenv uvicorn fastapi
 
-# pytdx 从源码克隆（推荐，因为 PyPI 版本较旧）
-git clone --depth 1 https://github.com/rainx/pytdx.git _vendor/pytdx
-# 然后在代码中 sys.path.insert(0, '_vendor/pytdx')
+# pytdx 从 PyPI 安装
+pip install pytdx
 
 # 可选回退数据源
 pip install akshare baostock yfinance
@@ -688,6 +696,7 @@ RPS 计算一次（板块）：
 | 2026-06-10 | 替换同花顺（akshare）为通达信（pytdx）板块数据源 | sync-sectors API、板块数据模型 |
 | 2026-06-10 | 实现自定义 block_gn.dat 解析器 | 板块数量从 100+ 提升到 350+ |
 | 2026-06-10 | 实现板块名 → 880/881 代码智能匹配 | 41 个板块获得指数日线 |
+| 2026-07-24 | 文档同步审计：修正数据源优先级（PyTdX 为主源）、集合名、删除废弃引用 | 本文档 |
 
 ---
 
@@ -702,7 +711,7 @@ RPS 计算一次（板块）：
 
 ---
 
-**文档版本**：1.0（2026-06-10）
+**文档版本**：1.1（2026-07-24）
 **维护者**：后端代理（DataManager / PytdxSource）
 **关联文档**：
 - [数据库设计](file:///Users/yubo/Desktop/work/study/YuQuant/docs/database/mongodb-schema.md)

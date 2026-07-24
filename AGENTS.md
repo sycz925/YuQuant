@@ -54,4 +54,4 @@
 2. **执行**：激活挂载技能进行本地化领域编码。禁止跨里程碑、非原子交付。
 3. **后置检查**：验证交付物和测试基线。在请求用户授权解锁下一个里程碑前，更新双轨资产。
 
-<!-- Context-Archived: 2026-06-05 从Streamlit单模块架构升级为React+FastAPI多模块架构 --><!-- Context-Archived: 2026-06-05 数据层升级计划：从SQLite+HDF5切换到MongoDB，数据源优先级调整为 TqCenter > PyTdX > AkShare > BaoStock -->
+<!-- Context-Archived: 2026-07-24 全面文档同步审计：README/docs/architecture/database/api 根据实际代码重写覆盖，修正数据源优先级(PyTdX→AkShare→BaoStock→yfinance)，补充Factory+Orchestrator架构描述，更新MongoDB集合名与实际一致 -->

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/calendar", tags=["日历复盘"])
 
 # 默认大盘指数代码（上证指数）
-DEFAULT_INDEX_CODE = "000001"
+DEFAULT_INDEX_CODE = "880003"  # 平均股价指数
 
 
 def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, Any]]:
@@ -78,9 +78,9 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
                     except Exception:
                         pass
         
-        # 从index_daily获取大盘涨跌幅（直接使用预计算的chg_pct）
+        # 从index_daily获取大盘涨跌幅（使用平均股价指数 880003）
         index_doc = db['index_daily'].find_one(
-            {'stock_code': DEFAULT_INDEX_CODE, 'trade_date': trade_date},
+            {'stock_code': '880003', 'trade_date': trade_date},
             {'_id': 0, 'chg_pct': 1}
         )
         
@@ -165,7 +165,7 @@ def generate_month_snapshots(year: int, month: int, db=None) -> int:
 def get_calendar_daily_summary(
     year: int = Query(..., description="年份 YYYY"),
     month: int = Query(..., description="月份 1-12"),
-    index_code: str = Query(DEFAULT_INDEX_CODE, description="指数代码，默认上证指数")
+    index_code: str = Query(DEFAULT_INDEX_CODE, description="指数代码，默认平均股价")
 ):
     """
     获取日历每日摘要数据
@@ -647,6 +647,124 @@ WEEKLY_SUMMARY_PROMPT = """你是一位资深的A股量化策略总监，具备�
 {daily_analyses}
 
 请输出周度总结报告。"""
+
+
+def _build_monthly_input_text(month_dates: list, ai_docs: dict,
+                              new_high_docs: dict = None, lps_docs: dict = None,
+                              overview_docs: dict = None) -> str:
+    """构建发送给 DeepSeek 的月总结输入文本"""
+    if new_high_docs is None:
+        new_high_docs = {}
+    if lps_docs is None:
+        lps_docs = {}
+    if overview_docs is None:
+        overview_docs = {}
+
+    from app.data.db import get_db
+    db = get_db()
+
+    # 获取月涨跌幅（月初收盘到月末收盘）
+    index_line = ''
+    if len(month_dates) >= 2:
+        first_day = month_dates[0]
+        last_day = month_dates[-1]
+        first_docs = list(db['index_daily'].find(
+            {'trade_date': first_day},
+            {'_id': 0, 'stock_code': 1, 'close': 1}
+        ))
+        last_docs = list(db['index_daily'].find(
+            {'trade_date': last_day},
+            {'_id': 0, 'stock_code': 1, 'close': 1}
+        ))
+        first_map = {d['stock_code']: d.get('close', 0) for d in first_docs}
+        last_map = {d['stock_code']: d.get('close', 0) for d in last_docs}
+
+        idx_names = {}
+        for b in db['index_basics'].find({'is_disable': {'$ne': True}}, {'_id': 0, 'code': 1, 'name': 1}):
+            idx_names[b['code']] = b['name']
+
+        idx_parts = []
+        for code in last_map:
+            f = first_map.get(code, 0)
+            l = last_map.get(code, 0)
+            if f and l:
+                chg = round((l / f - 1) * 100, 2)
+                name = idx_names.get(code, code)
+                idx_parts.append(f"{name}{chg:+.2f}%")
+        if idx_parts:
+            date_range = f"{first_day[:4]}-{first_day[4:6]}-{first_day[6:]}~{last_day[:4]}-{last_day[4:6]}-{last_day[6:]}"
+            index_line = f"【本月大盘指数涨跌幅({date_range})】{', '.join(idx_parts)}"
+
+    parts = []
+    if index_line:
+        parts.append(index_line)
+        parts.append("")
+
+    # 按周分组显示每日数据
+    from datetime import datetime, timedelta
+    current_week = []
+    last_week_num = None
+    
+    for date_str in month_dates:
+        try:
+            dt = datetime.strptime(date_str, '%Y%m%d')
+            week_num = dt.isocalendar()[1]
+            
+            if last_week_num is not None and week_num != last_week_num:
+                # 新的一周，输出上一周的数据
+                if current_week:
+                    parts.append(f"【第{last_week_num}周】")
+                    for day_data in current_week:
+                        parts.append(day_data)
+                    parts.append("")
+                current_week = []
+            
+            last_week_num = week_num
+            formatted = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            
+            ai = ai_docs.get(date_str)
+            if ai:
+                day_text = f"【{formatted}】"
+                day_text += f"\n市场阶段诊断: {ai.get('market_phase_diagnosis', '无')}"
+                
+                alloc = ai.get('allocation_and_focus_model', {})
+                if alloc:
+                    core_sectors = alloc.get('core_target_sectors', [])
+                    if core_sectors:
+                        day_text += f"\n核心板块: {', '.join(core_sectors)}"
+                
+                current_week.append(day_text)
+            else:
+                current_week.append(f"【{formatted}】无AI分析数据")
+                
+        except Exception:
+            continue
+    
+    # 输出最后一周
+    if current_week:
+        parts.append(f"【第{last_week_num}周】")
+        for day_data in current_week:
+            parts.append(day_data)
+        parts.append("")
+
+    return '\n'.join(parts)
+
+
+MONTHLY_SUMMARY_PROMPT = """你是一位资深的A股量化策略总监，具备深厚的交易经验。请根据以下本月每个交易日的AI分析数据，撰写一份精炼的月度市场总结报告。
+
+[严格要求]
+1. 输出必须为中文（简体中文），使用Markdown格式。
+2. 先用一段话总结本月市场整体走势（涨跌节奏、成交量变化、市场情绪）。
+3. 再用一段话总结本月最强板块和主线逻辑。
+4. 分析本月市场的主要变化趋势和风格切换。
+5. 最后给出下月操作建议（仓位建议、风控要点、重点关注的方向）。
+6. 保持专业、果断的语气，避免空话套话。
+7. [文本重点标记规则] 输出文本中，关键术语和重要结论必须使用Markdown加粗语法（**加粗**）进行标记。每段最多标记10个重点词，不要整句加粗。
+
+[每周总结数据]
+{weekly_summaries}
+
+请输出月度总结报告。"""
 
 
 @router.get("/weekly-task/{task_id}")
@@ -1241,6 +1359,63 @@ def get_monthly_task(task_id: str):
     return task
 
 
+@router.get("/monthly-input-data")
+def get_monthly_input_data(
+    year: int = Query(..., description="年份 YYYY"),
+    month: int = Query(..., description="月份 1-12"),
+):
+    """获取月总结传给DeepSeek的原始输入数据"""
+    try:
+        db = get_db()
+
+        # 获取该月所有交易日
+        all_dates = sorted(db['stock_daily'].distinct('trade_date'))
+        month_dates = [d for d in all_dates if d.startswith(f"{year}{month:02d}")]
+        
+        if not month_dates:
+            raise HTTPException(status_code=400, detail=f"{year}年{month}月没有交易日")
+
+        # 查询 weekly_summary 数据
+        week_docs = list(db['weekly_summary'].find(
+            {'year': year, 'month': month},
+            {'_id': 0, 'week_index': 1, 'dates': 1, 'summary': 1}
+        ).sort('week_index', 1))
+
+        if not week_docs:
+            raise HTTPException(status_code=400, detail=f"{year}年{month}月暂无周总结数据，请先生成周总结")
+
+        # 拼接各周总结
+        weekly_parts = []
+        for doc in week_docs:
+            wk = doc['week_index']
+            dates = doc.get('dates', [])
+            date_range = f"{dates[0][:4]}-{dates[0][4:6]}-{dates[0][6:]}" if dates else ''
+            date_range_end = f"{dates[-1][:4]}-{dates[-1][4:6]}-{dates[-1][6:]}" if dates else ''
+            weekly_parts.append(f"【第{wk}周 ({date_range} ~ {date_range_end})】")
+            weekly_parts.append(doc.get('summary', ''))
+            weekly_parts.append("")
+
+        weekly_summaries = '\n'.join(weekly_parts)
+
+        # 完整的 user message（含 prompt）
+        full_message = MONTHLY_SUMMARY_PROMPT.format(weekly_summaries=weekly_summaries)
+
+        return {
+            'success': True,
+            'year': year,
+            'month': month,
+            'dates': month_dates,
+            'system_message': '你是一位专业的A股量化策略分析师，输出中文月度总结报告。',
+            'user_message': full_message,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取月输入数据失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取月输入数据失败: {str(e)[:200]}")
+
+
 # ==================== 月度重算 ====================
 
 @router.post("/recalculate-month")
@@ -1508,9 +1683,29 @@ def _run_fill_ai_task(task_id: str, year: int, month: int):
                     total_count=total,
                 )
                 
-                # 调用AI分析生成
-                from app.server.api.market_review import generate_ai_analysis
-                generate_ai_analysis(date_str)
+                # 直接调用AI分析函数，而不是API端点
+                # 先预计算 market_daily 数据
+                from app.server.api.market_review import precompute_market_daily
+                precompute_market_daily(date_str)
+                
+                # 从 market_daily 读取数据
+                cached = db['market_daily'].find_one({'trade_date': date_str}, {'_id': 0})
+                if not cached:
+                    logger.warning(f"补全 {date_str}: 无 market_daily 数据")
+                    fail_count += 1
+                    continue
+                
+                # 调用 DeepSeek 分析
+                from app.server.api.market_review import _call_deepseek
+                market_data = {
+                    'trade_date': date_str,
+                    'overview': cached.get('overview', {}),
+                    'new_high': cached.get('new_high', {}),
+                    'low_position_sectors': cached.get('low_position_sectors', []),
+                    'active_sectors': cached.get('active_sectors', []),
+                }
+                
+                ai_result = _call_deepseek(db, date_str, market_data)
                 
                 success_count += 1
                 time.sleep(1)

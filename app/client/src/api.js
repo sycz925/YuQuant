@@ -52,17 +52,17 @@ export const factorApi = {
   getCr5: (params = {}) =>
     api.get('/factors/cr5', { params }),
   syncIndices: (params = {}) =>
-    api.post('/factors/sync-indices', {}, { params }),
+    api.post('/settings-tasks/sync-indices', {}, { params }),
   syncIndexPE: (token) =>
-    api.post('/factors/sync-index-pe', {}, { params: { token } }),
+    api.post('/settings-tasks/sync-index-pe', {}, { params: { token } }),
   precomputeBase: () =>
-    api.post('/factors/precompute-base'),
+    api.post('/settings-tasks/precompute-base'),
   getIndices: (params = {}) =>
     api.get('/factors/indices', { params }),
   searchIndices: (keyword) =>
     api.get('/factors/indices/search', { params: { keyword } }),
   syncSectors: (params = {}) =>
-    api.post('/factors/sync-sectors', {}, { params }),
+    api.post('/settings-tasks/sync-sectors', {}, { params }),
   getSectors: (params = {}) =>
     api.get('/factors/sectors', { params: { min_stock_count: 5, ...params } }),
   getSectorDaily: (code, startDate, endDate, limit) =>
@@ -72,7 +72,7 @@ export const factorApi = {
       headers: { 'Content-Type': 'multipart/form-data' }
     }),
   calculateRPS: (params = {}) =>
-    api.post('/factors/rps/calculate', {}, { params }),
+    api.post('/settings-tasks/calculate-rps', {}, { params }),
   clearTasks: () =>
     api.post('/factors/tasks/clear'),
   clearRps: (params = {}) =>
@@ -111,8 +111,8 @@ export const factorApi = {
 export const syncApi = {
   syncBasics: () => api.post('/sync/basics'),
   syncDaily: (data) => api.post('/sync/daily', data),
-  syncAllDaily: (data) => api.post('/sync/daily/all', data),
-  getTaskStatus: (taskId) => api.get(`/sync/task/${taskId}`),
+  syncAllDaily: (data) => api.post('/settings-tasks/sync-daily', {}, { params: data }),
+  getTaskStatus: (taskId) => api.get(`/calendar/task/${taskId}`),
   cancelTask: (taskId) => api.delete(`/sync/task/${taskId}`),
   patchIsFinal: () => api.post('/sync/patch_is_final')
 }
@@ -136,7 +136,7 @@ export const marketReviewApi = {
   getBaseData: (params = {}) => api.get('/market-review/base-data', { params }),
   getAiAnalysis: (date) => api.get('/market-review/ai-analysis', { params: { date } }),
   generateAiAnalysis: (date) => api.post('/market-review/ai-analysis/generate', null, { params: { date } }),
-  getAiAnalysisTask: (taskId) => api.get(`/market-review/ai-analysis/task/${taskId}`),
+  getAiAnalysisTask: (taskId) => api.get(`/calendar/task/${taskId}`),
   getAiInputData: (date) => api.get('/market-review/ai-analysis/input-data', { params: { date } }),
   getGroupStats: (date) => api.get('/market-review/group-stats', { params: { date } }),
   getSectorDetail: (sectorCode) => api.get('/market-review/sector-detail', { params: { sector_code: sectorCode } }),

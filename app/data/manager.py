@@ -252,7 +252,8 @@ class DataManager:
             return (datetime.strptime(day, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
 
     def sync_daily_data(self, stock_codes: List[str], end_date: str = None,
-                        task_id: Optional[str] = None, max_workers: int = 16, is_external: bool = False) -> dict:
+                        task_id: Optional[str] = None, max_workers: int = 16, is_external: bool = False,
+                        progress_callback: Callable = None) -> dict:
         """同步个股日线数据 — 逐天回溯模式"""
         from .task_manager import get_task_manager
 
@@ -277,7 +278,11 @@ class DataManager:
             days_synced += 1
             logger.info(f"同步 {day}")
 
-            if tm and task_id:
+            # 如果有 progress_callback，使用它更新步骤进度
+            # 否则更新顶层进度（兼容旧代码）
+            if progress_callback:
+                progress_callback(0, expected, f"同步 {day}...")
+            elif tm and task_id:
                 tm.update_task_progress(task_id, current_stock=day,
                                         current_stock_name=f"同步 {day}...",
                                         total_count=expected,
@@ -305,12 +310,16 @@ class DataManager:
                         except TimeoutError:
                             logger.error(f"同步超时 60s: {stock_code} {stock_name}")
                             total_fail += 1
-                            if tm and task_id:
+                            if progress_callback:
+                                progress_callback(day_processed, expected, f"同步超时: {stock_code}")
+                            elif tm and task_id:
                                 tm.update_task_progress(task_id, increment_failed=1,
                                     failed_stock={'stock_code': stock_code, 'stock_name': stock_name,
                                                   'error': '同步超时 60s'})
                             day_processed += 1
-                            if tm and task_id:
+                            if progress_callback:
+                                progress_callback(day_processed, expected, f"同步 {day}")
+                            elif tm and task_id:
                                 tm.update_task_progress(task_id,
                                     current_stock=day,
                                     current_stock_name=f"同步 {day}",
@@ -335,7 +344,9 @@ class DataManager:
                     if day_processed % 500 == 0:
                         logger.info(f"  {day} 进度: {day_processed}/{expected} "
                                     f"(成功{total_success} 失败{total_fail} 跳过{total_skipped})")
-                    if tm and task_id:
+                    if progress_callback:
+                        progress_callback(day_processed, expected, f"同步 {day}")
+                    elif tm and task_id:
                         tm.update_task_progress(task_id,
                             current_stock=day,
                             current_stock_name=f"同步 {day}",

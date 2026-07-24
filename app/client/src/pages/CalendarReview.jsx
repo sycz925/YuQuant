@@ -34,6 +34,22 @@ const DESIGN = {
 // 星期标题（只显示工作日）
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五']
 
+// 渲染加粗文本（与每日AI分析一致的样式）
+const renderBoldText = (text) => {
+  if (!text) return null
+  const parts = text.split(/\*\*(.*?)\*\*/g)
+  return parts.map((part, i) => {
+    if (i % 2 === 1) {
+      return (
+        <span key={i} className="text-amber-500 font-bold bg-amber-50 px-1 py-0.5 rounded mx-0.5">
+          {part}
+        </span>
+      )
+    }
+    return part
+  })
+}
+
 function CalendarReview({ latestTradeDate }) {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
@@ -1114,8 +1130,9 @@ function CalendarReview({ latestTradeDate }) {
               <div
                 className="text-[13px] leading-relaxed"
                 style={{color: DESIGN.colors.foreground, fontFamily: 'Fira Sans', whiteSpace: 'pre-wrap'}}
-                dangerouslySetInnerHTML={{__html: weeklySummary.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}}
-              />
+              >
+                {renderBoldText(weeklySummary)}
+              </div>
             </div>
             <div className="mt-4 pt-3 flex items-center gap-2" style={{borderTop: `1px solid ${DESIGN.colors.border}`}}>
               <button
@@ -1245,8 +1262,9 @@ function CalendarReview({ latestTradeDate }) {
               <div
                 className="text-[13px] leading-relaxed"
                 style={{color: DESIGN.colors.foreground, fontFamily: 'Fira Sans', whiteSpace: 'pre-wrap'}}
-                dangerouslySetInnerHTML={{__html: monthlySummary.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}}
-              />
+              >
+                {renderBoldText(monthlySummary)}
+              </div>
             </div>
             <div className="mt-4 pt-3 flex items-center gap-2" style={{borderTop: `1px solid ${DESIGN.colors.border}`}}>
               <button

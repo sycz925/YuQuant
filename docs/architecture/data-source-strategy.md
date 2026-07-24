@@ -1,7 +1,6 @@
 # 数据源调度策略
 
-**日期**：2026-06-05  
-**项目**：A股量化系统
+审计日期：2026-07-24
 
 ---
 
@@ -15,31 +14,39 @@
 
 | 优先级 | 数据源 | 说明 | 稳定性 | 数据质量 |
 |--------|--------|------|--------|---------|
-| 1 | **Tushare** | 首选数据源，数据质量高，API 稳定 | 高 | 极高 |
-| 2 | **AkShare** | 备选数据源，Tushare 不可用时使用 | 中（反爬限制） | 高 |
-| 3 | **baostock** | 补充数据源，前两者都不可用时使用 | 高 | 中 |
+| 1 | **PyTdX** | 通达信协议直连，板块文件解析 + 板块指数K线 + 个股日线 | 高 | 高 |
+| 2 | **AkShare** | Web API，股票基础信息回退，个股日线回退 | 中（反爬限制） | 中 |
+| 3 | **BaoStock** | 免费证券数据，个股日线回退 | 高 | 中 |
+| 4 | **yfinance** | Yahoo Finance，最后备用（港股/美股ADR） | 中 | 低 |
+
+> **注意**：旧文档中提到的 Tushare 和 TqCenter 在当前架构中已不再作为主用数据源。PyTdX 是实际主数据源。
 
 ---
 
 ## 降级逻辑
 
 ```
-┌─────────────────┐
-│  尝试 Tushare   │  ──成功──→ 返回数据
-└────────┬────────┘
+┌──────────────────┐
+│  尝试 PyTdX      │  ──成功──→ 返回数据
+└────────┬─────────┘
          │ 失败
          ↓
-┌─────────────────┐
-│  尝试 AkShare   │  ──成功──→ 返回数据
-└────────┬────────┘
+┌──────────────────┐
+│  尝试 AkShare    │  ──成功──→ 返回数据
+└────────┬─────────┘
          │ 失败
          ↓
-┌─────────────────┐
-│  尝试 baostock  │  ──成功──→ 返回数据
-└────────┬────────┘
+┌──────────────────┐
+│  尝试 BaoStock   │  ──成功──→ 返回数据
+└────────┬─────────┘
          │ 失败
          ↓
-    返回错误
+┌──────────────────┐
+│  尝试 yfinance   │  ──成功──→ 返回数据
+└────────┬─────────┘
+         │ 失败
+         ↓
+     返回错误
   （绝不生成假数据）
 ```
 
@@ -47,45 +54,37 @@
 
 ## 各数据源详细说明
 
-### 1. Tushare（主数据源）
+### 1. PyTdX（主数据源）
 
-#### 初始化
+#### 核心能力
 ```python
-import tushare as ts
-
-# 设置 Token
-ts.set_token('YOUR_TUSHARE_TOKEN')
-
-# 创建 Pro 接口
-pro = ts.pro_api()
+PytdxSource.
+├── get_concept_blocks()       # block_gn.dat → 246 概念板块
+├── get_industry_blocks()      # block_zs.dat → 108 行业板块
+├── get_style_blocks()         # block_fg.dat → 50 风格板块
+├── get_tdx_index_daily()      # 880XXX / 881XXX 板块指数日线
+├── get_stock_daily()          # 个股日线
+└── get_stock_basics()         # 股票基础信息
 ```
 
-#### 获取股票列表
+#### 服务器列表
 ```python
-# 获取股票基础信息
-df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name,area,industry,list_date')
+TDX_SERVERS = [
+    ('180.153.18.170', 7709),   # 通达信上海主站
+    ('119.147.212.81', 7709),   # 通达信深圳主站
+    ('112.74.214.43',  7709),   # 备用1
+    ('121.14.110.194', 7709),   # 备用2
+]
 ```
 
-#### 获取日线行情
-```python
-# 获取日线数据（后复权）
-# ts_code 格式："600519.SH" / "000001.SZ"
-df = pro.daily(ts_code='600519.SH', start_date='20250101', end_date='20250605')
-```
+#### 板块名称 → 指数代码智能匹配
+6层匹配策略：精确匹配 → 别名映射（900+条 BLOCK_ALIAS_MAP）→ 去括号 → 去后缀 → 包含关系 → 别名包含
 
-#### 字段映射
-| Tushare 字段 | 目标字段 | 说明 |
-|-------------|---------|------|
-| `ts_code` | - | 股票代码（格式转换后用） |
-| `trade_date` | `trade_date` | 交易日 |
-| `open` | `open` | 开盘价 |
-| `high` | `high` | 最高价 |
-| `low` | `low` | 最低价 |
-| `close` | `close` | 收盘价 |
-| `vol` | `volume` | 成交量 |
-| `amount` | `amount` | 成交额 |
-| `pct_chg` | `change_pct` | 涨跌幅 |
-| `change` | `change` | 涨跌额 |
+当前 354 个板块中约 41 个可匹配到 880/881 指数代码获得直接日线。
+
+#### 日线数据
+- 个股日线：`get_security_bars()` 循环获取，根据代码首字符判断市场（6/8/9→沪市，其他→深市）
+- 板块指数日线：`get_index_bars(9, market, tdx_code)` 每次最多800条
 
 ---
 
@@ -94,148 +93,65 @@ df = pro.daily(ts_code='600519.SH', start_date='20250101', end_date='20250605')
 #### 获取股票列表
 ```python
 import akshare as ak
-
-# 获取 A 股列表
-df = ak.stock_info_a_code_name()
+df = ak.stock_info_a_code_name()  # A股列表
 ```
 
 #### 获取日线行情
 ```python
-# 获取后复权日线数据
-df = ak.stock_zh_a_hist(symbol='600519', period='daily', start_date='20250101', end_date='20250605', adjust='hfq')
+df = ak.stock_zh_a_hist(symbol='600519', period='daily',
+                         start_date='20250101', end_date='20250605',
+                         adjust='hfq')
 ```
-
-#### 字段映射
-| AkShare 字段 | 目标字段 | 说明 |
-|-------------|---------|------|
-| `日期` | `trade_date` | 交易日 |
-| `开盘` | `open` | 开盘价 |
-| `收盘` | `close` | 收盘价 |
-| `最高` | `high` | 最高价 |
-| `最低` | `low` | 最低价 |
-| `成交量` | `volume` | 成交量 |
-| `成交额` | `amount` | 成交额 |
-| `涨跌幅` | `change_pct` | 涨跌幅 |
-| `涨跌额` | `change` | 涨跌额 |
-| `振幅` | `amplitude` | 振幅 |
-| `换手率` | `turnover` | 换手率 |
 
 ---
 
-### 3. baostock（补充数据源）
-
-#### 初始化
-```python
-import baostock as bs
-
-# 登录
-lg = bs.login()
-
-# 登出（用完后）
-bs.logout()
-```
+### 3. BaoStock（补充数据源）
 
 #### 获取日线行情
 ```python
-# 获取后复权日线数据
-# adjustflag="3" 表示后复权
-rs = bs.query_history_k_data_plus(
-    "sh.600519",
+import baostock as bs
+lg = bs.login()
+rs = bs.query_history_k_data_plus("sh.600519",
     "date,open,high,low,close,volume,amount",
-    start_date="2025-01-01",
-    end_date="2025-06-05",
-    frequency="d",
-    adjustflag="3"
-)
-
-# 转换为 DataFrame
-data_list = []
-while (rs.error_code == '0') & rs.next():
-    data_list.append(rs.get_row_data())
-df = pd.DataFrame(data_list, columns=rs.fields)
+    start_date="2025-01-01", end_date="2025-06-05",
+    frequency="d", adjustflag="3")
+bs.logout()
 ```
 
-#### 字段映射
-| baostock 字段 | 目标字段 | 说明 |
-|--------------|---------|------|
-| `date` | `trade_date` | 交易日（需转换格式） |
-| `open` | `open` | 开盘价 |
-| `high` | `high` | 最高价 |
-| `low` | `low` | 最低价 |
-| `close` | `close` | 收盘价 |
-| `volume` | `volume` | 成交量 |
-| `amount` | `amount` | 成交额 |
+---
+
+### 4. yfinance（最后备用）
+
+用于获取港股/美股 ADR 数据，非 A 股核心数据源。
 
 ---
 
 ## 股票代码格式转换
 
-不同数据源的股票代码格式不同，需要统一转换：
-
 | 市场 | 原始格式 | 标准格式 |
 |------|---------|---------|
-| 上交所 | `600519`（AkShare） | `600519` |
-| 上交所 | `600519.SH`（Tushare） | `600519` |
-| 上交所 | `sh.600519`（baostock） | `600519` |
-| 深交所 | `000001`（AkShare） | `000001` |
-| 深交所 | `000001.SZ`（Tushare） | `000001` |
-| 深交所 | `sz.000001`（baostock） | `000001` |
+| 上交所 | `600519`（PyTdX/AkShare） | `600519` |
+| 上交所 | `sh.600519`（BaoStock） | `600519` |
+| 深交所 | `000001`（PyTdX/AkShare） | `000001` |
+| 深交所 | `sz.000001`（BaoStock） | `000001` |
 
-### 转换函数
-
-```python
-# 从标准格式转换为各数据源格式
-def to_tushare_code(stock_code):
-    """转换为 Tushare 格式：600519 -> 600519.SH"""
-    if stock_code.startswith('6'):
-        return f"{stock_code}.SH"
-    else:
-        return f"{stock_code}.SZ"
-
-def to_baostock_code(stock_code):
-    """转换为 baostock 格式：600519 -> sh.600519"""
-    if stock_code.startswith('6'):
-        return f"sh.{stock_code}"
-    else:
-        return f"sz.{stock_code}"
-
-def to_akshare_code(stock_code):
-    """转换为 AkShare 格式：不需要转换"""
-    return stock_code
-```
-
----
-
-## 错误处理策略
-
-### Tushare 错误
-- **Token 无效**：立即降级到 AkShare
-- **网络错误**：重试 2 次，间隔 1 秒，失败则降级
-- **API 限流**：等待 5 秒重试，或直接降级
-
-### AkShare 错误
-- **连接断开（RemoteDisconnected）**：立即降级到 baostock
-- **反爬限制**：重试 2 次，间隔 2 秒，失败则降级
-
-### baostock 错误
-- **登录失败**：记录错误，返回失败
-- **网络错误**：重试 2 次，间隔 1 秒，失败则返回错误
+上证：6/8/9 开头；深证：0/3 开头（含创业板 300/301）
 
 ---
 
 ## 数据来源标记
 
 所有存储到 MongoDB 的数据必须标记 `data_source` 字段，值为：
-- `"tushare"`
-- `"akshare"`
-- `"baostock"`
+- `"pytdx"` / `"akshare"` / `"baostock"` / `"yfinance"`
 
----
+板块日线额外标记 `data_type` 字段：
+- `"stock"` = 个股，`"sector"` = 板块，`"index"` = 指数
 
-## 重试策略
+## 错误处理策略
 
-| 数据源 | 重试次数 | 间隔 |
-|--------|---------|------|
-| Tushare | 2 | 1 秒 |
-| AkShare | 2 | 2 秒 |
-| baostock | 2 | 1 秒 |
+| 数据源 | 重试次数 | 间隔 | 失败行为 |
+|--------|---------|------|---------|
+| PyTdX | 2 | 1秒 | 降级到 AkShare |
+| AkShare | 2 | 2秒 | 降级到 BaoStock |
+| BaoStock | 2 | 1秒 | 降级到 yfinance |
+| yfinance | 1 | 1秒 | 返回错误 |

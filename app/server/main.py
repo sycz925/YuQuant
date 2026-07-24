@@ -19,6 +19,7 @@ from app.server.config import get_settings
 from app.server.models import HealthResponse
 from app.server.api import stocks, factors, sync, market_analysis, market_review, screenshot, calendar, search
 from app.server.api import one_click_update_v2 as one_click_update
+from app.server.api import settings_tasks
 from app.server.cache import init_trade_dates, get_latest_trade_date
 
 # 配置日志 - 输出到 logs/ 目录
@@ -101,6 +102,7 @@ app.include_router(screenshot.router)
 app.include_router(calendar.router)
 app.include_router(search.router)
 app.include_router(one_click_update.router)
+app.include_router(settings_tasks.router)
 
 
 @app.get("/health", response_model=HealthResponse)

@@ -1,8 +1,25 @@
-# 数据库 Schema
+# MongoDB 集合定义
 
-## MongoDB 数据库结构
+审计日期：2026-07-24
 
-### 1. stock_basics - 股票基础信息表
+## 集合总览
+
+| 序号 | 集合名 | 用途 | 文档数（典型） |
+|------|--------|------|----------------|
+| 1 | `stock_basics` | 个股基础信息 | ~5,000 |
+| 2 | `stock_daily` | 个股日线行情 + RPS + 衍生字段 | ~7-8M |
+| 3 | `sector_basics` | 板块基础信息（成分股列表） | ~350 |
+| 4 | `sector_daily` | 板块日线行情 + RPS + NH/NL | ~60K |
+| 5 | `index_basics` | 指数基础信息 | ~10 |
+| 6 | `index_daily` | 指数日线行情 + PE_TTM | ~20K |
+| 7 | `base_data_daily` | 预计算基础指标（CR5/MA/NH-NL） | ~2K |
+| 8 | `market_daily` | 盘后快照 + 聚类 + AI分析 | ~2K |
+| 9 | `exclusions` | 排除管理（板块/指数/个股） | ~50 |
+| 10 | `sync_tasks` | 同步任务状态 | 运行时临时 |
+
+---
+
+## 1. stock_basics - 个股基础信息
 
 | 字段名 | 类型 | 说明 |
 |--------|------|------|
@@ -15,41 +32,74 @@
 | `suspend` | Boolean | 是否停牌 |
 | `update_time` | ISODate | 更新时间 |
 
-### 2. daily_data - 日线行情数据（含RPS）
+索引：`{ stock_code: 1 }` 唯一
+
+---
+
+## 2. stock_daily - 个股日线行情
 
 | 字段名 | 类型 | 说明 |
 |--------|------|------|
-| `stock_code` | String | 股票/板块代码 |
+| `stock_code` | String | 股票代码 |
 | `trade_date` | String | 交易日（YYYYMMDD） |
-| `open` | Number | 开盘价 |
-| `high` | Number | 最高价 |
-| `low` | Number | 最低价 |
-| `close` | Number | 收盘价 |
-| `vol` | Number | 成交量（股票用） |
-| `volume` | Number | 成交量（板块用） |
+| `open/high/low/close` | Number | OHLC |
+| `vol` | Number | 成交量（股） |
+| `amount` | Number | 成交额（元） |
+| `data_source` | String | pytdx/akshare/baostock |
+| `is_final` | Boolean | 是否已收盘 |
+| `chg_pct` | Number | 日涨跌幅(%) |
+| `rps_20/50/120/250` | Number | RPS多周期 |
+| `rps_sum` | Number | RPS总分 |
+| `is_active` | Boolean | 是否活跃股 |
+| `close_pct/amount_pct` | Number | 百分位 |
+| `ma10/20/50/120` | Number | 均线 |
+| `vol_ma5/10/20/50` | Number | 成交量均线 |
+| `chg_5d/10d/20d/50d/120d/250d` | Number | 区间涨幅 |
+| `update_time` | ISODate | 更新时间 |
+
+索引：`{ stock_code: 1, trade_date: -1 }` 复合
+
+---
+
+## 3. sector_basics - 板块基础信息
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `code` | String | 板块代码（SECTOR_板块名） |
+| `name` | String | 板块名称 |
+| `source` | String | 概念/行业/东方财富 |
+| `stock_count` | Number | 成分股数量 |
+| `stock_codes` | Array | 成分股代码列表 |
+| `tdx_code` | String | 通达信指数代码 |
+| `update_time` | ISODate | 更新时间 |
+
+索引：`{ code: 1 }` 唯一
+
+---
+
+## 4. sector_daily - 板块日线行情
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `stock_code` | String | 板块代码（SECTOR_板块名） |
+| `trade_date` | String | 交易日（YYYYMMDD） |
+| `open/high/low/close` | Number | OHLC |
+| `volume` | Number | 成交量 |
 | `amount` | Number | 成交额 |
-| `data_type` | String | 数据类型：stock/sector |
 | `data_source` | String | 数据来源 |
 | `is_final` | Boolean | 是否已收盘 |
-| `rps_10` | Number | RPS 10日（板块） |
-| `rps_20` | Number | RPS 20日（个股） |
-| `rps_50` | Number | RPS 50日 |
-| `rps_120` | Number | RPS 120日（个股） |
-| `rps_250` | Number | RPS 250日（个股） |
+| `chg_pct` | Number | 日涨跌幅(%) |
+| `rps_10/20/50` | Number | RPS多周期 |
+| `ma10/20/50` | Number | 均线 |
+| `chg_5d/10d/20d/50d/120d/250d` | Number | 区间涨幅 |
+| `nh/nl` | Number | 板块内新高/新低股票数 |
 | `update_time` | ISODate | 更新时间 |
 
-### 3. sector_basics - 板块基础信息表
+索引：`{ stock_code: 1, trade_date: -1 }` 复合
 
-| 字段名 | 类型 | 说明 |
-|--------|------|------|
-| `code` | String | 板块代码（如 880301） |
-| `name` | String | 板块名称 |
-| `source` | String | 来源（tdx_880/tdx_881） |
-| `stock_count` | Number | 成分股数量 |
-| `tdx_code` | String | 通达信代码 |
-| `update_time` | ISODate | 更新时间 |
+---
 
-### 4. index_basics - 指数基础信息表
+## 5. index_basics - 指数基础信息
 
 | 字段名 | 类型 | 说明 |
 |--------|------|------|
@@ -57,63 +107,113 @@
 | `name` | String | 指数名称 |
 | `market` | Number | 市场（1=沪，0=深） |
 | `tdx_code` | String | 通达信代码 |
-| `is_disable` | Boolean | 是否禁用（true=禁用） |
+| `is_disable` | Boolean | 是否禁用 |
 | `update_time` | ISODate | 更新时间 |
 
-### 5. sync_tasks - 同步任务状态表
+索引：`{ code: 1 }` 唯一
+
+---
+
+## 6. index_daily - 指数日线行情
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `stock_code` | String | 指数代码 |
+| `trade_date` | String | 交易日 |
+| `open/high/low/close` | Number | OHLC |
+| `volume` | Number | 成交量 |
+| `amount` | Number | 成交额 |
+| `chg_pct` | Number | 日涨跌幅 |
+| `pe_ttm` | Number | 市盈率（乐咕乐股） |
+| `data_source` | String | 数据来源 |
+| `is_final` | Boolean | 是否已收盘 |
+| `update_time` | ISODate | 更新时间 |
+
+索引：`{ stock_code: 1, trade_date: -1 }` 复合
+
+---
+
+## 7. base_data_daily - 预计算基础指标
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `date` | String | 交易日（YYYYMMDD，主键字段名 date 非 trade_date） |
+| `cr5_pct` | Number | 个股成交额前5%拥挤度 |
+| `cr10_pct` | Number | 板块成交额前10%拥挤度 |
+| `ma50_pct` | Number | 站上MA50比例 |
+| `ma20_pct` | Number | 站上MA20比例 |
+| `nh` | Number | 250日新高股票数 |
+| `nl` | Number | 250日新低股票数 |
+| `is_final` | Boolean | 是否收盘后最终数据 |
+
+索引：`{ date: 1 }` 唯一
+
+---
+
+## 8. market_daily - 盘后快照
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `trade_date` | String | 交易日 |
+| `overview` | Object | 大盘指数涨跌幅 + PE_TTM |
+| `new_high` | Object | 新高板块聚类 Top10 |
+| `low_position_sectors` | Object | 低位潜力板块 Top5 |
+| `active_sectors` | Object | 异动活跃板块 |
+| `group_stats` | Object | 分组统计数据 |
+| `ai_analysis` | Object | DeepSeek AI 研判结果 |
+| `is_final` | Boolean | 是否收盘后数据 |
+
+索引：`{ trade_date: 1 }` 唯一
+
+---
+
+## 9. exclusions - 排除管理
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `code` | String | 板块/指数/个股代码 |
+| `name` | String | 名称 |
+| `category` | String | 类别（sector/index/stock） |
+| `exclude_display` | Boolean | 是否在展示中排除 |
+| `exclude_sync` | Boolean | 是否在同步中排除 |
+| `exclude_rps` | Boolean | 是否在RPS计算中排除 |
+| `update_time` | ISODate | 更新时间 |
+
+---
+
+## 10. sync_tasks - 同步任务状态
 
 | 字段名 | 类型 | 说明 |
 |--------|------|------|
 | `task_id` | String | 任务ID |
-| `status` | String | 状态 |
+| `status` | String | pending/running/completed/failed |
 | `progress` | Object | 进度信息 |
 | `create_time` | ISODate | 创建时间 |
 | `update_time` | ISODate | 更新时间 |
 
 ---
 
-## 索引设计
+## 索引设计汇总
 
-### daily_data 索引
-```javascript
-// 复合唯一索引：按类型、代码、日期查询
-{ data_type: 1, stock_code: 1, trade_date: -1 }
-
-// 普通索引：按日期查询
-{ trade_date: -1 }
-```
-
-### stock_basics 索引
-```javascript
-// 唯一索引：股票代码唯一
-{ stock_code: 1 }
-```
-
-### sector_basics 索引
-```javascript
-// 唯一索引：板块代码唯一
-{ code: 1 }
-```
-
-### index_basics 索引
-```javascript
-// 唯一索引：指数代码唯一
-{ code: 1 }
-```
+| 集合 | 索引 | 类型 |
+|------|------|------|
+| stock_daily | `{ stock_code: 1, trade_date: -1 }` | 复合 |
+| stock_daily | `{ trade_date: -1 }` | 普通 |
+| sector_daily | `{ stock_code: 1, trade_date: -1 }` | 复合 |
+| index_daily | `{ stock_code: 1, trade_date: -1 }` | 复合 |
+| base_data_daily | `{ date: 1 }` | 唯一 |
+| market_daily | `{ trade_date: 1 }` | 唯一 |
+| stock_basics | `{ stock_code: 1 }` | 唯一 |
+| sector_basics | `{ code: 1 }` | 唯一 |
+| index_basics | `{ code: 1 }` | 唯一 |
+| exclusions | `{ code: 1 }` | 唯一 |
 
 ---
 
 ## 数据类型规范
 
-### 日期格式
-所有日期字段统一使用 **"YYYYMMDD"** 字符串格式（如 "20260615"），不使用 Date 类型，以保持跨数据源一致性。
-
-### 数值类型
-- 价格：Number（浮点数）
-- 成交量、成交额：Number（整数或浮点数均可）
-- RPS值：Number（整数，1-100，-1表示数据不足）
-
-### 空值处理
-- 字符串类型：使用 `null` 表示缺失值
-- 数值类型：使用 `null` 表示缺失值
-- RPS字段：使用 `-1` 表示数据不足无法计算
+- **日期格式**：统一使用 "YYYYMMDD" 字符串格式
+- **价格**：Number（浮点数）
+- **RPS值**：Number（整数，1-100，-1表示数据不足）
+- **字符串缺失**：`null`
+- **数值缺失**：`null`（RPS 用 -1）

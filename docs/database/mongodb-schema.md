@@ -217,7 +217,122 @@
 
 ---
 
-## Collection 6: `sync_tasks` - 同步任务状态
+## Collection 6: `index_daily` - 指数日线行情数据
+
+### 用途
+存储主要大盘指数的日线行情数据，含 PE_TTM 市盈率。
+
+### Schema
+```javascript
+{
+  _id: ObjectId,
+  stock_code: String,            // 指数代码，如 "000001"
+  trade_date: String,            // 交易日，格式 "YYYYMMDD"
+  open: Number,                  // 开盘价
+  high: Number,                  // 最高价
+  low: Number,                   // 最低价
+  close: Number,                 // 收盘价
+  volume: Number,                // 成交量
+  amount: Number,                // 成交额
+  chg_pct: Number | null,        // 日涨跌幅(%)
+  pe_ttm: Number | null,         // 市盈率（乐咕乐股数据源）
+  data_source: String,           // 数据来源："pytdx"
+  is_final: Boolean,             // 是否已收盘数据
+  update_time: ISODate           // 最后更新时间
+}
+```
+
+### 索引设计
+| 索引 | 类型 | 说明 |
+|------|------|------|
+| `{ stock_code: 1, trade_date: -1 }` | 复合索引 | 按代码、日期查询 |
+| `{ trade_date: -1 }` | 普通索引 | 按日期查询 |
+
+---
+
+## Collection 7: `base_data_daily` - 预计算基础指标
+
+### 用途
+存储每个交易日的全市场基础预计算指标（CR5/CR10/MA/NH-NL）。日期字段使用 `date` 而非 `trade_date`。
+
+### Schema
+```javascript
+{
+  _id: ObjectId,
+  date: String,                  // 交易日，格式 "YYYYMMDD"（注意字段名是 date 非 trade_date）
+  cr5_pct: Number,              // 个股成交额前5%拥挤度(%)
+  cr10_pct: Number,             // 板块成交额前10%拥挤度(%)
+  ma50_pct: Number,             // 站上MA50的股票比例(%)
+  ma20_pct: Number,             // 站上MA20的股票比例(%)
+  nh: Number,                   // 250日新高股票数（不含当天，剔除次新股）
+  nl: Number,                   // 250日新低股票数（不含当天，剔除次新股）
+  is_final: Boolean,            // 是否收盘后最终数据
+  update_time: ISODate          // 最后更新时间
+}
+```
+
+### 索引设计
+| 索引 | 类型 | 说明 |
+|------|------|------|
+| `{ date: 1 }` | 唯一索引 | 按日期唯一 |
+
+---
+
+## Collection 8: `market_daily` - 盘后快照
+
+### 用途
+存储每个交易日的盘后快照，包括大盘总览、新高板块聚类、低位潜力板块、AI分析等。
+
+### Schema
+```javascript
+{
+  _id: ObjectId,
+  trade_date: String,            // 交易日，格式 "YYYYMMDD"
+  overview: Object | null,       // 大盘指数涨跌幅 + PE_TTM
+  new_high: Object | null,       // 新高板块聚类 Top10
+  low_position_sectors: Object | null, // 低位潜力板块 Top5
+  active_sectors: Object | null, // 异动活跃板块
+  group_stats: Object | null,    // 分组统计数据
+  ai_analysis: Object | null,    // DeepSeek AI 研判结果
+  is_final: Boolean,             // 是否收盘后数据
+  update_time: ISODate           // 最后更新时间
+}
+```
+
+### 索引设计
+| 索引 | 类型 | 说明 |
+|------|------|------|
+| `{ trade_date: 1 }` | 唯一索引 | 按日期唯一 |
+
+---
+
+## Collection 9: `exclusions` - 排除管理
+
+### 用途
+存储需要排除的板块、指数或个股，支持三种排除类型：展示排除、同步排除、RPS计算排除。
+
+### Schema
+```javascript
+{
+  _id: ObjectId,
+  code: String,                  // 代码
+  name: String,                  // 名称
+  category: String,              // 类别："sector" / "index" / "stock"
+  exclude_display: Boolean,      // 是否在展示中排除
+  exclude_sync: Boolean,         // 是否在同步中排除
+  exclude_rps: Boolean,          // 是否在RPS计算中排除
+  update_time: ISODate           // 最后更新时间
+}
+```
+
+### 索引设计
+| 索引 | 类型 | 说明 |
+|------|------|------|
+| `{ code: 1 }` | 唯一索引 | 代码唯一 |
+
+---
+
+## Collection 10: `sync_tasks` - 同步任务状态
 
 ### 用途
 存储后台同步任务的状态和进度。

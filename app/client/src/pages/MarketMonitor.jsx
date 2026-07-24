@@ -114,7 +114,7 @@ function MarketMonitor({ queryDate: propQueryDate }) {
         factorApi.getIndices({ filter_mode: 'enabled' }),
         healthApi.check()
       ])
-      const indices = idxRes.items || idxRes.indices || []
+      const indices = idxRes.items || idxRes.indices || idxRes.data || []
       const latest = healthRes?.latest_trade_date || null
 
       if (indices.length > 0) {
@@ -136,7 +136,7 @@ function MarketMonitor({ queryDate: propQueryDate }) {
     setLoading(true)
     setLoadingText(period === 'day' ? '加载日线数据...' : `加载${period === 'week' ? '周' : period === 'month' ? '月' : period === 'quarter' ? '季' : '年'}线数据...`)
     try {
-      const res = await marketReviewApi.getBaseData({ type: 'cr5', period, index_code: selectedIndex || undefined })
+      const res = await marketReviewApi.getBaseData({ type: 'cr5', period, index_code: targetIndex })
       if (myId !== requestIdRef.current) return
 
       const cr5List = res?.data || []

@@ -179,31 +179,39 @@ class StockFactory:
         数据源优先级：pytdx → akshare → baostock → yfinance
         :param target_date: 指定日期 YYYYMMDD，None 同步到最新
         :param task_id: 任务ID，用于更新进度
+        :param progress_callback: 进度回调函数 (current, total, message)
         :return: SyncResult，失败率超过5%则标记失败
         """
         callback = ProgressCallback(progress_callback)
-        
+
         try:
             enabled_stocks = self.repo.get_enabled_codes()
             total = len(enabled_stocks)
-            
+
             if total == 0:
                 return SyncResult(success=True, message='无启用股票', total=0)
-            
+
             callback.update(0, total, '开始同步个股日线...')
-            
+
             # 调用 data_manager 的同步逻辑（已包含多数据源备份）
             from app.data.manager import get_data_manager
             dm = get_data_manager()
-            
+
             end_date = target_date or datetime.now().strftime('%Y%m%d')
-            
+
+            # 创建内部回调，更新步骤进度而不是顶层进度
+            def step_progress_callback(current, total, message=''):
+                callback.update(current, total, message)
+
+            # 传递 task_id 和 progress_callback 给 dm.sync_daily_data()
+            # progress_callback 优先更新步骤进度，而不是顶层进度
             result = dm.sync_daily_data(
                 stock_codes=enabled_stocks,
                 end_date=end_date,
                 task_id=task_id,
                 max_workers=max_workers,
-                is_external=True
+                is_external=True,
+                progress_callback=step_progress_callback
             )
             
             success_count = result.get('success', 0)

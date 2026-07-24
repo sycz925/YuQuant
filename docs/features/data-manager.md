@@ -1,112 +1,103 @@
 # 数据管理器功能文档
 
+审计日期：2026-07-24
+
 ## 概述
 
-数据管理器（DataManager）负责数据获取、缓存、清洗和复权处理，是整个量化系统的基础模块。
+数据管理器（`app/data/manager.py` - `DataManager` 类）负责多数据源同步编排，是整个量化系统的核心数据入口。
 
-## 版本说明
-
-- **新版 (推荐)**: `app.data.manager.DataManager` - 基于 MongoDB
-- **旧版 (已废弃)**: `app.data_manager.DataManager` - 基于 SQLite + HDF5
+当前系统纯 MongoDB 架构，无 SQLite / HDF5 依赖。
 
 ---
 
-## 新版数据管理器 (MongoDB)
+## DataManager 核心功能
 
-### 核心功能
+### 数据同步
 
-#### 1. 数据同步
-
-##### 股票基础信息同步
+#### 股票基础信息同步
 ```python
 from app.data.manager import DataManager
-
 dm = DataManager()
-dm.sync_stock_basics()
+dm.sync_stock_basics()  # PyTdX → AkShare → BaoStock
 ```
 
-##### 日线数据同步
+#### 个股日线同步
 ```python
 dm.sync_daily_data(
     stock_codes=["000001", "000002"],
-    start_date="20240101",
-    end_date="20241231"
+    end_date="20241231",
+    max_workers=10      # 多线程并行
 )
 ```
+逐天回溯模式，返回 `{total, success, fail, skipped, sources}`。
 
-##### 板块数据同步
+#### 板块日线同步
 ```python
 dm.sync_sector_indices(
-    start_date="20240101",
-    end_date="20241231"
+    enabled_codes=["SECTOR_半导体", ...],
+    task_id="..."
 )
 ```
+边找边同步模式：扫描 block_*.dat → 匹配 880/881 指数 → 下载日线 → upsert。
 
-#### 2. 数据获取
-
-##### 获取股票列表
+### RPS 计算
 ```python
-stock_df = dm.get_stock_list()
+dm.calculate_rps(target='all')    # target: 'all' / 'stock' / 'sector'
 ```
 
-##### 获取日线数据
+### 衍生字段计算
 ```python
-df = dm.get_stock_daily_data(
-    stock_code="000001",
-    start_date="20240101",
-    end_date="20241231"
-)
+dm.calculate_chg_fields(target='all', trade_date='20260615')
+dm.calculate_all_derived_fields(target='all', trade_date=None, backfill=False)
 ```
 
-##### 获取指数列表
+### 数据查询
 ```python
-index_df = dm.get_index_list()
+dm.get_stock_list()      → pd.DataFrame  # 股票列表
+dm.get_index_list()      → pd.DataFrame  # 指数列表
+dm.get_stock_daily_data(code, start, end) → pd.DataFrame  # 个股日线
+dm.has_daily_data(code)  → bool  # 是否有日线数据
 ```
 
-#### 3. RPS 计算
+---
 
-```python
-# 计算个股RPS
-result = dm.calculate_rps(target='stock')
+## 数据源优先级
 
-# 计算板块RPS
-result = dm.calculate_rps(target='sector')
+| 优先级 | 数据源 | 用途 |
+|--------|--------|------|
+| 1 | **PyTdX** | 通达信协议直连（个股日线、板块日线、基础信息） |
+| 2 | **AkShare** | Web API（基础信息回退） |
+| 3 | **BaoStock** | 个股日线回退 |
+| 4 | **yfinance** | 最后备用（港股/美股ADR） |
 
-# 计算全部RPS
-result = dm.calculate_rps(target='all')
-```
+---
 
-### 数据存储
-
-#### MongoDB 集合
+## MongoDB 集合
 
 | 集合 | 用途 |
 |------|------|
 | `stock_basics` | 股票基础信息 |
-| `daily_data` | 日线行情数据（含RPS） |
-| `sector_basics` | 板块基础信息 |
 | `index_basics` | 指数基础信息 |
+| `stock_daily` | 个股日线行情（含RPS/MA/CHG/百分位） |
+| `sector_daily` | 板块日线行情（含RPS/MA/CHG/NH-NL） |
+| `index_daily` | 指数日线行情（含PE_TTM） |
+| `base_data_daily` | 预计算基础指标（CR5/CR10/MA/NH-NL） |
+| `market_daily` | 盘后快照（总览+聚类+AI分析） |
+| `exclusions` | 排除管理 |
 | `sync_tasks` | 同步任务状态 |
 
 ---
 
-## 旧版数据管理器 (已废弃)
+## Factory + Orchestrator 关系
 
-⚠️ **注意**: 以下内容仅用于兼容旧代码，新项目请使用 MongoDB 版本。
+DataManager 底层被 Factories 调用，而 Factories 又被 Orchestrators 编排：
 
-### 数据存储
-
-#### SQLite 数据库
-- `stock_basics`: 股票基础信息
-- `index_basics`: 指数基础信息
-
-#### HDF5 文件
-- `daily_data.h5`: 存储所有股票的日线数据（后复权）
-
-### 基本用法
-```python
-from app.data_manager import DataManager
-
-dm = DataManager("data/sqlite/quant.db", "data/hdf5")
-dm.sync_stock_basics()
 ```
+API 路由 → Orchestrators → Factories → DataManager → MongoDB / Data Sources
+```
+
+各 Factory 封装单一领域的同步逻辑：
+- `IndexFactory` - 指数同步与计算
+- `StockFactory` - 个股同步与计算
+- `SectorFactory` - 板块同步与计算
+- `MarketAggregator` - 跨域聚合

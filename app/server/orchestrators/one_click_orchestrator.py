@@ -155,40 +155,29 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
     
     def _run(self, task_id: str, dates: List[str]) -> None:
         """后台执行流程"""
-        import threading
         from app.data.task_manager import get_task_manager
         tm = get_task_manager()
-        
+
         total_dates = len(dates)
         logger.info(f"[一键更新] 开始执行，共 {total_dates} 个交易日")
-        
+
         for step_idx, step_key in enumerate(self.STEP_KEYS):
             # 检查任务是否已取消
             if tm.is_cancelled(task_id):
                 logger.info(f'任务 {task_id} 已取消，停止执行')
                 return
-            
+
             step_name = self.STEP_NAMES[step_idx]
             logger.info(f"[一键更新] 步骤 {step_idx+1}/7: {step_name}")
-            
-            self.task_repo.update_step_progress(task_id, step_idx, status='running')
+
+            # 重置步骤进度（只更新 current_step 和 status）
+            self.task_repo.update_step_progress(task_id, step_idx, status='running', completed_count=0)
             self.task_repo.update_task_progress(task_id, current_step=step_idx)
-            
-            # 启动进度同步线程
-            sync_stop = threading.Event()
-            sync_thread = threading.Thread(
-                target=self._sync_progress,
-                args=(task_id, step_idx, sync_stop),
-                daemon=True
-            )
-            sync_thread.start()
-            
+
             try:
-                self.execute_step(step_key, task_id, dates)
+                self.execute_step(step_key, task_id, dates, step_idx)
             except Exception as e:
                 logger.error(f'[一键更新] 步骤 {step_name} 失败: {e}', exc_info=True)
-                sync_stop.set()
-                sync_thread.join(timeout=5)
                 self.task_repo.update_step_progress(
                     task_id, step_idx,
                     status='failed',
@@ -196,49 +185,48 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                 )
                 self.task_repo.fail_task(task_id, f'步骤失败: {str(e)[:200]}')
                 return
-            finally:
-                sync_stop.set()
-                sync_thread.join(timeout=5)
-            
+
             self.task_repo.update_step_progress(
-                task_id, step_idx, 
-                status='completed', 
+                task_id, step_idx,
+                status='completed',
                 message=f'{step_name}完成'
             )
             logger.info(f"[一键更新] 步骤 {step_idx+1}/7: {step_name} 完成")
-        
+
         self.task_repo.complete_task(task_id, '全部完成')
         logger.info(f'[一键更新] 全部完成，共处理 {total_dates} 个交易日')
     
-    def _is_data_synced_for_date(self, collection_name: str, date_field: str, target_date: str) -> bool:
+    def _is_data_synced_for_date(self, collection_name: str, date_field: str, target_date: str, expected_count: int = 0) -> bool:
         """
         检查指定日期的数据是否已同步
         盘中（15:30前）：30分钟缓存，需要重新同步
-        盘后（15:30后）：永久缓存，已同步就跳过
+        盘后（15:30后）：is_final=True 才跳过（需要更新收盘价）
+        :param expected_count: 期望的数据量，0表示不检查数量
         """
         now = datetime.now(ZoneInfo('Asia/Shanghai'))
         today_str = now.strftime('%Y%m%d')
-        
-        # 非今天的数据，检查是否有数据
+
+        from app.data.db import get_db
+        db = get_db()
+
+        # 非今天的数据，检查 is_final=True
         if target_date != today_str:
-            from app.data.db import get_db
-            db = get_db()
-            count = db[collection_name].count_documents({date_field: target_date})
+            count = db[collection_name].count_documents({date_field: target_date, 'is_final': True})
+            if expected_count > 0:
+                return count >= expected_count
             return count > 0
-        
+
         # 今天的数据
         is_market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
-        
+
         if is_market_closed:
-            # 盘后：永久缓存，检查是否有数据
-            from app.data.db import get_db
-            db = get_db()
-            count = db[collection_name].count_documents({date_field: target_date})
+            # 盘后：检查 is_final=True（需要更新收盘价）
+            count = db[collection_name].count_documents({date_field: target_date, 'is_final': True})
+            if expected_count > 0:
+                return count >= expected_count
             return count > 0
         else:
             # 盘中：30分钟缓存，检查最后更新时间
-            from app.data.db import get_db
-            db = get_db()
             latest = db[collection_name].find_one(
                 {date_field: target_date},
                 sort=[('updated_at', -1)],
@@ -246,62 +234,68 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             )
             if not latest:
                 return False
-            
+
             updated_at = latest.get('updated_at')
             if not updated_at:
                 return False
-            
+
             # 如果更新时间超过30分钟，需要重新同步
             if isinstance(updated_at, str):
                 updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-            
+
             if (now - updated_at) > timedelta(minutes=30):
                 return False
-            
+
             return True
     
-    def execute_step(self, step_key: str, task_id: str, dates: List[str]) -> None:
+    def execute_step(self, step_key: str, task_id: str, dates: List[str], step_idx: int = 0) -> None:
         """执行单个步骤"""
         from app.server.factories import (
-            get_index_factory, get_stock_factory, 
+            get_index_factory, get_stock_factory,
             get_sector_factory, get_market_aggregator
         )
-        
-        # 步骤0-2：数据同步（检查缓存）
+
+        total_dates = len(dates)
+
+        # 步骤0-2：数据同步（检查缓存，进度由 _sync_progress 线程同步）
         if step_key in ['sync_index', 'sync_stocks', 'sync_sectors']:
-            self._execute_sync_step(step_key, task_id, dates)
-        
-        # 步骤3-7：计算步骤（每次都重算）
+            self._execute_sync_step(step_key, task_id, dates, step_idx)
+
+        # 步骤3-7：计算步骤（每次循环更新步骤进度）
         elif step_key == 'rps_stock':
             factory = get_stock_factory()
-            for date in dates:
+            for i, date in enumerate(dates):
                 logger.info(f"[一键更新] 计算 {date} 个股涨幅和RPS")
                 factory.compute_chg(date)
                 factory.compute_rps(date)
-        
+                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} 个股RPS')
+
         elif step_key == 'rps_sector':
             factory = get_sector_factory()
-            for date in dates:
+            for i, date in enumerate(dates):
                 logger.info(f"[一键更新] 计算 {date} 板块涨幅和RPS")
                 factory.compute_chg(date)
                 factory.compute_rps(date)
-        
+                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} 板块RPS')
+
         elif step_key == 'sync_pe':
             factory = get_index_factory()
-            for date in dates:
+            for i, date in enumerate(dates):
                 logger.info(f"[一键更新] 更新 {date} PE数据")
                 factory.sync_pe(date)
-        
+                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} PE')
+
         elif step_key == 'precompute':
             aggregator = get_market_aggregator()
-            for date in dates:
+            for i, date in enumerate(dates):
                 logger.info(f"[一键更新] 预计算 {date} 基础数据")
                 aggregator.precompute_base_data(date, task_id=task_id)
+                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} 预计算')
     
-    def _execute_sync_step(self, step_key: str, task_id: str, dates: List[str]) -> None:
+    def _execute_sync_step(self, step_key: str, task_id: str, dates: List[str], step_idx: int = 0) -> None:
         """执行数据同步步骤（检查缓存，失败率超过5%则停止）"""
         from app.server.factories import get_index_factory, get_stock_factory, get_sector_factory
-        
+
         if step_key == 'sync_index':
             collection, field = 'index_daily', 'trade_date'
             factory = get_index_factory()
@@ -314,54 +308,70 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             collection, field = 'sector_daily', 'trade_date'
             factory = get_sector_factory()
             sync_method = factory.sync_daily
-        
+
         # 检查哪些日期需要同步
+        # 获取期望的数据量（从步骤的 total_count）
+        from app.data.db import get_db
+        db = get_db()
+        step_doc = db['sync_tasks'].find_one(
+            {'task_id': task_id},
+            {'_id': 0, 'steps': 1}
+        )
+        expected_count = 0
+        if step_doc and 'steps' in step_doc and step_idx < len(step_doc['steps']):
+            expected_count = step_doc['steps'][step_idx].get('total_count', 0)
+
         dates_to_sync = []
         for date in dates:
-            if not self._is_data_synced_for_date(collection, field, date):
+            if not self._is_data_synced_for_date(collection, field, date, expected_count):
                 dates_to_sync.append(date)
             else:
                 logger.info(f"[一键更新] {step_key} 日期 {date} 已有数据，跳过")
-        
+
         if not dates_to_sync:
             logger.info(f"[一键更新] {step_key} 所有日期数据已存在，跳过")
+            # 标记步骤完成：completed_count = total_count
+            db['sync_tasks'].update_one(
+                {'task_id': task_id},
+                {'$set': {
+                    f'steps.{step_idx}.completed_count': expected_count,
+                    f'steps.{step_idx}.message': '数据已存在，跳过同步'
+                }}
+            )
+            # 同步指数后需要计算涨跌幅（chg_pct）
+            if step_key == 'sync_index':
+                logger.info(f"[一键更新] {step_key} 计算指数涨跌幅")
+                factory.compute_chg()
             return
-        
+
         logger.info(f"[一键更新] {step_key} 需要同步 {len(dates_to_sync)} 个日期: {dates_to_sync}")
-        
+
         # 执行同步
-        for date in dates_to_sync:
+        for i, date in enumerate(dates_to_sync):
             logger.info(f"[一键更新] 同步 {step_key} 日期 {date}")
-            result = sync_method(date, task_id=task_id)
-            
+
+            # 创建进度回调，实时更新步骤进度
+            def progress_callback(current, total, message=''):
+                self.task_repo.update_step_progress(
+                    task_id, step_idx,
+                    completed_count=current,
+                    total_count=total,
+                    message=message or f'同步 {date}'
+                )
+
+            result = sync_method(date, task_id=task_id, progress_callback=progress_callback)
+
+            # 更新步骤进度（最终状态）
+            self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'同步 {date} 完成')
+
             # 检查失败率，超过5%则停止
             if hasattr(result, 'failed') and hasattr(result, 'total'):
                 if result.total > 0:
                     fail_rate = result.failed / result.total
                     if fail_rate > 0.05:
                         raise Exception(f'{step_key} 失败率 {fail_rate:.1%} 超过阈值，停止执行')
-    
-    def _sync_progress(self, task_id: str, step_idx: int, stop_event: threading.Event) -> None:
-        """同步顶层进度到步骤级进度（只同步 completed_count，不覆盖 total_count）"""
-        from app.data.db import get_db
-        
-        db = get_db()
-        while not stop_event.is_set():
-            try:
-                # 读取顶层进度
-                task = db['sync_tasks'].find_one(
-                    {'task_id': task_id},
-                    {'_id': 0, 'completed_count': 1, 'current_stock_name': 1}
-                )
-                if task:
-                    # 同步到步骤进度（只更新 completed_count，不覆盖 total_count）
-                    db['sync_tasks'].update_one(
-                        {'task_id': task_id},
-                        {'$set': {
-                            f'steps.{step_idx}.completed_count': task.get('completed_count', 0),
-                            f'steps.{step_idx}.message': task.get('current_stock_name', '')
-                        }}
-                    )
-            except Exception:
-                pass
-            stop_event.wait(timeout=3)
+
+        # 同步指数后需要计算涨跌幅（chg_pct）
+        if step_key == 'sync_index':
+            logger.info(f"[一键更新] {step_key} 计算指数涨跌幅")
+            factory.compute_chg()

@@ -69,7 +69,7 @@ function MaBreadthChart() {
   const loadIndices = async () => {
     try {
       const res = await factorApi.getIndices({ filter_mode: 'enabled' })
-      const indices = res.items || res.indices || []
+      const indices = res.items || res.indices || res.data || []
       if (indices.length > 0) {
         setIndexConfig(indices)
         setSelectedIndex(indices[0].code)
