@@ -393,7 +393,12 @@ function MarketSignals({ date }) {
                       </div>
                     </td>
                     <td className="py-3 text-center">
-                      <span className="text-base font-mono font-black text-gray-900">{item.count}</span>
+                      <span
+                        className="text-base font-mono font-black text-gray-900 cursor-pointer hover:text-indigo-600 transition-colors"
+                        onClick={() => showStockModal(item.name + '符合条件近新高个股', item.stocks)}
+                      >
+                        {item.count}
+                      </span>
                       <span className="text-[10px] text-gray-400 ml-0.5">只</span>
                       <div className="text-[10px] text-gray-400 mt-0.5">{item.pct}%</div>
                     </td>
@@ -441,7 +446,12 @@ function MarketSignals({ date }) {
                     {item.name}
                   </span>
                   <div className="flex items-center space-x-2">
-                    <span className="text-sm font-mono font-black text-gray-900">{item.count}只</span>
+                    <span
+                      className="text-sm font-mono font-black text-gray-900 cursor-pointer hover:text-indigo-600 transition-colors"
+                      onClick={() => showStockModal(item.name + '符合条件近新高个股', item.stocks)}
+                    >
+                      {item.count}只
+                    </span>
                     <span className={`text-sm font-mono font-bold ${item.chg_pct > 0 ? 'text-red-500' : item.chg_pct < 0 ? 'text-green-500' : 'text-gray-500'}`}>
                       {item.chg_pct > 0 ? '+' : ''}{item.chg_pct}%
                     </span>
@@ -499,7 +509,12 @@ function MarketSignals({ date }) {
                       </div>
                     </td>
                     <td className="py-3 text-center">
-                      <span className="text-base font-mono font-black text-gray-900">{item.count}</span>
+                      <span
+                        className="text-base font-mono font-black text-gray-900 cursor-pointer hover:text-indigo-600 transition-colors"
+                        onClick={() => showStockModal(item.name + '符合条件个股', item.stocks)}
+                      >
+                        {item.count}
+                      </span>
                       <span className="text-[10px] text-gray-400 ml-0.5">只</span>
                       <div className="text-[10px] text-gray-400 mt-0.5">{item.pct}%</div>
                     </td>
@@ -547,7 +562,12 @@ function MarketSignals({ date }) {
                     {item.name}
                   </span>
                   <div className="flex items-center space-x-2">
-                    <span className="text-sm font-mono font-black text-gray-900">{item.count}只</span>
+                    <span
+                      className="text-sm font-mono font-black text-gray-900 cursor-pointer hover:text-indigo-600 transition-colors"
+                      onClick={() => showStockModal(item.name + '符合条件个股', item.stocks)}
+                    >
+                      {item.count}只
+                    </span>
                     <span className={`text-sm font-mono font-bold ${item.chg_pct > 0 ? 'text-red-500' : item.chg_pct < 0 ? 'text-green-500' : 'text-gray-500'}`}>
                       {item.chg_pct > 0 ? '+' : ''}{item.chg_pct}%
                     </span>

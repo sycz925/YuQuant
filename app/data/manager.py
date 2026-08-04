@@ -2,9 +2,13 @@
 DataManager — MongoDB + 多数据源 + 多线程 同步 A 股日线数据
 """
 import logging
+import os
+import time
+import socket
 import pandas as pd
+import numpy as np
 import threading
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Callable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,7 +17,8 @@ from .db import (
     get_stock_basics, bulk_upsert_stock_basics,
     get_daily_data, bulk_upsert_daily_data, has_daily_data,
     get_stock_sync_start_date, get_sector_sync_start_date,
-    get_index_basics, upsert_index_basics
+    get_index_basics, upsert_index_basics,
+    get_etf_basics, bulk_upsert_etf_basics
 )
 from .sources.pytdx_source import PytdxSource as PyTdXSource
 from .sources.akshare_source import AkShareSource
@@ -29,6 +34,69 @@ BJ_TZ = ZoneInfo('Asia/Shanghai')
 LUNCH_START = 11 * 60 + 30   # 11:30 盘中同步开放
 LUNCH_END = 13 * 60          # 13:00 盘中同步关闭
 AFTER_MARKET_START = 15 * 60 + 30  # 15:30 盘后同步开放（留30分钟缓冲，等交易所清算）
+
+# ==================== 数据源并发与超时保护 ====================
+# 根因：单只股票对每个数据源启动一个 daemon 线程 + join(timeout=30)，
+# 超时后线程仍存活不销毁。当数据源（akshare/baostock/yfinance）的底层
+# 请求没有真实超时、网络又出问题时，线程会无限累积，最终突破 macOS
+# 每进程 4096 线程限制（kern.num_taskthreads），导致 getaddrinfo() 无法
+# 创建线程、/api/health 无响应、前端显示离线。
+#
+# 修复策略：
+# 1. 全局信号量限制同时进行的数据源请求数，从源头掐断线程爆炸
+# 2. socket.setdefaulttimeout 提供兜底超时，保证请求线程最终会结束
+MAX_SOURCE_CONCURRENCY = 16
+_SOURCE_SEMAPHORE = threading.BoundedSemaphore(MAX_SOURCE_CONCURRENCY)
+_SOCKET_TIMEOUT = 30  # 秒，兜底网络超时（线程池内避免阻塞）
+
+# 数据源熔断：连续失败达到阈值后暂停该源一段时间
+BREAKER_FAIL_THRESHOLD = 10
+BREAKER_COOLDOWN_SECONDS = 120
+
+
+class _SourceBreaker:
+    """数据源熔断器：连续失败 N 次后暂停该源 cooldown 秒"""
+
+    def __init__(self):
+        self._failures: Dict[str, int] = {}
+        self._open_until: Dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def record_failure(self, source_name: str) -> bool:
+        """记录一次失败，返回是否触发熔断"""
+        with self._lock:
+            count = self._failures.get(source_name, 0) + 1
+            self._failures[source_name] = count
+            if count >= BREAKER_FAIL_THRESHOLD:
+                self._open_until[source_name] = time.time() + BREAKER_COOLDOWN_SECONDS
+                self._failures[source_name] = 0
+                logger.warning(f"数据源 {source_name} 连续失败 {count} 次，熔断 {BREAKER_COOLDOWN_SECONDS}s")
+                return True
+            return False
+
+    def record_success(self, source_name: str):
+        with self._lock:
+            self._failures[source_name] = 0
+            self._open_until.pop(source_name, None)
+
+    def is_open(self, source_name: str) -> bool:
+        """是否处于熔断打开状态（应跳过该源）"""
+        with self._lock:
+            until = self._open_until.get(source_name)
+            if until is None:
+                return False
+            if time.time() >= until:
+                self._open_until.pop(source_name, None)
+                return False
+            return True
+
+
+_SOURCE_BREAKER = _SourceBreaker()
+
+# 当日无数据股票缓存（date -> set[stock_code]）
+# 停牌/退市/未上市股票在目标日无数据（源返回空 DataFrame），
+# 首次确认后本轮同步直接跳过，避免对每只无数据股票反复拉取多个源。
+_NO_DATA_CACHE: Dict[str, set] = {}
 
 
 class DataManager:
@@ -102,6 +170,143 @@ class DataManager:
 
         return len(indexes)
 
+    def sync_etf_basics(self) -> int:
+        """从 etf.txt 同步ETF基础信息"""
+        etf_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'etf.txt')
+        if not os.path.exists(etf_file):
+            logger.error("etf.txt 不存在")
+            return 0
+
+        docs = []
+        with open(etf_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('\t') if '\t' in line else line.split()
+                if len(parts) >= 2 and parts[0] and parts[-1].isdigit() and len(parts[-1]) == 6:
+                    docs.append({'code': parts[-1].strip(), 'name': parts[0].strip()})
+
+        if docs:
+            bulk_upsert_etf_basics(docs)
+        logger.info(f"ETF基础信息同步完成: {len(docs)} 只")
+        return len(docs)
+
+    @staticmethod
+    def _forward_adjust_records(records: List[Dict]) -> List[Dict]:
+        """检测除权跳空，对 close/open/high/low 做前复权。
+
+        前复权（最新为基准，历史价格向下除）：
+          检测到除权日时，该日之前的全部价格除以复权系数 prev_close/open。
+          原始价格存入 close_raw/open_raw/high_raw/low_raw。
+        """
+        n = len(records)
+        if n < 2:
+            return records
+
+        arr = {}
+        for field in ('close', 'open', 'high', 'low'):
+            arr[field] = np.array([r.get(field, r['close']) for r in records], dtype=float)
+
+        cum_factor = 1.0
+        xdxr_boundaries = []
+        for i in range(n - 1, 0, -1):
+            prev_close = arr['close'][i - 1]
+            curr_open = arr['open'][i]
+            if prev_close <= 0 or curr_open <= 0:
+                continue
+            gap = abs(curr_open / prev_close - 1)
+            if gap > 0.15:
+                factor = prev_close / curr_open
+                cum_factor *= factor
+                xdxr_boundaries.append((i, cum_factor))
+
+        if not xdxr_boundaries:
+            return records
+
+        for r in records:
+            r['close_raw'] = r['close']
+            r['open_raw'] = r.get('open', 0)
+            r['high_raw'] = r.get('high', 0)
+            r['low_raw'] = r.get('low', 0)
+
+        xdxr_boundaries.reverse()
+        prev_idx = 0
+        for idx, factor in xdxr_boundaries:
+            if prev_idx < idx:
+                for field in ('close', 'open', 'high', 'low'):
+                    arr[field][prev_idx:idx] /= factor
+            prev_idx = idx
+
+        for i, r in enumerate(records):
+            for field in ('close', 'open', 'high', 'low'):
+                r[field] = round(float(arr[field][i]), 4)
+
+        return records
+
+    def sync_etf_daily(self, etf_codes: List[str] = None, max_workers: int = 16) -> dict:
+        """同步ETF日线数据"""
+        df = get_etf_basics()
+        if df.empty:
+            return {'total': 0, 'success': 0, 'fail': 0}
+
+        if etf_codes is not None:
+            df = df[df['code'].isin(etf_codes)]
+
+        etf_list = df.to_dict('records')
+        total = len(etf_list)
+        success = 0
+        fail = 0
+
+        end_date = self._today_str()
+        start_date = (datetime.now(BJ_TZ) - timedelta(days=550)).strftime('%Y%m%d')
+
+        def _sync_one(etf: dict) -> bool:
+            code = etf['code']
+            # yfinance 对 A 股支持极差（DNS 无法解析），已从瀑布中移除
+            # BaoStock IP 被服务端黑名单，已移除
+            sources = [
+                (self.pytdx, 'PyTdX'),
+                (self.akshare, 'AkShare'),
+            ]
+            for source_obj, source_name in sources:
+                try:
+                    if source_name == 'PyTdX':
+                        df_data, src = source_obj.get_daily_data(code, start_date, end_date)
+                    elif source_name == 'AkShare':
+                        df_data, src = source_obj.get_etf_daily(code, start_date, end_date)
+                    else:
+                        df_data, src = source_obj.get_daily_data(code, start_date, end_date)
+                    if df_data is not None and not df_data.empty:
+                        records = df_data.to_dict('records')
+                        records = self._forward_adjust_records(records)
+                        bulk_upsert_daily_data(code, records, src, 'etf')
+                        return True
+                except Exception as e:
+                    logger.warning(f"ETF {code} {source_name} 同步失败: {e}")
+            return False
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_sync_one, etf): etf for etf in etf_list}
+            for future in as_completed(futures):
+                if future.result():
+                    success += 1
+                else:
+                    fail += 1
+
+        logger.info(f"ETF日线同步完成: 成功{success}, 失败{fail}")
+
+        if success > 0:
+            try:
+                from app.engine.factor_engine import FactorEngine
+                engine = FactorEngine()
+                rps_result = engine.calculate_rps(data_type='etf', max_dates=50)
+                logger.info(f"ETF RPS计算完成: {rps_result}")
+            except Exception as e:
+                logger.warning(f"ETF RPS计算失败: {e}")
+
+        return {'total': total, 'success': success, 'fail': fail}
+
     def _sync_single_stock(self, stock_code: str, stock_name: str, start_date: str, end_date: str) -> Dict:
         """同步单只股票数据（线程池内调用，不更新任务状态）
         数据源瀑布：PyTdX → AkShare → BaoStock → yfinance
@@ -122,83 +327,116 @@ class DataManager:
         from app.data.db import get_collection
         stock_coll = get_collection('stock')
 
-        # 检查该股票当天是否已有数据，有则跳过
-        # 盘后(15:30+)：is_final=true 才跳过（需要更新收盘价）
-        # 盘中(11:30-13:00)：有数据就跳过
-        if end_date:
-            t = self._time_minutes()
-            if t >= AFTER_MARKET_START:
-                # 盘后：检查 is_final=true
-                existing = stock_coll.find_one(
-                    {'stock_code': stock_code, 'trade_date': end_date,
-                     'is_final': True, 'close': {'$gt': 0}},
-                    projection={'_id': 1}
-                )
-            else:
-                # 盘中：有数据就跳过
-                existing = stock_coll.find_one(
-                    {'stock_code': stock_code, 'trade_date': end_date, 'close': {'$gt': 0}},
-                    projection={'_id': 1}
-                )
-            if existing:
-                result['status'] = 'skipped'
-                return result
-
-        # 检查是否停牌
-        latest_doc = stock_coll.find_one(
+        # 一次查询：获取该股票最新交易日数据（含 is_final）
+        # 同时用于：数据存在检查 + 停牌判断
+        latest = stock_coll.find_one(
             {'stock_code': stock_code, 'close': {'$gt': 0}},
             sort=[('trade_date', -1)],
             projection={'trade_date': 1, 'is_final': 1, '_id': 0}
         )
-        if latest_doc:
-            latest_date = latest_doc.get('trade_date', '')
+        if latest:
+            latest_date = latest['trade_date']
 
-            # 如果最新数据日期早于请求的结束日期，可能是停牌
-            if latest_date and latest_date < end_date:
-                recent_doc = stock_coll.find_one(
-                    {'stock_code': stock_code, 'trade_date': {'$gte': end_date}, 'close': {'$gt': 0}},
-                    projection={'trade_date': 1, '_id': 0}
-                )
-                if not recent_doc:
-                    from app.data.holidays import filter_workdays
-                    try:
-                        workdays = filter_workdays(latest_date, end_date)
-                        suspend_days = len(workdays) - 1
-                        if suspend_days >= 3:
-                            result['status'] = 'skipped'
-                            result['error'] = f'停牌中（最后交易日{latest_date}，已停牌{suspend_days}个交易日）'
-                            return result
-                    except Exception:
-                        pass
+            # 最新数据 >= 目标日期 → 已有数据，跳过
+            if latest_date >= end_date:
+                t = self._time_minutes()
+                if t >= AFTER_MARKET_START:
+                    if latest.get('is_final'):
+                        result['status'] = 'skipped'
+                        return result
+                else:
+                    result['status'] = 'skipped'
+                    return result
 
-        # 数据源瀑布：按优先级逐个尝试，每个源最多 30 秒
+            # 最新数据远早于目标日期 → 停牌跳过
+            if latest_date < end_date:
+                from app.data.holidays import filter_workdays
+                try:
+                    workdays = filter_workdays(latest_date, end_date)
+                    suspend_days = len(workdays) - 1
+                    if suspend_days >= 3:
+                        result['status'] = 'skipped'
+                        result['error'] = f'停牌中（最后交易日{latest_date}，已停牌{suspend_days}个交易日）'
+                        return result
+                except Exception:
+                    pass
+
+# 数据源瀑布：按优先级逐个尝试，每个源最多 30 秒
+# 使用 daemon 线程 + join(timeout) 实现超时，避免 ThreadPoolExecutor
+# shutdown(wait=True) 在超时后仍阻塞等待后台线程的问题。
+# 并通过全局信号量限制并发请求数，防止线程无限累积导致系统资源耗尽。
+        import threading
+
+        # yfinance 对 A 股支持极差（DNS 无法解析），且底层无超时，
+        # 是线程残留的最大来源，已从瀑布中移除。
+        # BaoStock 因 IP 被服务端列入黑名单（登录返回"黑名单用户"），
+        # 已从瀑布移除，避免每次同步空耗登录失败。
         sources = [
             (self.pytdx, 'PyTdX'),
             (self.akshare, 'AkShare'),
-            (self.baostock, 'BaoStock'),
-            (self.yfinance, 'yfinance'),
         ]
         failure_reasons = []
 
+        # 当日无数据记忆化（date -> set[stock_code]）
+        # 停牌/退市/未上市股票在目标日无数据，源返回空 DataFrame 而非故障。
+        # 首次确认后本轮同步直接跳过，避免对每只无数据股票反复拉取。
+        # 模块级缓存，进程生命周期内有效，按日期隔离。
+        no_data_cache = _NO_DATA_CACHE.setdefault(end_date, set())
+        if stock_code in no_data_cache:
+            result['status'] = 'skipped'
+            result['error'] = f'{end_date} 无数据（已确认）'
+            return result
+
+        breaker = _SOURCE_BREAKER
+
         for source_obj, source_name in sources:
-            try:
-                with ThreadPoolExecutor(max_workers=1) as source_executor:
-                    future = source_executor.submit(
-                        source_obj.get_daily_data, stock_code, start_date, end_date
-                    )
-                    df, source = future.result(timeout=30)
-                if df is not None and not df.empty:
-                    # 成功获取数据，写入 MongoDB
-                    records = df.to_dict('records')
-                    bulk_upsert_daily_data(stock_code, records, source)
-                    result['status'] = 'success'
-                    result['source'] = source
-                    return result
-                failure_reasons.append(f"{source_name}: 未返回数据")
-            except TimeoutError:
+            if breaker.is_open(source_name):
+                failure_reasons.append(f"{source_name}: 熔断中")
+                continue
+
+            holder = []
+
+            def _run_source(_source=source_obj, _holder=holder):
+                try:
+                    _holder.append(_source.get_daily_data(stock_code, start_date, end_date))
+                except Exception as e:
+                    _holder.append((None, f"{source_name}异常: {e}"))
+
+            with _SOURCE_SEMAPHORE:
+                old_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(_SOCKET_TIMEOUT)
+                try:
+                    t = threading.Thread(target=_run_source, daemon=True)
+                    t.start()
+                    t.join(timeout=30)
+                finally:
+                    socket.setdefaulttimeout(old_timeout)
+
+            if t.is_alive():
                 failure_reasons.append(f"{source_name}: 超时 30s")
-            except Exception as e:
-                failure_reasons.append(f"{source_name}: {str(e)}")
+                breaker.record_failure(source_name)
+                continue
+
+            if not holder:
+                failure_reasons.append(f"{source_name}: 未返回数据")
+                breaker.record_failure(source_name)
+                continue
+
+            df, source = holder[0]
+            if df is not None and not df.empty:
+                records = df.to_dict('records')
+                bulk_upsert_daily_data(stock_code, records, source)
+                result['status'] = 'success'
+                result['source'] = source
+                breaker.record_success(source_name)
+                return result
+            # df 为空 → 该股无数据（停牌/退市/未上市），不是数据源故障
+            # 不记录失败，避免无数据股票连续出现导致数据源被误熔断
+            failure_reasons.append(f"{source_name}: 无数据")
+            no_data_cache.add(stock_code)
+            result['status'] = 'skipped'
+            result['error'] = f'{end_date} 无数据'
+            return result
 
         # 所有数据源都失败
         result['status'] = 'failed'
@@ -467,7 +705,7 @@ class DataManager:
 
                 # 检查该板块当天是否已有数据
                 t = self._time_minutes()
-                if t >= AFTER_MARKET_START:
+                if t >= AFTER_MARKET_START or day < today:
                     existing = sector_coll.find_one(
                         {'stock_code': sector_code, 'trade_date': day,
                          'is_final': True, 'close': {'$gt': 0}},
@@ -490,13 +728,22 @@ class DataManager:
                     except Exception as e:
                         logger.warning(f"akshare获取东方财富行业 {sector_code} 失败: {e}")
                 else:
-                    # 通达信概念板块：用pytdx获取
+                    # 通达信概念板块：先用pytdx获取
                     try:
                         kline = self.pytdx.get_tdx_index_daily(
                             tdx_code, market=1, start_date=prev_day, end_date=day, max_bars=5
                         )
                     except Exception as e:
                         logger.warning(f"pytdx获取通达信板块 {sector_code} 失败: {e}")
+
+                    # pytdx失败时回退到东方财富概念板块（用akshare通过板块名称获取）
+                    if kline is None or len(kline) == 0:
+                        sector_name = sec.get('name', '')
+                        if sector_name:
+                            try:
+                                kline = self.akshare.get_concept_hist(sector_name, prev_day, day)
+                            except Exception as e:
+                                logger.warning(f"akshare回退获取概念板块 {sector_name}({sector_code}) 失败: {e}")
 
                 if kline is not None and len(kline) > 0:
                     new_records = []
@@ -508,7 +755,6 @@ class DataManager:
                                 'open': float(r.get('open', 0)),
                                 'high': float(r.get('high', 0)),
                                 'low': float(r.get('low', 0)),
-                                'volume': float(r.get('volume', 0)),
                                 'amount': float(r.get('amount', 0)),
                             })
                     if new_records:
@@ -544,6 +790,18 @@ class DataManager:
                 break
             day = result
 
+        # 盘后强制重刷前一个交易日，修正盘中同步的暂态值
+        if self._time_minutes() >= AFTER_MARKET_START:
+            prev_day = (datetime.strptime(today, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
+            prev_count = _count_final_records('sector', prev_day)
+            if prev_count > 0:
+                logger.info(f"盘后重刷前一个交易日 {prev_day}，覆盖盘中暂态值...")
+                sector_coll.update_many(
+                    {'trade_date': prev_day, 'is_final': True},
+                    {'$set': {'is_final': False}}
+                )
+                sync_day(prev_day)
+
         # 更新历史数据的 is_final
         self._update_sector_is_final(sector_coll)
 
@@ -565,7 +823,7 @@ class DataManager:
         """
         计算 RPS
         Args:
-            target: 'all' - 全部, 'stock' - 仅个股, 'sector' - 仅板块
+            target: 'all' - 全部, 'stock' - 仅个股, 'sector' - 仅板块, 'etf' - 仅ETF
             max_dates: 仅计算最近 N 天（None 则计算所有历史）
         """
         from app.engine.factor_engine import FactorEngine
@@ -575,6 +833,8 @@ class DataManager:
             result['stock'] = engine.calculate_rps(data_type='stock', max_dates=max_dates)
         if target in ('all', 'sector'):
             result['sector'] = engine.calculate_rps(data_type='sector', max_dates=max_dates)
+        if target in ('all', 'etf'):
+            result['etf'] = engine.calculate_rps(data_type='etf', max_dates=max_dates)
         return result
 
     def calculate_chg_fields(self, target: str = 'all', trade_date: str = None) -> dict:
@@ -686,6 +946,10 @@ class DataManager:
     def get_index_list(self) -> pd.DataFrame:
         """获取指数列表"""
         return get_index_basics()
+
+    def get_etf_list(self) -> pd.DataFrame:
+        """获取ETF列表"""
+        return get_etf_basics()
 
     def get_stock_daily_data(self, stock_code: str, start_date: Optional[str] = None,
                               end_date: Optional[str] = None) -> pd.DataFrame:
