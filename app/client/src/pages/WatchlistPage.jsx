@@ -84,8 +84,6 @@ function WatchlistPage() {
           {v}
         </span>
       ) },
-    { title: '类型', dataIndex: 'type', key: 'type', width: 80,
-      render: (v) => v === 'etf' ? <Tag color="cyan">ETF</Tag> : <Tag color="blue">个股</Tag> },
     { title: '最新价', dataIndex: 'close', key: 'close', width: 100, sorter: true,
       render: (v) => v != null ? <span className="font-mono">{v.toFixed(3)}</span> : '-' },
     { title: '日涨幅', dataIndex: 'change_pct', key: 'change_pct', width: 100, sorter: true, render: renderChange },
