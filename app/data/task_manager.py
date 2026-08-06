@@ -73,13 +73,14 @@ class TaskManager:
             pass
         return col
 
-    def create_task(self) -> str:
+    def create_task(self, name: str = '') -> str:
         """创建一个新任务"""
         task_id = str(uuid.uuid4())
         col = self._get_col()
         now = datetime.utcnow().isoformat()
         doc = {
             'task_id': task_id,
+            'name': name,
             'status': TaskStatus.PENDING.value,
             'sources': {},
             'message': None,
@@ -246,13 +247,17 @@ class TaskManager:
         doc = col.find_one({'task_id': task_id}, {'status': 1, '_id': 0})
         return doc is not None and doc.get('status') == TaskStatus.CANCELLED.value
 
-    def create_task_with_steps(self, steps: List[Dict]) -> str:
+    def create_task_with_steps(self, steps: List[Dict], name: str = '') -> str:
         """创建带步骤的任务"""
         task_id = str(uuid.uuid4())
         col = self._get_col()
         now = datetime.utcnow().isoformat()
+        for step in steps:
+            if step.get('total_count', 0) < 1:
+                step['total_count'] = 1
         doc = {
             'task_id': task_id,
+            'name': name,
             'status': TaskStatus.RUNNING.value,
             'sources': {},
             'message': None,

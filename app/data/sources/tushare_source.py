@@ -77,7 +77,7 @@ class TushareSource:
                     result_df['high'] = df['high']
                     result_df['low'] = df['low']
                     result_df['close'] = df['close']
-                    result_df['volume'] = df['vol']
+                    result_df['vol'] = df['vol']
                     result_df['amount'] = df['amount']
                     result_df['change_pct'] = df['pct_chg']
                     result_df['change'] = df['change']

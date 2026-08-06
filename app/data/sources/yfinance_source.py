@@ -58,7 +58,7 @@ class YFinanceSource:
                     result_df['high'] = df['High']
                     result_df['low'] = df['Low']
                     result_df['close'] = df['Close']
-                    result_df['volume'] = df['Volume']
+                    result_df['vol'] = df['Volume'] / 100  # 股→手
                     
                     # 计算涨跌相关（可选）
                     if 'Close' in df.columns and len(df) > 1:

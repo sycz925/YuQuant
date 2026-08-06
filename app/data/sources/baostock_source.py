@@ -85,7 +85,7 @@ class BaoStockSource:
                         result_df['high'] = pd.to_numeric(df['high'], errors='coerce')
                         result_df['low'] = pd.to_numeric(df['low'], errors='coerce')
                         result_df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                        result_df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+                        result_df['vol'] = pd.to_numeric(df['volume'], errors='coerce') / 100  # 股→手
                         result_df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
                         if 'pctChg' in df.columns:
                             result_df['change_pct'] = pd.to_numeric(df['pctChg'], errors='coerce')

@@ -7,6 +7,7 @@
 - 个股日线（回退）
 """
 import sys
+import time
 import datetime
 import threading
 from typing import Optional, Dict, List
@@ -46,6 +47,7 @@ MARKET_SZ = 0
 
 # 连接池配置
 CONNECTION_POOL_SIZE = 16  # 连接池大小，匹配线程池
+CONNECTION_TTL = 15 * 60  # 连接最大闲置时长（秒），超时归还时销毁，防止长驻进程堆积失效连接
 _connection_pool = Queue(maxsize=CONNECTION_POOL_SIZE)
 _pool_lock = threading.Lock()
 _pool_initialized = False
@@ -80,33 +82,69 @@ def _init_connection_pool():
         _pool_initialized = True
 
 
-def _get_connection():
-    """从连接池获取连接"""
-    _init_connection_pool()
+def _is_alive(api) -> bool:
+    """轻量探测连接是否有效（长驻进程下连接可能被服务器断开失效）"""
+    if api is None:
+        return False
     try:
-        return _connection_pool.get_nowait()
-    except Empty:
-        # 池为空，创建新连接
-        api = TdxHq_API()
-        for host, port in TDX_SERVERS:
+        count = api.get_security_count(MARKET_SH)
+        return bool(count)
+    except Exception:
+        return False
+
+
+def _get_connection():
+    """从连接池获取连接（带活性检测：失效连接销毁，池空时遍历所有服务器新建）"""
+    _init_connection_pool()
+    for _ in range(CONNECTION_POOL_SIZE):
+        try:
+            api = _connection_pool.get_nowait()
+        except Empty:
+            api = None
+            break
+        # 闲置超 TTL 的连接直接销毁换血（防止池长期堆积闲置连接）
+        last_ts = getattr(api, '_last_return_ts', None)
+        if last_ts is not None and time.time() - last_ts > CONNECTION_TTL:
             try:
-                if api.connect(host, port, time_out=5):
-                    return api
+                api.disconnect()
             except Exception:
-                continue
-        return None
+                pass
+            continue
+        if _is_alive(api):
+            return api
+        # 死连接销毁，继续取池内下一个（池空后走新建分支遍历其他服务器）
+        try:
+            api.disconnect()
+        except Exception:
+            pass
+    # 池为空或全是死连接，创建新连接（遍历所有服务器IP换端口重试）
+    api = TdxHq_API()
+    for host, port in TDX_SERVERS:
+        try:
+            if api.connect(host, port, time_out=5):
+                return api
+        except Exception:
+            continue
+    return None
 
 
 def _return_connection(api):
-    """归还连接到连接池"""
+    """归还连接到连接池（闲置超 TTL 的连接直接销毁不回流，保证池水位健康）"""
     if api is None:
         return
+    now = time.time()
+    last_ts = getattr(api, '_last_return_ts', now)
+    if now - last_ts > CONNECTION_TTL:
+        # 闲置超时，销毁不回流（池水位下降，后续取用将新建换血）
+        try:
+            api.disconnect()
+        except Exception:
+            pass
+        return
     try:
-        # 检查连接是否仍然有效
-        api.get_security_count(0)  # 简单测试连接
+        api._last_return_ts = now
         _connection_pool.put_nowait(api)
     except Exception:
-        # 连接已失效，关闭并丢弃
         try:
             api.disconnect()
         except Exception:
@@ -456,21 +494,111 @@ class PytdxSource:
             max_retries=3
         )
 
+    # -------------------- 除权除息(复权)计算 --------------------
+
+    @staticmethod
+    def _fetch_xdxr_events(market: int, code: str) -> Optional[List[Dict]]:
+        """获取个股/ETF的除权除息事件列表"""
+        api = _get_connection()
+        if not api:
+            return None
+        try:
+            xdxr = api.get_xdxr_info(market, code)
+            return xdxr if xdxr else None
+        except Exception:
+            return None
+        finally:
+            _return_connection(api)
+
+    @staticmethod
+    def _adjust_xdxr_events(xdxr_events: List[Dict]) -> List[Dict]:
+        """过滤并标准化xdxr事件，只保留需要复权的类别"""
+        adjusted = []
+        for evt in xdxr_events:
+            cat = evt.get('category')
+            if cat == 1:
+                fenhong = evt.get('fenhong') or 0
+                songzhuangu = evt.get('songzhuangu') or 0
+                peigu = evt.get('peigu') or 0
+                peigujia = evt.get('peigujia') or 0
+                if fenhong or songzhuangu or peigu:
+                    date_str = f"{int(evt['year']):04d}{int(evt['month']):02d}{int(evt['day']):02d}"
+                    adjusted.append({
+                        'date': date_str,
+                        'fenhong': fenhong,
+                        'songzhuangu': songzhuangu,
+                        'peigu': peigu,
+                        'peigujia': peigujia,
+                    })
+        return sorted(adjusted, key=lambda x: x['date'])
+
+    @staticmethod
+    def apply_forward_adjust(df: 'pd.DataFrame', xdxr_events: List[Dict]) -> 'pd.DataFrame':
+        """对日线DataFrame应用前复权
+
+        Args:
+            df: 未经复权的日线DataFrame，必须含 trade_date, open, high, low, close 列
+            xdxr_events: 除权除息事件列表（由 _adjust_xdxr_events 处理后）
+
+        Returns:
+            前复权后的DataFrame
+        """
+        import numpy as np
+        df = df.sort_values('trade_date').copy()
+        dates = df['trade_date'].values
+        prices = {f: df[f].values.copy() for f in ['open', 'high', 'low', 'close']}
+
+        events = sorted(xdxr_events, key=lambda x: x['date'], reverse=True)
+
+        for evt in events:
+            evt_date = evt['date']
+            fenhong = evt['fenhong']
+            songzhuangu = evt['songzhuangu']
+            peigu = evt['peigu']
+            peigujia = evt['peigujia']
+
+            prev_close = None
+            for i, d in enumerate(dates):
+                if d == evt_date and i > 0 and prices['close'][i - 1] > 0:
+                    prev_close = prices['close'][i - 1]
+                    break
+
+            if prev_close is None or prev_close <= 0:
+                continue
+
+            factor = (prev_close - fenhong + peigu * peigujia) / (prev_close * (1 + songzhuangu + peigu))
+            if factor <= 0 or abs(factor - 1) < 1e-8:
+                continue
+
+            for f in ['close', 'open', 'high', 'low']:
+                prices[f][:i] = (prices[f][:i] * factor).round(3)
+
+        for f in ['open', 'high', 'low', 'close']:
+            df[f] = prices[f]
+
+        return df
+
     # -------------------- 个股日线获取 --------------------
 
     @staticmethod
     def get_stock_daily(stock_code: str,
                         start_date: str = '20200101',
-                        end_date: Optional[str] = None) -> Optional['pd.DataFrame']:
+                        end_date: Optional[str] = None,
+                        adjusted: bool = True) -> Optional['pd.DataFrame']:
         """
-        获取个股日线数据（使用连接池）
+        获取个股日线数据（使用连接池，支持前复权）
+
+        Args:
+            stock_code: 股票代码
+            start_date: 起始日期
+            end_date: 截止日期
+            adjusted: 是否前复权（默认 True）
         """
         if not HAS_PYTDX or not HAS_PANDAS:
             return None
-        # 市场推断：6 开头为沪市，其他为深市
-        market = MARKET_SH if stock_code.startswith(('6', '8', '9')) else MARKET_SZ
+        market = MARKET_SH if stock_code.startswith(('5', '6', '8', '9')) else MARKET_SZ
 
-        def _fetch_stock_daily(api, stock_code, start_date, end_date, market):
+        def _fetch_stock_daily(api, stock_code, start_date, end_date, market, adjusted):
             """内部函数：从指定连接获取股票日线数据"""
             all_bars = []
             for start in range(0, 10000, 800):
@@ -503,16 +631,27 @@ class PytdxSource:
                 'amount': 'amount',
             }
             df = df.rename(columns=rename_map)
+            df = df[['trade_date', 'open', 'close', 'high', 'low', 'vol', 'amount']].copy()
+            df['code'] = stock_code
+
+            if adjusted:
+                try:
+                    xdxr_raw = api.get_xdxr_info(market, stock_code)
+                    if xdxr_raw:
+                        xdxr = PytdxSource._adjust_xdxr_events(xdxr_raw)
+                        if xdxr:
+                            df = PytdxSource.apply_forward_adjust(df, xdxr)
+                except Exception:
+                    pass
+
             df = df[df['trade_date'] >= start_date].copy()
             if end_date:
                 df = df[df['trade_date'] <= str(end_date)].copy()
-            df = df[['trade_date', 'open', 'close', 'high', 'low', 'vol', 'amount']].copy()
-            df['code'] = stock_code
+
             return df
 
-        # 使用重试机制，超时自动切换IP
         return _retry_with_new_connection(
-            _fetch_stock_daily, stock_code, start_date, end_date, market,
+            _fetch_stock_daily, stock_code, start_date, end_date, market, adjusted,
             max_retries=3
         )
 
