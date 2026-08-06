@@ -34,6 +34,9 @@ Thumbs.db
 logs/
 *.log
 
+# 一次性调试/临时脚本
+tmp/
+
 # Data
 data/
 demo.xlsx
