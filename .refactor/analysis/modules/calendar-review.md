@@ -1,91 +1,64 @@
-# 功能分析: 日历复盘
+# 模块分析: 日历复盘（calendar.py）
 
-**分析日期**: 2026-07-22
+**文件**: `app/server/api/calendar.py` (1584行)
+**路由数**: 15 | **函数数**: 20+
 
 ---
 
 ## 基本信息
-- **入口**: `app/client/src/pages/CalendarReview.jsx`
-- **涉及文件**:
-  - 前端: CalendarReview.jsx (1312行), ReviewDetail.jsx (406行)
-  - 后端: calendar.py (1546行), market_review.py
-- **调用链**: CalendarReview → calendarApi → calendar.py → MongoDB
+- 入口: `router = APIRouter(prefix="/api/calendar")`
+- 调用链: 路由 → 直接函数调用 → `get_db()`
+- 架构状态: ⚠️ 完全未使用新架构
 
 ---
 
-## 资源复用分析
+## Vibe Coding 问题检测
 
-### 前端组件使用
-| 组件 | 来源 | 问题 | 建议 |
-|------|------|------|------|
-| Modal | antd ✅ | 无 | - |
-| DatePicker | antd ✅ | 无 | - |
-| ConfigProvider | antd ✅ | 无 | - |
-| notification | antd ✅ | 无 | - |
-| message | antd ✅ | 无 | - |
+### 1. 架构违规
+- **17 处 `get_db()` 直接调用** - 分散在多个函数中
+- `generate_calendar_snapshot()` 函数内访问 4 个不同集合（base_data_daily, market_daily, sector_basics, sector_daily, index_daily, stock_daily）
+- 本应使用 CalendarRepository + MarketRepository
 
-### 前端 Hooks 使用
-| Hook | 来源 | 问题 | 建议 |
-|------|------|------|------|
-| useState | React ✅ | 无 | - |
-| useEffect | React ✅ | 无 | - |
-| useCallback | React ✅ | 无 | - |
-| 无自定义 hook | - | ⚠️ 大量轮询逻辑内联 | 抽取 usePolling, useTaskPolling |
+### 2. 职责混乱
+| 函数类别 | 函数 | 应归属 |
+|----------|------|--------|
+| 日历快照 | `generate_calendar_snapshot()` | CalendarService |
+| 日历快照 | `save_calendar_snapshot()` | CalendarService |
+| 周总结 | `_get_month_weeks()` | CalendarService |
+| 周总结 | `_build_weekly_input_text()` | CalendarService |
+| 月总结 | `_build_monthly_input_text()` | CalendarService |
+| 后台任务 | `_run_fill_ai_task()` | 应在 orchestrator |
+| 路由端点 | 15个路由函数 | api/calendar.py |
 
-### 后端基础设施使用
-| 基础设施 | 当前使用 | 问题 | 建议 |
-|----------|----------|------|------|
-| 日志 | logger ✅ | 无 | - |
-| 任务管理 | tm ✅ | 无 | - |
-| 数据库 | get_db() ❌ | 30+ 次直接调用 | 使用 repository 层 |
-| 缓存 | 无 | ⚠️ 无缓存 | 添加 Redis 缓存 |
+### 3. 重复实现
+- `_build_weekly_input_text()` 和 `_build_monthly_input_text()` 逻辑高度相似
+- 周总结和月总结的错误处理模式重复
 
----
+### 4. 错误处理
+- 23 处 `except Exception` - 裸异常捕获
+- 部分函数返回 None 而不是抛异常
 
-## 重复实现检测
-
-### 功能重复
-| 功能 | 当前位置 | 重复位置 | 建议 |
-|------|----------|----------|------|
-| 轮询任务状态 | CalendarReview.jsx:498 | ReviewDetail.jsx:251 | 统一到 useTaskPolling hook |
-| 截图功能 | CalendarReview.jsx:254 | ReviewDetail.jsx:153 | 抽取 useScreenshot hook |
-| 生成周/月总结 | calendar.py:853, 1217 | calendar.py:1294, 1444 | 可抽取通用任务启动函数 |
-
-### 相似代码
-| 代码块 | 位置 | 相似位置 | 建议 |
-|--------|------|----------|------|
-| 轮询逻辑 | CalendarReview.jsx:490-505 | ReviewDetail.jsx:245-260 | 合并为通用轮询 hook |
-| 任务启动 | CalendarReview.jsx:218 | CalendarReview.jsx:322 | 合并为通用任务启动函数 |
+### 5. 代码质量问题
+- `generate_calendar_snapshot()` 函数过长（~100行），职责过多
+- 同时访问 6 个不同的 MongoDB 集合
 
 ---
 
-## 模式一致性检测
+## 拆分方案
 
-| 模式类型 | 本功能使用 | 项目标准 | 一致 | 建议 |
-|----------|-----------|----------|------|------|
-| API 调用 | Axios | Axios | ✅ | - |
-| 错误处理 | try-catch + console.error | 混合 | ⚠️ | 统一错误处理 |
-| 状态管理 | useState (8个) | useState | ✅ | 考虑 useReducer |
-| 任务启动 | threading.Thread | threading.Thread | ✅ | 应迁移到任务队列 |
-
----
-
-## 问题总结
-
-| # | 问题类型 | 描述 | 位置 | 严重度 |
-|---|----------|------|------|--------|
-| 1 | 资源未复用 | 轮询逻辑重复 3 次 | CalendarReview, ReviewDetail | P1 |
-| 2 | 资源未复用 | 截图功能重复 2 次 | CalendarReview, ReviewDetail | P1 |
-| 3 | 重复实现 | 任务启动模式重复 4 次 | calendar.py | P1 |
-| 4 | 架构违规 | 30+ 次 get_db() 直接调用 | calendar.py | P0 |
-| 5 | 代码过大 | CalendarReview.jsx 1312 行 | CalendarReview.jsx | P1 |
+| 新文件 | 职责 | 预估行数 |
+|--------|------|----------|
+| `api/calendar.py` | 瘦路由（15个端点） | ~200 |
+| `services/calendar_snapshot.py` | 日历快照生成 | ~300 |
+| `services/calendar_summary.py` | 周/月总结生成 | ~500 |
+| `services/calendar_recalc.py` | 重算逻辑 | ~300 |
 
 ---
 
 ## 重构任务
-
-1. [M-005] 抽取 usePolling hook（支持页面隐藏暂停）
-2. [M-006] 抽取 useTaskPolling hook（任务状态轮询）
-3. [M-007] 抽取 useScreenshot hook
-4. [M-008] calendar.py 建立 repository 层，消除 get_db()
-5. [M-009] 拆分 CalendarReview.jsx 为多个子组件
+| 编号 | 任务 | 优先级 |
+|------|------|--------|
+| M-CAL-01 | 拆分 calendar.py 为 4 个文件 | P0 |
+| M-CAL-02 | 17处 get_db() 替换为 CalendarRepository | P0 |
+| M-CAL-03 | 合并周/月总结构建逻辑 | P1 |
+| M-CAL-04 | 统一异常处理 | P1 |

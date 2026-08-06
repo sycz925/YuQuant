@@ -1,6 +1,6 @@
 # Phase 1: 关键识别 - 核心功能列表
 
-**分析日期**: 2026-07-22
+**分析日期**: 2026-07-25（重新全量分析）
 
 ---
 
@@ -8,91 +8,97 @@
 
 ### 功能 1: 一键更新
 - **用户故事**: 用户点击"一键更新"按钮，自动完成数据同步、RPS计算、PE更新、预计算
-- **入口**: `app/client/src/App.jsx:65` (handleOneClickUpdate)
+- **入口**: `app/client/src/hooks/useOneClickUpdate.js` | `app/server/api/one_click_update_v2.py:16`
 - **涉及模块**:
-  - 前端: App.jsx → api.js → one_click_update API
-  - 后端: one_click_update.py → factor_service → data_manager → factor_engine
+  - 前端: useOneClickUpdate hook → api.js → one_click_update API
+  - 后端: one_click_update_v2.py → OneClickUpdateOrchestrator → IndexFactory/StockFactory/SectorFactory → repositories
 - **复杂度**: 高
 - **调用链**: 
   ```
-  App.handleOneClickUpdate() 
+  useOneClickUpdate.handleStart()
   → oneClickUpdateApi.start()
-  → one_click_update._run_update_task()
-  → factor_service._run_sync_indices()
-  → data_manager.sync_daily_data()
-  → factor_engine.calculate_rps()
-  → _run_precompute_base_for_date()
+  → POST /api/one-click-update/start
+  → OneClickUpdateOrchestrator.execute()
+  → IndexFactory.sync_kline() → StockFactory.sync_kline() → ...
+  → task_repo.update_progress()
   ```
+- **架构状态**: ✅ 已迁移到 Orchestrator 编排层
 
 ### 功能 2: 日历复盘
 - **用户故事**: 用户查看日历视图，查看每日市场概况、周总结、月总结
 - **入口**: `app/client/src/pages/CalendarReview.jsx`
 - **涉及模块**:
-  - 前端: CalendarReview.jsx, ReviewDetail.jsx
-  - 后端: calendar.py, market_review.py
+  - 前端: CalendarReview.jsx (1331行), ReviewDetail.jsx (387行)
+  - 后端: calendar.py (1584行), market_review.py (3095行)
 - **复杂度**: 高
 - **调用链**:
   ```
   CalendarReview → calendarApi.getDailySummary()
-  → calendar.generate_calendar_snapshot()
-  → db.base_data_daily / db.market_daily
+  → calendar.get_calendar_daily_summary()
+  → db.base_data_daily / db.market_daily (直接 get_db())
   ```
+- **架构状态**: ⚠️ calendar.py 仍有 17 处 get_db() 直接调用
 
 ### 功能 3: 市场分析
 - **用户故事**: 用户查看市场信号、板块轮动、活跃池
-- **入口**: `app/client/src/pages/MarketAnalysis.jsx`
+- **入口**: `app/client/src/pages/MarketAnalysis.jsx` (526行)
 - **涉及模块**:
-  - 前端: MarketAnalysis.jsx, MarketSignals.jsx, MarketOverview.jsx
-  - 后端: market_analysis.py, market_review.py
+  - 前端: MarketAnalysis.jsx, MarketSignals.jsx (598行), MarketOverview.jsx (163行)
+  - 后端: market_analysis.py (498行), market_review.py (3095行)
 - **复杂度**: 中
 - **调用链**:
   ```
   MarketAnalysis → marketAnalysisApi.getAnalysis()
-  → market_analysis.generate_market_signals()
-  → db.stock_daily / db.sector_daily
+  → market_analysis.get_analysis()
+  → market_review.calc_market_signals() → get_db()
   ```
+- **架构状态**: ⚠️ 直接调用 market_review 中的函数，未通过 repository
 
 ### 功能 4: 个股分析
 - **用户故事**: 用户搜索个股，查看K线、RPS、指标
-- **入口**: `app/client/src/pages/StockAnalysis.jsx`
+- **入口**: `app/client/src/pages/StockAnalysis.jsx` (632行)
 - **涉及模块**:
-  - 前端: StockAnalysis.jsx, TradingViewChart.jsx
-  - 后端: stocks.py, factors.py
+  - 前端: StockAnalysis.jsx, TradingViewChart.jsx (679行)
+  - 后端: stocks.py (304行), factors.py (1428行)
 - **复杂度**: 中
 - **调用链**:
   ```
   StockAnalysis → stockApi.getStockDetail()
-  → stocks.get_stock_detail()
-  → db.stock_daily
+  → stocks.get_stock_detail() → get_db()
+  → stockApi.getDailyData() → stocks.get_daily_data() → get_db()
   ```
+- **架构状态**: ⚠️ stocks.py 仍有 3 处 get_db()
 
 ### 功能 5: 数据同步
 - **用户故事**: 用户手动触发个股/板块数据同步
-- **入口**: `app/client/src/pages/Settings.jsx`
+- **入口**: `app/client/src/pages/Settings.jsx` (657行)
 - **涉及模块**:
-  - 前端: Settings.jsx, ManagementDialog.jsx
-  - 后端: sync.py, one_click_update.py
+  - 前端: Settings.jsx, ManagementDialog.jsx (280行)
+  - 后端: sync.py (335行), settings_tasks.py (148行), SettingsOrchestrator (196行)
 - **复杂度**: 中
 - **调用链**:
   ```
   Settings → syncApi.syncAllDaily()
-  → sync._run_sync_task()
-  → data_manager.sync_daily_data()
+  → settings_tasks.sync_daily() → SettingsOrchestrator
+  → StockFactory.sync_kline() → StockRepository
   ```
+- **架构状态**: ⚠️ 部分已迁移到 SettingsOrchestrator，但 sync.py 仍有直接调用
 
 ### 功能 6: 按日期重算
 - **用户故事**: 用户指定日期重新计算 RPS 和预计算数据
-- **入口**: `app/client/src/pages/ReviewDetail.jsx`
+- **入口**: `app/client/src/pages/ReviewDetail.jsx` (387行)
 - **涉及模块**:
   - 前端: ReviewDetail.jsx
-  - 后端: one_click_update.py
+  - 后端: one_click_update_v2.py (64行), DailyRecalcOrchestrator
 - **复杂度**: 中
 - **调用链**:
   ```
   ReviewDetail → oneClickUpdateApi.recalculateDate()
-  → one_click_update._run_recalc_task()
-  → factor_engine.calculate_rps()
+  → POST /api/one-click-update/recalculate-date
+  → DailyRecalcOrchestrator.execute(target_date)
+  → StockFactory.calculate_rps() → MarketAggregator.precompute()
   ```
+- **架构状态**: ✅ 已迁移到 Orchestrator 编排层
 
 ---
 
@@ -101,42 +107,69 @@
 ### 最常被引用的模块
 | 模块 | 引用次数 | 说明 |
 |------|---------|------|
-| app.data.db.get_db | 142次 | 数据库连接，分散在所有路由文件 |
-| threading.Thread | 23次 | 后台任务启动 |
-| threading.Lock | 6次 | 线程锁 |
-| console.error | 40+次 | 前端错误日志 |
+| `app.data.db.get_db` | 104次 | 数据库连接，分散在 API 层(72)和新架构层(32) |
+| `threading.Thread` | 9次 | 后台任务启动（从23次减少） |
+| `logging.getLogger` | 全局 | Python 日志 |
+| `console.error/log` | 55次 | 前端错误日志 |
+| `useState/useEffect` | 271次 | React hooks |
+
+### 高频 API 端点
+| 端点 | 文件 | 调用频率 |
+|------|------|----------|
+| `/calendar/daily-summary` | calendar.py | 高 |
+| `/market-review/overview` | market_review.py | 高 |
+| `/market-review/signals` | market_review.py | 高 |
+| `/one-click-update/start` | one_click_update_v2.py | 中 |
+| `/stocks/{code}` | stocks.py | 中 |
 
 ---
 
 ## 3. 关键路径追踪
 
-### 一键更新完整调用链
+### 一键更新（已重构）
 ```
 [前端]
-App.jsx:65 handleOneClickUpdate()
-  → api.js:174 oneClickUpdateApi.start()
+useOneClickUpdate.handleStart()
+  → oneClickUpdateApi.start()
   → POST /api/one-click-update/start
 
-[后端]
-one_click_update.py:239 start_update()
-  → tm.create_task_with_steps()
-  → threading.Thread(_run_update_task)
+[后端 - 新架构]
+one_click_update_v2.py:16 start_update()
+  → check_sync_time()
+  → OneClickUpdateOrchestrator.execute()
+  → ThreadPoolExecutor (在 BaseOrchestrator 中)
+  → IndexFactory.sync_kline()
+  → StockFactory.sync_kline()
+  → SectorFactory.sync_sectors()
+  → StockFactory.calculate_rps()
+  → SectorFactory.calculate_rps()
+  → IndexFactory.sync_pe()
+  → MarketAggregator.precompute_base()
+  → TaskRepository.update_progress()
+```
 
-one_click_update.py:59 _run_update_task()
-  → Step 1: factor_service._run_sync_indices()     # 同步指数
-  → Step 2: sync._run_sync_task()                   # 同步个股
-  → Step 3: data_manager.sync_sector_indices()       # 同步板块
-  → Step 4: factor_engine.calculate_rps('stock')     # 个股RPS
-  → Step 5: factor_engine.calculate_rps('sector')    # 板块RPS
-  → Step 6: factors._run_sync_pe()                   # PE同步
-  → Step 7: factors._run_precompute_base_for_date()  # 预计算
+### 日历复盘（未重构）
+```
+[前端]
+CalendarReview.jsx → calendarApi.getDailySummary()
+  → GET /api/calendar/daily-summary?year=&month=
+
+[后端 - 旧架构]
+calendar.py:134 get_calendar_daily_summary()
+  → get_db() → base_data_daily.find()
+  → get_db() → market_daily.find()
+  → generate_calendar_snapshot() → get_db() × N
+  → save_calendar_snapshot() → get_db()
 ```
 
 ---
 
 ## 4. Phase 1 输出
 
-**关键识别完成**。6个核心功能已识别，其中：
-- 一键更新和日历复盘复杂度最高
-- get_db() 是最高频调用（142次）
-- threading.Thread 是主要的任务启动方式（23次）
+**关键识别完成**。6个核心功能中：
+- **一键更新** ✅ 已重构为四层架构
+- **按日期重算** ✅ 已重构为四层架构
+- **日历复盘** ⚠️ 仍使用旧架构，大量 get_db()
+- **市场分析** ⚠️ 仍使用旧架构
+- **个股分析** ⚠️ 仍使用旧架构
+- **数据同步** ⚠️ 部分重构
