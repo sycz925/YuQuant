@@ -17,9 +17,10 @@ from fastapi.responses import JSONResponse
 
 from app.server.config import get_settings
 from app.server.models import HealthResponse
-from app.server.api import stocks, factors, sync, market_analysis, market_review, screenshot, calendar, search
+from app.server.api import stocks, factors, sync, market_analysis, market_review, screenshot, calendar, search, etf, alert
 from app.server.api import one_click_update_v2 as one_click_update
 from app.server.api import settings_tasks
+from app.server.api import watchlist
 from app.server.cache import init_trade_dates, get_latest_trade_date
 
 # 配置日志 - 输出到 logs/ 目录
@@ -45,6 +46,41 @@ root_logger.addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
 
+# 全局引用，防止被GC
+_alert_scheduler_thread = None
+
+
+def _start_alert_scheduler():
+    """启动ENE预警定时器（每5分钟）"""
+    import threading
+    import time
+    from app.engine.ene_alert import check_latest, backfill_alerts
+
+    # 首次启动时回刷历史
+    logger.info("[ENE预警] 首次启动，回刷历史数据...")
+    try:
+        backfill_alerts()
+    except Exception as e:
+        logger.error(f"[ENE预警] 回刷失败: {e}")
+
+    def _loop():
+        logger.info("[ENE预警] 定时器已启动，每5分钟检查最新数据")
+        while True:
+            try:
+                now = datetime.now()
+                hour = now.hour
+                if 9 <= hour <= 15:
+                    check_latest(max_dates=5)
+                else:
+                    logger.debug("[ENE预警] 非交易时间，跳过检查")
+            except Exception as e:
+                logger.error(f"[ENE预警] 检查失败: {e}")
+            time.sleep(300)
+
+    global _alert_scheduler_thread
+    _alert_scheduler_thread = threading.Thread(target=_loop, daemon=True)
+    _alert_scheduler_thread.start()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,6 +88,7 @@ async def lifespan(app: FastAPI):
     # 启动时
     logger.info("应用启动中...")
     init_trade_dates()
+    _start_alert_scheduler()
     logger.info("应用启动完成")
     yield
     # 关闭时
@@ -103,6 +140,9 @@ app.include_router(calendar.router)
 app.include_router(search.router)
 app.include_router(one_click_update.router)
 app.include_router(settings_tasks.router)
+app.include_router(etf.router)
+app.include_router(alert.router)
+app.include_router(watchlist.router)
 
 
 @app.get("/health", response_model=HealthResponse)

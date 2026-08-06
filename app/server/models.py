@@ -36,6 +36,12 @@ class DailyBar(BaseModel):
     vol_ma10: Optional[float] = Field(None, description="10日成交量均线")
     vol_ma20: Optional[float] = Field(None, description="20日成交量均线")
     vol_ma50: Optional[float] = Field(None, description="50日成交量均线")
+    # RPS字段
+    rps_10: Optional[int] = Field(None, description="RPS 10日")
+    rps_20: Optional[int] = Field(None, description="RPS 20日")
+    rps_50: Optional[int] = Field(None, description="RPS 50日")
+    rps_120: Optional[int] = Field(None, description="RPS 120日")
+    rps_250: Optional[int] = Field(None, description="RPS 250日")
 
 
 class StockListResponse(BaseModel):
@@ -84,6 +90,62 @@ class SyncResponse(BaseModel):
     success_count: Optional[int] = Field(None, description="成功数量")
     fail_count: Optional[int] = Field(None, description="失败数量")
     used_fallback: Optional[bool] = Field(None, description="是否使用降级策略")
+
+
+class EtfBasic(BaseModel):
+    """ETF基础信息"""
+    code: str = Field(..., description="ETF代码")
+    name: str = Field(..., description="ETF名称")
+
+
+class EtfListItem(BaseModel):
+    """ETF列表项(含行情数据)"""
+    code: str = Field(..., description="ETF代码")
+    name: str = Field(..., description="ETF名称")
+    close: Optional[float] = Field(None, description="最新价")
+    change_pct: Optional[float] = Field(None, description="日涨幅%")
+    chg_5d: Optional[float] = Field(None, description="5日涨幅%")
+    chg_10d: Optional[float] = Field(None, description="10日涨幅%")
+    chg_20d: Optional[float] = Field(None, description="20日涨幅%")
+    chg_50d: Optional[float] = Field(None, description="50日涨幅%")
+    chg_120d: Optional[float] = Field(None, description="120日涨幅%")
+    rps_10: Optional[int] = Field(None, description="RPS 10日")
+    rps_20: Optional[int] = Field(None, description="RPS 20日")
+    rps_50: Optional[int] = Field(None, description="RPS 50日")
+
+
+class EtfListResponse(BaseModel):
+    """ETF列表响应"""
+    total: int = Field(..., description="总数")
+    data: List[EtfListItem] = Field(..., description="ETF列表")
+
+
+class WatchlistAddRequest(BaseModel):
+    """添加重点关注请求"""
+    code: str = Field(..., description="股票或ETF代码")
+
+
+class WatchlistItem(BaseModel):
+    """重点关注列表项(含最新行情)"""
+    code: str = Field(..., description="代码")
+    name: str = Field(..., description="名称")
+    type: str = Field(..., description="类型: stock/etf")
+    close: Optional[float] = Field(None, description="最新价")
+    change_pct: Optional[float] = Field(None, description="日涨幅%")
+    chg_5d: Optional[float] = Field(None, description="5日涨幅%")
+    chg_10d: Optional[float] = Field(None, description="10日涨幅%")
+    chg_20d: Optional[float] = Field(None, description="20日涨幅%")
+    chg_50d: Optional[float] = Field(None, description="50日涨幅%")
+    chg_120d: Optional[float] = Field(None, description="120日涨幅%")
+    rps_10: Optional[int] = Field(None, description="RPS 10日")
+    rps_20: Optional[int] = Field(None, description="RPS 20日")
+    rps_50: Optional[int] = Field(None, description="RPS 50日")
+
+
+class WatchlistResponse(BaseModel):
+    """重点关注列表响应"""
+    total: int = Field(..., description="总数")
+    data: List[WatchlistItem] = Field(..., description="列表")
 
 
 class HealthResponse(BaseModel):

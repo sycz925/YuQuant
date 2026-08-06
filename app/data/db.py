@@ -19,7 +19,8 @@ _db_instance = None
 COLLECTION_MAP = {
     'stock': 'stock_daily',
     'sector': 'sector_daily',
-    'index': 'index_daily'
+    'index': 'index_daily',
+    'etf': 'etf_daily'
 }
 
 
@@ -57,7 +58,13 @@ def _create_indexes(db):
     # 指数基础信息索引（统一用 code 字段，兼容新格式）
     db['index_basics'].create_index([('code', ASCENDING)], unique=True)
 
-    # 新日线集合索引（stock_daily, sector_daily, index_daily）
+    # ETF基础信息索引
+    db['etf_basics'].create_index([('code', ASCENDING)], unique=True)
+
+    # 重点关注列表索引（同一 code+type 只能存在一条）
+    db['watchlist'].create_index([('code', ASCENDING), ('type', ASCENDING)], unique=True)
+
+    # 新日线集合索引（stock_daily, sector_daily, index_daily, etf_daily）
     for coll_name in COLLECTION_MAP.values():
         db[coll_name].create_index([('stock_code', ASCENDING), ('trade_date', DESCENDING)])
         db[coll_name].create_index([('trade_date', DESCENDING)])
@@ -183,7 +190,7 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
         pass
 
     # 查历史数据（用于计算MA/VOL_MA/区间涨幅）
-    vol_field = 'volume' if data_type == 'sector' else 'vol'
+    vol_field = 'vol'
     hist_cursor = coll.find(
         {'stock_code': stock_code, 'trade_date': {'$lt': earliest_date}, 'close': {'$gt': 0}},
         {'_id': 0, 'trade_date': 1, 'close': 1, vol_field: 1, 'amount': 1}
@@ -193,12 +200,19 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
 
     # 合并历史+新数据
     def _get_vol(d):
-        v = d.get(vol_field, 0) or 0
+        # 优先 vol（手）；个股 fallback 到 volume（股）转换 /100 为手
+        v = d.get('vol', 0) or 0
+        if v <= 0:
+            vol_amt = d.get('volume', 0) or 0
+            if vol_amt > 0:
+                v = vol_amt / 100 if data_type == 'stock' else vol_amt
         if v <= 0:
             amt = d.get('amount', 0) or 0
             c = d.get('close', 0) or 0
             if amt > 0 and c > 0:
                 v = amt / c
+                if data_type == 'stock':
+                    v = v / 100  # amount/close 得到股数，转换为手
         return v
 
     all_docs = hist_docs + [{'trade_date': str(r['trade_date']), 'close': r.get('close', 0),
@@ -457,6 +471,52 @@ def bulk_patch_is_final() -> Dict[str, int]:
         'total': total_count,
         'today': today_local
     }
+
+
+# ==================== ETF基础信息操作 ====================
+
+def upsert_etf_basics(code: str, name: str):
+    """更新或插入ETF基础信息"""
+    doc = {
+        'code': code,
+        'name': name,
+        'update_time': datetime.utcnow()
+    }
+    db = get_db()
+    try:
+        db['etf_basics'].update_one(
+            {'code': code},
+            {'$set': doc},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"更新ETF基础信息失败 {code}: {e}")
+
+
+def bulk_upsert_etf_basics(docs: List[Dict[str, Any]]):
+    """批量更新或插入ETF基础信息"""
+    db = get_db()
+    for doc in docs:
+        doc['update_time'] = datetime.utcnow()
+        try:
+            db['etf_basics'].update_one(
+                {'code': doc['code']},
+                {'$set': doc},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"批量更新ETF基础信息失败 {doc['code']}: {e}")
+
+
+def get_etf_basics(code: Optional[str] = None) -> pd.DataFrame:
+    """获取ETF基础信息"""
+    db = get_db()
+    query = {}
+    if code:
+        query['code'] = code
+    cursor = db['etf_basics'].find(query, {'_id': 0})
+    df = pd.DataFrame(list(cursor))
+    return df
 
 
 # ==================== 指数基础信息操作 ====================
