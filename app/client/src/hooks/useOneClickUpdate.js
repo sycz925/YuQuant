@@ -43,20 +43,20 @@ export function useOneClickUpdate(options = {}) {
       // 如果任务已在运行
       if (res.already_running) {
         const taskStatus = await taskApi.getTaskStatus(res.task_id)
-        const stepText = taskStatus.total_count > 0
-          ? `[${taskStatus.completed_count}/${taskStatus.total_count}]`
-          : ''
+        const steps = taskStatus.steps || []
+        const currentStep = steps[taskStatus.current_step]
+        const stepDesc = currentStep ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})` : '处理中...'
 
         notification.info({
-          message: '更新任务正在进行中',
-          description: `${stepText} ${taskStatus.current_stock_name || '处理中...'}`,
+          message: `${taskStatus.name || '一键更新'}(${taskStatus.current_step || 0}/${steps.length})`,
+          description: stepDesc,
           duration: 0,
           key,
           closable: false,
         })
       } else {
         notification.info({
-          message: '一键更新已启动',
+          message: `一键更新(0/0)`,
           description: '正在准备...',
           duration: 0,
           key,
@@ -86,7 +86,7 @@ export function useOneClickUpdate(options = {}) {
         // 任务失败
         if (status.status === 'failed') {
           notification.error({
-            message: '更新失败',
+            message: `${status.name || '一键更新'}失败`,
             description: status.message || '未知错误',
             duration: 0,
             key,
@@ -103,8 +103,8 @@ export function useOneClickUpdate(options = {}) {
         // 任务完成
         if (status.status === 'completed') {
           notification.success({
-            message: '一键更新完成',
-            description: '数据已同步，RPS/PE已计算，基础数据已更新',
+            message: `${status.name || '一键更新'}完成`,
+            description: '数据已同步，RPS/PE已计算，基础数据已更新，请手动刷新页面',
             duration: 0,
             key,
             closable: true,
@@ -121,14 +121,12 @@ export function useOneClickUpdate(options = {}) {
         if (status.status === 'running') {
           const steps = status.steps || []
           const totalSteps = steps.length
-          const completedSteps = steps.filter(s => s.status === 'completed').length
-          const stepText = totalSteps > 0 ? `[${completedSteps}/${totalSteps}]` : ''
           const currentStep = steps[status.current_step]
-          const stepName = currentStep ? currentStep.name : '处理中...'
+          const stepDesc = currentStep ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})` : '处理中...'
 
           notification.info({
-            message: `一键更新 ${stepText}`,
-            description: stepName,
+            message: `${status.name || '一键更新'}(${status.current_step || 0}/${totalSteps})`,
+            description: stepDesc,
             duration: 0,
             key,
             closable: false,

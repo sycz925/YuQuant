@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button, Tag, DatePicker, message, notification } from 'antd'
 import { LeftOutlined, RightOutlined, CalendarOutlined, CameraOutlined, ReloadOutlined } from '@ant-design/icons'
@@ -6,7 +6,8 @@ import { toPng } from 'html-to-image'
 import dayjs from 'dayjs'
 import MarketMonitor from './MarketMonitor'
 import MarketAnalysis from './MarketAnalysis'
-import { calendarApi, marketReviewApi, oneClickUpdateApi, taskApi } from '../api'
+import { calendarApi, marketReviewApi, oneClickUpdateApi } from '../api'
+import { useTaskPolling } from '../hooks/useTaskPolling'
 
 const TABS = [
   { key: 'monitor', label: '市场监控', icon: '📊' },
@@ -26,7 +27,51 @@ function ReviewDetail({ latestTradeDate }) {
   // 市场数据状态：hasData(有数据), isFinal(盘后)
   const [marketStatus, setMarketStatus] = useState({ hasData: false, isFinal: false })
   // 数据重算状态
-  const [recalcRunning, setRecalcRunning] = useState(false)
+  const [recalcTaskId, setRecalcTaskId] = useState(null)
+  const recalcNotifyKey = useRef(null)
+
+  const handleRecalcProgress = useCallback((status) => {
+    const steps = status.steps || []
+    const totalSteps = steps.length
+    const currentStep = steps[status.current_step]
+    const stepDesc = currentStep ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})` : '处理中...'
+    notification.info({
+      message: `${status.name || '数据重算'}(${status.current_step || 0}/${totalSteps})`,
+      description: stepDesc,
+      duration: 0,
+      key: recalcNotifyKey.current,
+      closable: false,
+    })
+  }, [])
+
+  const handleRecalcComplete = useCallback((status) => {
+    notification.success({
+      message: `${status.name || '数据重算'}完成`,
+      description: 'RPS和基础数据已更新',
+      duration: 0,
+      key: recalcNotifyKey.current,
+      closable: true,
+    })
+    setRecalcTaskId(null)
+  }, [])
+
+  const handleRecalcFailed = useCallback((status) => {
+    notification.error({
+      message: `${status.name || '数据重算'}失败`,
+      description: status.error || '未知错误',
+      duration: 0,
+      key: recalcNotifyKey.current,
+      closable: true,
+    })
+    setRecalcTaskId(null)
+  }, [])
+
+  const { isPolling: recalcRunning } = useTaskPolling(recalcTaskId, {
+    interval: 3000,
+    onProgress: handleRecalcProgress,
+    onComplete: handleRecalcComplete,
+    onFailed: handleRecalcFailed,
+  })
 
   // 从后端获取交易日列表
   useEffect(() => {
@@ -168,18 +213,13 @@ function ReviewDetail({ latestTradeDate }) {
         return
       }
 
-      setRecalcRunning(true)
-
-      const key = `recalc-${currentDate}`
+      recalcNotifyKey.current = `recalc-${currentDate}`
       if (res.already_running) {
-        // 使用统一任务查询获取当前状态
-        const taskStatus = await taskApi.getTaskStatus(res.task_id)
-        const stepText = taskStatus.total_count > 0 ? `[${taskStatus.completed_count}/${taskStatus.total_count}]` : ''
         notification.info({
           message: '重算任务正在进行中',
-          description: `${stepText} ${taskStatus.current_stock_name || '处理中...'}`,
+          description: '处理中...',
           duration: 0,
-          key,
+          key: recalcNotifyKey.current,
           closable: false,
         })
       } else {
@@ -187,75 +227,16 @@ function ReviewDetail({ latestTradeDate }) {
           message: `${currentDate} 数据重算已启动`,
           description: '正在计算RPS和基础数据...',
           duration: 0,
-          key,
+          key: recalcNotifyKey.current,
           closable: false,
         })
       }
 
-      // 轮询进度
-      const pollInterval = setInterval(async () => {
-        try {
-          const status = await taskApi.getTaskStatus(res.task_id)
-
-          if (status.error) {
-            notification.error({
-              message: '重算失败',
-              description: status.error,
-              duration: 0,
-              key,
-              closable: true,
-            })
-            clearInterval(pollInterval)
-            setRecalcRunning(false)
-            return
-          }
-
-          if (status.status === 'completed') {
-            notification.success({
-              message: `${currentDate} 数据重算完成`,
-              description: 'RPS和基础数据已更新',
-              duration: 0,
-              key,
-              closable: true,
-            })
-            clearInterval(pollInterval)
-            setRecalcRunning(false)
-            return
-          }
-
-          if (status.status !== 'running') {
-            clearInterval(pollInterval)
-            setRecalcRunning(false)
-            return
-          }
-
-          // 从 steps 数组计算进度
-          const steps = status.steps || []
-          const totalSteps = steps.length
-          const completedSteps = steps.filter(s => s.status === 'completed').length
-          const stepText = totalSteps > 0 ? `[${completedSteps}/${totalSteps}]` : ''
-          
-          // 获取当前步骤名称
-          const currentStep = steps[status.current_step]
-          const stepName = currentStep ? currentStep.name : '处理中...'
-          
-          notification.info({
-            message: `数据重算 ${stepText}`,
-            description: stepName,
-            duration: 0,
-            key,
-            closable: false,
-          })
-
-        } catch (e) {
-          console.error('轮询重算进度失败:', e)
-        }
-      }, 3000)
+      setRecalcTaskId(res.task_id)
 
     } catch (e) {
       console.error('启动重算失败:', e)
       message.error('启动重算失败')
-      setRecalcRunning(false)
     }
   }
 

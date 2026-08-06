@@ -67,6 +67,8 @@ export const factorApi = {
     api.get('/factors/sectors', { params: { min_stock_count: 5, ...params } }),
   getSectorDaily: (code, startDate, endDate, limit) =>
     api.get(`/factors/sectors/${code}/daily`, { params: { start_date: startDate, end_date: endDate, limit } }),
+  getSectorStocks: (code, params = {}) =>
+    api.get(`/factors/sectors/${code}/stocks`, { params }),
   importSectorCodes: (formData) =>
     api.post('/factors/sectors/import-codes', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
@@ -158,10 +160,8 @@ export const calendarApi = {
   getMonthlyInputData: (year, month) => api.get('/calendar/monthly-input-data', { params: { year, month } }),
   // 月度重算
   recalculateMonth: (year, month) => api.post('/calendar/recalculate-month', null, { params: { year, month } }),
-  getMonthlyRecalcStatus: () => api.get('/calendar/recalculate-month/status'),
   // AI分析补全
   fillAiAnalysis: (year, month) => api.post('/calendar/fill-ai-analysis', null, { params: { year, month } }),
-  getMonthlyAiStatus: () => api.get('/calendar/fill-ai-analysis/status'),
   // 通用任务查询
   getTaskStatus: (taskId) => api.get(`/calendar/task/${taskId}`),
 }
@@ -181,6 +181,24 @@ export const oneClickUpdateApi = {
 // 通用任务查询
 export const taskApi = {
   getTaskStatus: (taskId) => api.get(`/calendar/task/${taskId}`)
+}
+
+export const etfApi = {
+  getList: (params = {}) => api.get('/etf', { params }),
+  sync: () => api.post('/etf/sync'),
+  getDailyData: (code, startDate, endDate, limit) =>
+    api.get(`/etf/${code}/daily`, { params: { start_date: startDate, end_date: endDate, limit } }),
+}
+
+export const alertApi = {
+  getAlerts: (params = {}) => api.get('/etf/alerts', { params }),
+  getRecent: (params = {}) => api.get('/etf/alerts/recent', { params }),
+}
+
+export const watchlistApi = {
+  getList: (params = {}) => api.get('/watchlist', { params }),
+  add: (code) => api.post('/watchlist', { code }),
+  remove: (code) => api.delete(`/watchlist/${code}`),
 }
 
 export default api

@@ -57,6 +57,11 @@ function MarketOverview({ date }) {
     return 'text-gray-500'
   }
 
+  const renderComment = (comment) => {
+    if (!comment) return '-'
+    return comment
+  }
+
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       {/* 标题栏 */}
@@ -75,24 +80,29 @@ function MarketOverview({ date }) {
           {indices.map((item, idx) => (
             <div
               key={item.code}
-              className={`flex items-center justify-between py-2 px-3 rounded-lg ${
+              className={`py-2 px-3 rounded-lg ${
                 idx === 0 ? 'bg-indigo-50/50' : 'bg-gray-50/30'
               }`}
             >
-              <div className="flex items-center space-x-2 min-w-0">
-                <span className={`text-xs font-bold truncate ${idx === 0 ? 'text-indigo-600' : 'text-gray-900'}`}>
-                  {item.name}
-                </span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2 min-w-0">
+                  <span className={`text-xs font-bold truncate ${idx === 0 ? 'text-indigo-600' : 'text-gray-900'}`}>
+                    {item.name}
+                  </span>
+                </div>
+                <div className="flex items-center space-x-3 flex-shrink-0">
+                  <span className="text-xs font-mono font-bold text-gray-600">
+                    {item.close?.toFixed(2)}
+                  </span>
+                  <span className={`text-xs font-mono font-bold min-w-[60px] text-right ${getChgColor(item.pct_chg)}`}>
+                    {item.pct_chg > 0 ? '+' : ''}{item.pct_chg?.toFixed(2)}%
+                  </span>
+                  {item.pe_ttm && <span className="text-[10px] font-mono text-gray-400">PE:{item.pe_ttm.toFixed(1)}</span>}
+                </div>
               </div>
-              <div className="flex items-center space-x-3 flex-shrink-0">
-                <span className="text-xs font-mono font-bold text-gray-600">
-                  {item.close?.toFixed(2)}
-                </span>
-                <span className={`text-xs font-mono font-bold min-w-[60px] text-right ${getChgColor(item.pct_chg)}`}>
-                  {item.pct_chg > 0 ? '+' : ''}{item.pct_chg?.toFixed(2)}%
-                </span>
-                {item.pe_ttm && <span className="text-[10px] font-mono text-gray-400">PE:{item.pe_ttm.toFixed(1)}</span>}
-              </div>
+              {item.comment && (
+                <div className="mt-1 text-[10px] text-gray-400 truncate">{renderComment(item.comment)}</div>
+              )}
             </div>
           ))}
         </div>
@@ -148,7 +158,7 @@ function MarketOverview({ date }) {
                     (item.comment || '').includes('调整') ? 'text-green-500' :
                     'text-gray-500'
                   }`}>
-                    {item.comment || '-'}
+                    {renderComment(item.comment)}
                   </span>
                 </td>
               </tr>

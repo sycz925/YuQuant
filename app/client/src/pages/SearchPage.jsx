@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Input, Spin, Empty, Modal } from 'antd'
+import { Input, Spin, Empty } from 'antd'
 import { SearchOutlined, ArrowLeftOutlined, AppstoreOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { searchApi, marketReviewApi } from '../api'
+import { searchApi } from '../api'
 import StockAnalysis from './StockAnalysis'
 
 function SearchPage() {
@@ -10,25 +10,23 @@ function SearchPage() {
   const [searchParams] = useSearchParams()
   const [keyword, setKeyword] = useState('')
   const [searching, setSearching] = useState(false)
-  const [results, setResults] = useState({ stocks: [], sectors: [] })
+  const [results, setResults] = useState({ stocks: [], sectors: [], etfs: [] })
   const [selectedItem, setSelectedItem] = useState(null)
   const inputRef = useRef(null)
-  
-  // 板块详情 Modal 状态
-  const [sectorDetailVisible, setSectorDetailVisible] = useState(false)
-  const [sectorDetailLoading, setSectorDetailLoading] = useState(false)
-  const [sectorDetail, setSectorDetail] = useState(null)
 
   // 从URL参数恢复状态
   useEffect(() => {
     const code = searchParams.get('code')
     const sector = searchParams.get('sector')
+    const etf = searchParams.get('etf')
     const name = searchParams.get('name')
     const keywordParam = searchParams.get('keyword')
     if (code) {
       setSelectedItem({ type: 'stock', code, name: name || code })
     } else if (sector) {
       setSelectedItem({ type: 'sector', code: sector, name: name || sector })
+    } else if (etf) {
+      setSelectedItem({ type: 'etf', code: etf, name: name || etf })
     } else if (keywordParam) {
       // 如果有keyword参数，设置搜索关键词并触发搜索
       setKeyword(keywordParam)
@@ -82,39 +80,19 @@ function SearchPage() {
     setResults({ stocks: [], sectors: [] })
     setKeyword('')
     if (item.type === 'stock') {
-      navigate(`/search?code=${item.code}&name=${encodeURIComponent(item.name)}`, { replace: true })
+      navigate(`/search?code=${item.code}&name=${encodeURIComponent(item.name)}`)
+    } else if (item.type === 'sector') {
+      navigate(`/search?sector=${item.code}&name=${encodeURIComponent(item.name)}`)
     } else {
-      navigate(`/search?sector=${item.code}&name=${encodeURIComponent(item.name)}`, { replace: true })
+      navigate(`/search?etf=${item.code}&name=${encodeURIComponent(item.name)}`)
     }
   }
 
   const handleBack = () => {
-    navigate('/search', { replace: true })
-    setTimeout(() => inputRef.current?.focus(), 100)
+    navigate(-1)
   }
 
-  // 获取板块详情
-  const handleShowSectorDetail = async () => {
-    if (!selectedItem || selectedItem.type !== 'sector') return
-    
-    setSectorDetailVisible(true)
-    setSectorDetailLoading(true)
-    try {
-      const res = await marketReviewApi.getSectorDetail(selectedItem.code)
-      if (res?.success) {
-        setSectorDetail(res)
-      } else {
-        setSectorDetail(null)
-      }
-    } catch (e) {
-      console.error('获取板块详情失败:', e)
-      setSectorDetail(null)
-    } finally {
-      setSectorDetailLoading(false)
-    }
-  }
-
-  const hasResults = results.stocks.length > 0 || results.sectors.length > 0
+  const hasResults = results.stocks.length > 0 || results.sectors.length > 0 || results.etfs?.length > 0
 
   // 如果已选中某个股票/板块，显示选中状态和行情分析
   if (selectedItem) {
@@ -127,15 +105,17 @@ function SearchPage() {
               className="flex items-center text-gray-600 hover:text-blue-600 transition-colors"
             >
               <ArrowLeftOutlined className="mr-1" />
-              <span className="text-sm">返回搜索</span>
+              <span className="text-sm">返回</span>
             </button>
             <span className="text-gray-300">|</span>
             <span className={`text-xs px-2 py-0.5 rounded font-bold ${
               selectedItem.type === 'stock' 
                 ? 'bg-blue-100 text-blue-600' 
-                : 'bg-purple-100 text-purple-600'
+                : selectedItem.type === 'etf'
+                  ? 'bg-cyan-100 text-cyan-600'
+                  : 'bg-purple-100 text-purple-600'
             }`}>
-              {selectedItem.type === 'stock' ? '个股' : '板块'}
+              {selectedItem.type === 'stock' ? '个股' : selectedItem.type === 'etf' ? 'ETF' : '板块'}
             </span>
             <span className="text-sm font-medium text-gray-700">
               {selectedItem.name}
@@ -143,7 +123,7 @@ function SearchPage() {
             {/* 板块情况按钮 */}
             {selectedItem.type === 'sector' && (
               <button 
-                onClick={handleShowSectorDetail}
+                onClick={() => navigate(`/sector/${selectedItem.code}?name=${encodeURIComponent(selectedItem.name)}`)}
                 className="ml-auto flex items-center px-3 py-1.5 text-xs font-medium text-purple-600 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors"
               >
                 <AppstoreOutlined className="mr-1" />
@@ -158,86 +138,6 @@ function SearchPage() {
           initialCode={selectedItem.code} 
           initialType={selectedItem.type}
         />
-
-        {/* 板块详情 Modal */}
-        <Modal
-          title={`${selectedItem.name} - 先锋·中军·后排`}
-          open={sectorDetailVisible}
-          onCancel={() => setSectorDetailVisible(false)}
-          footer={null}
-          width={600}
-        >
-          {sectorDetailLoading ? (
-            <div className="p-8 text-center">
-              <Spin size="large" />
-              <p className="mt-4 text-sm text-gray-500">加载中...</p>
-            </div>
-          ) : sectorDetail ? (
-            <div className="space-y-4">
-              <div className="text-xs text-gray-400">
-                数据日期: {sectorDetail.trade_date}
-              </div>
-              
-              {/* 先锋 */}
-              <div>
-                <div className="flex items-center space-x-2 mb-2">
-                  <span className="text-sm font-bold text-amber-600">🔥 先锋</span>
-                  <span className="text-xs text-gray-400">50日涨幅最高的3只</span>
-                </div>
-                <div className="space-y-1">
-                  {(sectorDetail.pioneer || []).map((stock, idx) => (
-                    <div key={idx} className="px-3 py-2 bg-amber-50 rounded-lg text-sm text-amber-800">
-                      {stock}
-                    </div>
-                  ))}
-                  {(!sectorDetail.pioneer || sectorDetail.pioneer.length === 0) && (
-                    <div className="text-xs text-gray-400">暂无数据</div>
-                  )}
-                </div>
-              </div>
-
-              {/* 中军 */}
-              <div>
-                <div className="flex items-center space-x-2 mb-2">
-                  <span className="text-sm font-bold text-blue-600">🎯 中军</span>
-                  <span className="text-xs text-gray-400">流通市值Top10中50日涨幅最高</span>
-                </div>
-                <div className="space-y-1">
-                  {(sectorDetail.main_force || []).map((stock, idx) => (
-                    <div key={idx} className="px-3 py-2 bg-blue-50 rounded-lg text-sm text-blue-800">
-                      {stock}
-                    </div>
-                  ))}
-                  {(!sectorDetail.main_force || sectorDetail.main_force.length === 0) && (
-                    <div className="text-xs text-gray-400">暂无数据</div>
-                  )}
-                </div>
-              </div>
-
-              {/* 后排 */}
-              <div>
-                <div className="flex items-center space-x-2 mb-2">
-                  <span className="text-sm font-bold text-gray-600">📌 后排</span>
-                  <span className="text-xs text-gray-400">小市值中当天涨幅最高</span>
-                </div>
-                <div className="space-y-1">
-                  {(sectorDetail.followers || []).map((stock, idx) => (
-                    <div key={idx} className="px-3 py-2 bg-gray-50 rounded-lg text-sm text-gray-700">
-                      {stock}
-                    </div>
-                  ))}
-                  {(!sectorDetail.followers || sectorDetail.followers.length === 0) && (
-                    <div className="text-xs text-gray-400">暂无数据</div>
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="p-8 text-center text-gray-400">
-              暂无该板块数据
-            </div>
-          )}
-        </Modal>
       </div>
     )
   }
@@ -309,6 +209,31 @@ function SearchPage() {
                         <span className="text-[10px] px-2 py-1 rounded font-bold bg-purple-100 text-purple-600">板块</span>
                         <div>
                           <div className="text-sm font-medium text-gray-800">{item.name}</div>
+                        </div>
+                      </div>
+                      <span className="text-gray-400 text-sm">→</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {results.etfs?.length > 0 && (
+              <div>
+                <div className="px-4 py-2 bg-gray-50 text-xs font-bold text-gray-500 uppercase">
+                  ETF ({results.etfs.length})
+                </div>
+                <div className="divide-y divide-gray-100">
+                  {results.etfs.map((item, index) => (
+                    <div
+                      key={`etf-${index}`}
+                      className="px-4 py-3 hover:bg-cyan-50 cursor-pointer flex items-center justify-between transition-colors"
+                      onClick={() => handleSelect({ type: 'etf', code: item.code, name: item.name })}
+                    >
+                      <div className="flex items-center space-x-3">
+                        <span className="text-[10px] px-2 py-1 rounded font-bold bg-cyan-100 text-cyan-600">ETF</span>
+                        <div>
+                          <div className="text-sm font-medium text-gray-800">{item.name}</div>
+                          <div className="text-xs text-gray-500">{item.code}</div>
                         </div>
                       </div>
                       <span className="text-gray-400 text-sm">→</span>

@@ -7,7 +7,7 @@ import {
   LeftOutlined,
   RightOutlined
 } from '@ant-design/icons'
-import { stockApi, factorApi } from '../api'
+import { stockApi, factorApi, etfApi } from '../api'
 import TradingViewChart from '../components/TradingViewChart'
 
 const { Title, Text } = Typography
@@ -29,7 +29,9 @@ const debounce = (fn, delay) => {
 }
 
 function StockAnalysis({ initialCode, initialType }) {
-  const [marketType, setMarketType] = useState(initialType === 'sector' ? 'sector' : 'stock')
+  const [marketType, setMarketType] = useState(
+    initialType === 'sector' ? 'sector' : initialType === 'etf' ? 'etf' : 'stock'
+  )
   const [selectedCode, setSelectedCode] = useState(initialCode || '688279')
   const [allData, setAllData] = useState([]) // 全部数据
   const [loading, setLoading] = useState(false)
@@ -308,6 +310,8 @@ function StockAnalysis({ initialCode, initialType }) {
             }
           })
         }
+      } else if (marketType === 'etf') {
+        dailyRes = await etfApi.getDailyData(selectedCode, undefined, undefined, 200)
       } else {
         // 板块：日线已包含 RPS 数据
         dailyRes = await factorApi.getSectorDaily(selectedCode, undefined, undefined, 200)
@@ -323,7 +327,6 @@ function StockAnalysis({ initialCode, initialType }) {
             low: item.low,
             close: item.close,
             volume: item.volume,
-            // 均线字段（从数据库读取）
             ma10: item.ma10,
             ma20: item.ma20,
             ma50: item.ma50,
@@ -338,8 +341,29 @@ function StockAnalysis({ initialCode, initialType }) {
             rps_120: rps.rps_120,
             rps_250: rps.rps_250
           }
+        } else if (marketType === 'etf') {
+          return {
+            date: item.trade_date,
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close,
+            volume: item.volume,
+            ma10: item.ma10,
+            ma20: item.ma20,
+            ma50: item.ma50,
+            ma120: item.ma120,
+            vol_ma5: item.vol_ma5,
+            vol_ma10: item.vol_ma10,
+            vol_ma20: item.vol_ma20,
+            vol_ma50: item.vol_ma50,
+            rps_10: item.rps_10,
+            rps_20: item.rps_20,
+            rps_50: item.rps_50,
+            rps_120: item.rps_120,
+            rps_250: item.rps_250,
+          }
         } else {
-          // 板块：RPS 已在数据中
           return {
             date: item.trade_date,
             open: item.open,
@@ -408,6 +432,8 @@ function StockAnalysis({ initialCode, initialType }) {
             }
           })
         }
+      } else if (marketType === 'etf') {
+        dailyRes = await etfApi.getDailyData(selectedCode, startDate, earliestDate, 200)
       } else {
         // 板块：日线已包含 RPS 数据
         dailyRes = await factorApi.getSectorDaily(selectedCode, startDate, earliestDate, 200)
@@ -423,7 +449,6 @@ function StockAnalysis({ initialCode, initialType }) {
             low: item.low,
             close: item.close,
             volume: item.volume,
-            // 均线字段（从数据库读取）
             ma10: item.ma10,
             ma20: item.ma20,
             ma50: item.ma50,
@@ -437,6 +462,28 @@ function StockAnalysis({ initialCode, initialType }) {
             rps_50: rps.rps_50,
             rps_120: rps.rps_120,
             rps_250: rps.rps_250
+          }
+        } else if (marketType === 'etf') {
+          return {
+            date: item.trade_date,
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close,
+            volume: item.volume,
+            ma10: item.ma10,
+            ma20: item.ma20,
+            ma50: item.ma50,
+            ma120: item.ma120,
+            vol_ma5: item.vol_ma5,
+            vol_ma10: item.vol_ma10,
+            vol_ma20: item.vol_ma20,
+            vol_ma50: item.vol_ma50,
+            rps_10: item.rps_10,
+            rps_20: item.rps_20,
+            rps_50: item.rps_50,
+            rps_120: item.rps_120,
+            rps_250: item.rps_250,
           }
         } else {
           // 板块：RPS 已在数据中

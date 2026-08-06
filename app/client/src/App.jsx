@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
-import { Button, message, Tag, Tooltip, notification } from 'antd'
-import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined } from '@ant-design/icons'
+import { Button, Tag, Tooltip, notification } from 'antd'
+import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined, FundOutlined, AlertOutlined, StarOutlined } from '@ant-design/icons'
 import CalendarReview from './pages/CalendarReview'
 import ReviewDetail from './pages/ReviewDetail'
 import StockAnalysis from './pages/StockAnalysis'
@@ -10,16 +10,19 @@ import TestIndexChart from './pages/TestIndexChart'
 import Settings from './pages/Settings'
 import MarketAnalysis from './pages/MarketAnalysis'
 import MarketMonitor from './pages/MarketMonitor'
+import ETFPage from './pages/ETFPage'
+import ETFAlertPage from './pages/ETFAlertPage'
+import WatchlistPage from './pages/WatchlistPage'
+import SectorDetail from './pages/SectorDetail'
 import ErrorBoundary from './components/ErrorBoundary'
-import { healthApi, oneClickUpdateApi, taskApi } from './api'
+import { healthApi, oneClickUpdateApi, alertApi } from './api'
+import useOneClickUpdate from './hooks/useOneClickUpdate'
 
 function App() {
   const location = useLocation()
   const navigate = useNavigate()
   const [isHealthy, setIsHealthy] = useState(false)
 
-  // 一键更新状态
-  const [oneClickRunning, setOneClickRunning] = useState(false)
   const [latestTradeDate, setLatestTradeDate] = useState(null)
 
   // 从后端检查是否允许同步
@@ -61,115 +64,40 @@ function App() {
     }
   }
 
-  // 一键更新：使用统一任务接口 + notification显示进度
-  const handleOneClickUpdate = async () => {
-    if (oneClickRunning) return
-    
-    // 启动更新
-    try {
-      const res = await oneClickUpdateApi.start()
-      if (!res?.success) {
-        message.warning(res?.message || '无法启动更新')
-        return
-      }
-      
-      setOneClickRunning(true)
-      
-      // 如果任务已在运行，直接显示当前进度
-      const key = 'update-progress'
-      if (res.already_running) {
-        // 使用统一任务查询获取当前状态
-        const taskStatus = await taskApi.getTaskStatus(res.task_id)
-        const stepText = taskStatus.total_count > 0 ? `[${taskStatus.completed_count}/${taskStatus.total_count}]` : ''
-        notification.info({
-          message: '更新任务正在进行中',
-          description: `${stepText} ${taskStatus.current_stock_name || '处理中...'}`,
-          duration: 0,
-          key,
-          closable: false,
-        })
-      } else {
-        // 显示开始通知
-        notification.info({
-          message: '一键更新已启动',
-          description: '正在准备...',
-          duration: 0,
-          key,
-          closable: false,
-        })
-      }
+  const { isRunning: oneClickRunning, start: handleOneClickUpdate } = useOneClickUpdate({
+    onComplete: () => checkHealth()
+  })
 
-      // 轮询进度
-      const pollInterval = setInterval(async () => {
-        try {
-          const status = await taskApi.getTaskStatus(res.task_id)
+  // ---- ETF预警轮询 ----
+  const [lastAlertCheck, setLastAlertCheck] = useState(null)
+  const unreadCountRef = useRef(0)
 
-          if (status.status === 'failed') {
-            notification.error({
-              message: '更新失败',
-              description: status.message || '未知错误',
-              duration: 0,
-              key,
-              closable: true,
-            })
-            clearInterval(pollInterval)
-            setOneClickRunning(false)
-            return
-          }
-
-          if (status.status === 'completed') {
-            notification.success({
-              message: '一键更新完成',
-              description: '数据已同步，RPS/PE已计算，基础数据已更新，请手动刷新页面',
-              duration: 0,
-              key,
-              closable: true,
-            })
-            clearInterval(pollInterval)
-            setOneClickRunning(false)
-            checkHealth()
-            return
-          }
-
-          if (status.status !== 'running') {
-            clearInterval(pollInterval)
-            setOneClickRunning(false)
-            return
-          }
-
-          // 更新进度通知（进行中不显示关闭按钮）
-          // 从 steps 数组计算进度
-          const steps2 = status.steps || []
-          const totalSteps2 = steps2.length
-          const completedSteps2 = steps2.filter(s => s.status === 'completed').length
-          const stepText2 = totalSteps2 > 0 ? `[${completedSteps2}/${totalSteps2}]` : ''
-          const currentStep2 = steps2[status.current_step]
-          const stepName2 = currentStep2 ? currentStep2.name : '处理中...'
-          
-          // 显示当前步骤的详细进度
-          const stepCompleted = currentStep2?.completed_count || 0
-          const stepTotal = currentStep2?.total_count || 0
-          const stepDetail = stepTotal > 0 ? ` [${stepCompleted}/${stepTotal}]` : ''
-          
-          notification.info({
-            message: `一键更新 ${stepText2}`,
-            description: `${stepName2}${stepDetail}`,
-            duration: 0,
-            key,
-            closable: false,
+  useEffect(() => {
+    const checkAlerts = async () => {
+      try {
+        const params = {}
+        if (lastAlertCheck) params.since = lastAlertCheck
+        const res = await alertApi.getRecent(params)
+        const items = res || []
+        if (items.length > 0) {
+          unreadCountRef.current += items.length
+          const recent = items.slice(0, 3)
+          const desc = recent.map(r => r.reason).join('\n')
+          const more = items.length > 3 ? `\n...还有${items.length - 3}条` : ''
+          notification.warning({
+            message: `ETF下轨击穿预警 (${items.length}条)`,
+            description: desc + more,
+            duration: 8,
+            onClick: () => { navigate('/etf/alerts'); notification.destroy() },
+            style: { cursor: 'pointer' },
           })
-          
-        } catch (e) {
-          console.error('轮询进度失败:', e)
         }
-      }, 3000)
-      
-    } catch (e) {
-      console.error('启动更新失败:', e)
-      message.error('启动更新失败')
-      setOneClickRunning(false)
+        setLastAlertCheck(new Date().toISOString())
+      } catch (e) { /* 静默 */ }
     }
-  }
+    const timer = setInterval(checkAlerts, 30000)
+    return () => clearInterval(timer)
+  }, [lastAlertCheck])
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -177,11 +105,19 @@ function App() {
       <nav className="fixed top-0 left-0 right-0 bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg z-50">
         <div className="max-w-7xl mx-auto px-3 md:px-4">
           <div className="flex items-center justify-between h-12 sm:h-14 md:h-16">
-            {/* 左侧：Logo */}
+            {/* 左侧：Logo + 导航 */}
             <div className="flex items-center space-x-2">
               <Link to="/" className="flex items-center space-x-1.5 sm:space-x-2 hover:opacity-80 transition-opacity">
                 <span className="text-lg sm:text-xl md:text-2xl">📊</span>
                 <span className="text-base sm:text-lg md:text-xl font-bold">A股量化</span>
+              </Link>
+              <Link to="/etf" className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs sm:text-sm text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1">
+                <FundOutlined />
+                <span>ETF</span>
+              </Link>
+              <Link to="/watchlist" className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs sm:text-sm text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1">
+                <StarOutlined />
+                <span>关注</span>
               </Link>
             </div>
 
@@ -253,6 +189,10 @@ function App() {
             <Route path="/market-monitor" element={<MarketMonitor />} />
             <Route path="/market-analysis" element={<MarketAnalysis />} />
             <Route path="/test-index" element={<TestIndexChart />} />
+            <Route path="/etf" element={<ETFPage />} />
+            <Route path="/etf/alerts" element={<ETFAlertPage />} />
+            <Route path="/watchlist" element={<WatchlistPage />} />
+            <Route path="/sector/:code" element={<SectorDetail />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </ErrorBoundary>

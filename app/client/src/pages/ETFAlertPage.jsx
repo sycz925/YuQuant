@@ -1,0 +1,163 @@
+import React, { useState, useEffect, useCallback } from 'react'
+import { Table, DatePicker, Space, Tag, message, Card, Button } from 'antd'
+import { AlertOutlined, ArrowLeftOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
+import { alertApi } from '../api'
+import dayjs from 'dayjs'
+
+const { RangePicker } = DatePicker
+
+function ETFAlertPage() {
+  const navigate = useNavigate()
+  const [data, setData] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [dateRange, setDateRange] = useState([null, null])
+
+  const fetchData = useCallback(async (p = 1) => {
+    setLoading(true)
+    try {
+      const params = { page: p, page_size: 50 }
+      if (dateRange[0]) params.start_date = dateRange[0].format('YYYYMMDD')
+      if (dateRange[1]) params.end_date = dateRange[1].format('YYYYMMDD')
+      const res = await alertApi.getAlerts(params)
+      setData(res.items || [])
+      setTotal(res.total || 0)
+    } catch (e) {
+      message.error('获取预警记录失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [dateRange])
+
+  useEffect(() => { fetchData(page) }, [fetchData, page])
+
+  const onDateChange = useCallback((dates) => {
+    setDateRange(dates || [null, null])
+    setPage(1)
+  }, [])
+
+  const columns = [
+    {
+      title: '代码',
+      dataIndex: 'code',
+      key: 'code',
+      width: 100,
+      render: (v) => <span className="font-mono text-gray-500">{v}</span>
+    },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+      width: 200,
+      render: (v, record) => (
+        <span
+          className="font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
+          onClick={() => navigate(`/search?etf=${record.code}&name=${encodeURIComponent(v)}`)}
+        >
+          {v}
+        </span>
+      )
+    },
+    {
+      title: '日期',
+      dataIndex: 'trade_date',
+      key: 'trade_date',
+      width: 110,
+      render: (v) => <span className="font-mono">{v}</span>
+    },
+    {
+      title: '收盘价(复权)',
+      dataIndex: 'close',
+      key: 'close',
+      width: 120,
+      render: (v, r) => (
+        <span className="font-mono">
+          {v?.toFixed(3)}
+          {r.close_raw && Math.abs(v / r.close_raw - 1) > 0.01 &&
+            <span className="text-gray-400 text-xs ml-1">({r.close_raw.toFixed(3)})</span>
+          }
+        </span>
+      )
+    },
+    {
+      title: '成交额',
+      dataIndex: 'amount',
+      key: 'amount',
+      width: 110,
+      render: (v) => v != null && v > 0
+        ? <span className="font-mono">{(v / 1e8).toFixed(2)}亿</span>
+        : '-'
+    },
+    {
+      title: 'ENE中轨(MA10)',
+      dataIndex: 'ene_ma',
+      key: 'ene_ma',
+      width: 130,
+      render: (v) => <span className="font-mono">{v?.toFixed(3)}</span>
+    },
+    {
+      title: 'ENE下轨',
+      dataIndex: 'ene_lower',
+      key: 'ene_lower',
+      width: 100,
+      render: (v) => <span className="font-mono text-green-600">{v?.toFixed(3)}</span>
+    },
+    {
+      title: '原因',
+      dataIndex: 'reason',
+      key: 'reason',
+      render: (v) => (
+        <Tag color="red" className="text-xs whitespace-normal break-all">
+          <AlertOutlined className="mr-1" />{v}
+        </Tag>
+      )
+    },
+    {
+      title: '触发时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 170,
+      render: (v) => {
+        if (!v) return '-'
+        const d = new Date(v + 'Z')
+        return <span className="font-mono text-xs">{d.toLocaleString('zh-CN')}</span>
+      }
+    },
+  ]
+
+  return (
+    <div>
+      <Card title={<span><AlertOutlined className="mr-2 text-red-500" />ETF ENE下轨击穿预警</span>}
+        extra={<Space><Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button><Tag color="blue">共 {total} 条</Tag></Space>}
+        className="bg-white rounded-lg shadow-sm">
+        <div className="mb-4">
+          <Space>
+            <RangePicker
+              onChange={onDateChange}
+              allowClear
+              placeholder={['开始日期', '结束日期']}
+            />
+          </Space>
+        </div>
+        <Table
+          dataSource={data}
+          columns={columns}
+          rowKey={(r) => `${r.code}_${r.trade_date}`}
+          loading={loading}
+          pagination={{
+            current: page,
+            pageSize: 50,
+            total,
+            onChange: setPage,
+            showTotal: (t) => `共 ${t} 条`,
+          }}
+          size="small"
+        />
+      </Card>
+    </div>
+  )
+}
+
+export default ETFAlertPage

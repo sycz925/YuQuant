@@ -1,11 +1,15 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { message, Modal, notification, DatePicker, ConfigProvider } from 'antd'
+import { message, notification, DatePicker, ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import 'dayjs/locale/zh-cn'
 import { toPng } from 'html-to-image'
 import dayjs from 'dayjs'
 import { calendarApi, taskApi } from '../api'
+import { useTaskPolling } from '../hooks/useTaskPolling'
+import InputDataModal from '../components/calendar/InputDataModal'
+import WeeklySummaryModal from '../components/calendar/WeeklySummaryModal'
+import MonthlySummaryModal from '../components/calendar/MonthlySummaryModal'
 
 // 设置 dayjs 中文 locale
 dayjs.locale('zh-cn')
@@ -34,22 +38,6 @@ const DESIGN = {
 // 星期标题（只显示工作日）
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五']
 
-// 渲染加粗文本（与每日AI分析一致的样式）
-const renderBoldText = (text) => {
-  if (!text) return null
-  const parts = text.split(/\*\*(.*?)\*\*/g)
-  return parts.map((part, i) => {
-    if (i % 2 === 1) {
-      return (
-        <span key={i} className="text-amber-500 font-bold bg-amber-50 px-1 py-0.5 rounded mx-0.5">
-          {part}
-        </span>
-      )
-    }
-    return part
-  })
-}
-
 function CalendarReview({ latestTradeDate }) {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
@@ -74,8 +62,106 @@ function CalendarReview({ latestTradeDate }) {
   const [monthlyScreenshotLoading, setMonthlyScreenshotLoading] = useState(false)
   // 月度重算状态
   const [monthlyRecalcRunning, setMonthlyRecalcRunning] = useState(false)
+  const [monthlyRecalcTaskId, setMonthlyRecalcTaskId] = useState(null)
+  const recalcMetaRef = useRef({ year: null, month: null })
   // AI分析补全状态
   const [monthlyAiRunning, setMonthlyAiRunning] = useState(false)
+  const [monthlyAiFillTaskId, setMonthlyAiFillTaskId] = useState(null)
+  const aiFillMetaRef = useRef({ year: null, month: null })
+
+  const handleRecalcProgress = useCallback((status) => {
+    const steps = status.steps || []
+    const totalSteps = steps.length
+    const currentStep = steps[status.current_step]
+    const stepDesc = currentStep ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})` : status.current_stock_name || '处理中...'
+    notification.info({
+      message: `${status.name || '月度重算'}(${status.current_step || 0}/${totalSteps})`,
+      description: stepDesc,
+      duration: 0,
+      key: `monthly-recalc-${recalcMetaRef.current.year}-${recalcMetaRef.current.month}`,
+      closable: false,
+    })
+  }, [])
+
+  const handleRecalcComplete = useCallback((status) => {
+    const { year, month } = recalcMetaRef.current
+    notification.success({
+      message: `${status.name || '月度重算'}完成`,
+      description: status.current_stock_name || '完成',
+      duration: 0,
+      key: `monthly-recalc-${year}-${month}`,
+      closable: true,
+    })
+    setMonthlyRecalcRunning(false)
+    setMonthlyRecalcTaskId(null)
+    loadCalendarData(year, month)
+  }, [])
+
+  const handleRecalcFailed = useCallback((status) => {
+    notification.error({
+      message: `${status.name || '月度重算'}失败`,
+      description: status.error || '未知错误',
+      duration: 0,
+      key: `monthly-recalc-${recalcMetaRef.current.year}-${recalcMetaRef.current.month}`,
+      closable: true,
+    })
+    setMonthlyRecalcRunning(false)
+    setMonthlyRecalcTaskId(null)
+  }, [])
+
+  useTaskPolling(monthlyRecalcTaskId, {
+    interval: 3000,
+    onProgress: handleRecalcProgress,
+    onComplete: handleRecalcComplete,
+    onFailed: handleRecalcFailed,
+  })
+
+  const handleAiFillProgress = useCallback((status) => {
+    const steps = status.steps || []
+    const totalSteps = steps.length
+    const currentStep = steps[status.current_step]
+    const stepDesc = currentStep ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})` : status.current_stock_name || '处理中...'
+    notification.info({
+      message: `${status.name || 'AI分析补全'}(${status.current_step || 0}/${totalSteps})`,
+      description: stepDesc,
+      duration: 0,
+      key: `monthly-ai-${aiFillMetaRef.current.year}-${aiFillMetaRef.current.month}`,
+      closable: false,
+    })
+  }, [])
+
+  const handleAiFillComplete = useCallback((status) => {
+    const { year, month } = aiFillMetaRef.current
+    notification.success({
+      message: `${status.name || 'AI分析补全'}完成`,
+      description: status.current_stock_name || '完成',
+      duration: 0,
+      key: `monthly-ai-${year}-${month}`,
+      closable: true,
+    })
+    setMonthlyAiRunning(false)
+    setMonthlyAiFillTaskId(null)
+    loadCalendarData(year, month)
+  }, [])
+
+  const handleAiFillFailed = useCallback((status) => {
+    notification.error({
+      message: `${status.name || 'AI分析补全'}失败`,
+      description: status.error || '未知错误',
+      duration: 0,
+      key: `monthly-ai-${aiFillMetaRef.current.year}-${aiFillMetaRef.current.month}`,
+      closable: true,
+    })
+    setMonthlyAiRunning(false)
+    setMonthlyAiFillTaskId(null)
+  }, [])
+
+  useTaskPolling(monthlyAiFillTaskId, {
+    interval: 5000,
+    onProgress: handleAiFillProgress,
+    onComplete: handleAiFillComplete,
+    onFailed: handleAiFillFailed,
+  })
 
   useEffect(() => {
     const y = currentDate.year()
@@ -211,7 +297,7 @@ function CalendarReview({ latestTradeDate }) {
       }
       const poll = async () => {
         try {
-          const task = await calendarApi.getMonthlyTask(taskId)
+          const task = await taskApi.getTaskStatus(taskId)
           if (task?.status === 'completed') {
             // 任务完成，读取缓存
             const cached = await calendarApi.getMonthlyCached(y, m)
@@ -238,19 +324,58 @@ function CalendarReview({ latestTradeDate }) {
     }
   }
 
-  const handleScreenshot = async (ref, setLoading, filename) => {
+  const handleScreenshot = async (ref, setLoading, filename, onClose) => {
     if (!ref.current) {
       message.warning('未找到截图区域')
       return
     }
     setLoading(true)
     try {
-      const imageData = await toPng(ref.current, {
+      const target = ref.current
+
+      // 保存所有需要修改的元素的原始样式
+      const styleStack = []
+      const collectStyles = (el) => {
+        const s = el.style
+        styleStack.push({
+          el,
+          overflow: s.overflow,
+          overflowY: s.overflowY,
+          maxHeight: s.maxHeight,
+          height: s.height,
+        })
+      }
+
+      // 向上收集 ant-modal-body / ant-modal-wrap 的样式
+      let cur = target.parentElement
+      while (cur && !cur.classList.contains('ant-modal-root')) {
+        if (cur.classList.contains('ant-modal-body') || cur.classList.contains('ant-modal-wrap')) {
+          collectStyles(cur)
+        }
+        cur = cur.parentElement
+      }
+
+      // 展开所有滚动容器
+      styleStack.forEach(({ el }) => {
+        el.style.overflow = 'visible'
+        el.style.overflowY = 'visible'
+        el.style.maxHeight = 'none'
+        el.style.height = 'auto'
+      })
+
+      const imageData = await toPng(target, {
         pixelRatio: 2,
         backgroundColor: '#ffffff',
-        skipAutoScale: true,
-        style: { overflow: 'visible' },
       })
+
+      // 还原所有样式
+      styleStack.forEach(({ el, overflow, overflowY, maxHeight, height }) => {
+        el.style.overflow = overflow
+        el.style.overflowY = overflowY
+        el.style.maxHeight = maxHeight
+        el.style.height = height
+      })
+
       const res = await fetch('/api/screenshot/compress', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -266,6 +391,7 @@ function CalendarReview({ latestTradeDate }) {
       link.click()
       URL.revokeObjectURL(url)
       message.success(`截图已保存 (${sizeKB}KB)`)
+      if (onClose) onClose()
     } catch (err) {
       console.error('截图失败:', err)
       message.error('截图失败，请重试')
@@ -315,7 +441,7 @@ function CalendarReview({ latestTradeDate }) {
       }
       const poll = async () => {
         try {
-          const task = await calendarApi.getWeeklyTask(taskId)
+          const task = await taskApi.getTaskStatus(taskId)
           if (task?.status === 'completed') {
             // 任务完成，读取缓存
             const cached = await calendarApi.getWeeklyCached(y, m, weeklyMeta.week_index)
@@ -443,12 +569,13 @@ function CalendarReview({ latestTradeDate }) {
       }
 
       setMonthlyRecalcRunning(true)
+      recalcMetaRef.current = { year, month }
 
       const key = `monthly-recalc-${year}-${month}`
       if (res.already_running) {
         notification.info({
           message: '月度重算任务正在进行中',
-          description: `正在处理中...`,
+          description: '正在处理中...',
           duration: 0,
           key,
           closable: false,
@@ -463,57 +590,7 @@ function CalendarReview({ latestTradeDate }) {
         })
       }
 
-      // 轮询进度
-      const pollInterval = setInterval(async () => {
-        try {
-          const status = await calendarApi.getTaskStatus(res.task_id)
-
-          if (status.error) {
-            notification.error({
-              message: '月度重算失败',
-              description: status.error,
-              duration: 0,
-              key,
-              closable: true,
-            })
-            clearInterval(pollInterval)
-            setMonthlyRecalcRunning(false)
-            return
-          }
-
-          if (status.status === 'completed') {
-            notification.success({
-              message: `${year}-${String(month).padStart(2, '0')} 月度重算完成`,
-              description: status.current_stock_name || '完成',
-              duration: 0,
-              key,
-              closable: true,
-            })
-            clearInterval(pollInterval)
-            setMonthlyRecalcRunning(false)
-            loadCalendarData(year, month)
-            return
-          }
-
-          if (status.status === 'completed' || status.status === 'failed') {
-            clearInterval(pollInterval)
-            setMonthlyRecalcRunning(false)
-            return
-          }
-
-          const stepText = status.total_count > 0 ? `[${status.completed_count}/${status.total_count}]` : ''
-          notification.info({
-            message: `月度重算 ${stepText}`,
-            description: status.current_stock_name || '处理中...',
-            duration: 0,
-            key,
-            closable: false,
-          })
-
-        } catch (e) {
-          console.error('轮询月度重算进度失败:', e)
-        }
-      }, 3000)
+      setMonthlyRecalcTaskId(res.task_id)
 
     } catch (e) {
       console.error('启动月度重算失败:', e)
@@ -537,12 +614,13 @@ function CalendarReview({ latestTradeDate }) {
       }
 
       setMonthlyAiRunning(true)
+      aiFillMetaRef.current = { year, month }
 
       const key = `monthly-ai-${year}-${month}`
       if (res.already_running) {
         notification.info({
           message: 'AI分析补全任务正在进行中',
-          description: `正在处理中...`,
+          description: '正在处理中...',
           duration: 0,
           key,
           closable: false,
@@ -557,57 +635,7 @@ function CalendarReview({ latestTradeDate }) {
         })
       }
 
-      // 轮询进度
-      const pollInterval = setInterval(async () => {
-        try {
-          const status = await calendarApi.getTaskStatus(res.task_id)
-
-          if (status.error) {
-            notification.error({
-              message: 'AI分析补全失败',
-              description: status.error,
-              duration: 0,
-              key,
-              closable: true,
-            })
-            clearInterval(pollInterval)
-            setMonthlyAiRunning(false)
-            return
-          }
-
-          if (status.status === 'completed') {
-            notification.success({
-              message: `${year}-${String(month).padStart(2, '0')} AI分析补全完成`,
-              description: status.current_stock_name || '完成',
-              duration: 0,
-              key,
-              closable: true,
-            })
-            clearInterval(pollInterval)
-            setMonthlyAiRunning(false)
-            loadCalendarData(year, month)
-            return
-          }
-
-          if (status.status === 'completed' || status.status === 'failed') {
-            clearInterval(pollInterval)
-            setMonthlyAiRunning(false)
-            return
-          }
-
-          const stepText = status.total_count > 0 ? `[${status.completed_count}/${status.total_count}]` : ''
-          notification.info({
-            message: `AI分析补全 ${stepText}`,
-            description: status.current_stock_name || '处理中...',
-            duration: 0,
-            key,
-            closable: false,
-          })
-
-        } catch (e) {
-          console.error('轮询AI分析补全进度失败:', e)
-        }
-      }, 5000)
+      setMonthlyAiFillTaskId(res.task_id)
 
     } catch (e) {
       console.error('启动AI分析补全失败:', e)
@@ -1055,273 +1083,45 @@ function CalendarReview({ latestTradeDate }) {
         </div>
       )}
 
-      {/* 周总结对话框 */}
-      <Modal
-        title={
-          <div className="flex items-center gap-2">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Z"/>
-              <path d="M12 6v6l4 2"/>
-            </svg>
-            <span style={{fontFamily: 'Fira Sans', fontWeight: 600}}>
-              {weeklyMeta ? `第${weeklyMeta.week_index}周 AI 总结` : '周总结'}
-            </span>
-          </div>
-        }
-        open={weeklyModalVisible}
-        onCancel={() => setWeeklyModalVisible(false)}
-        footer={null}
-        width={680}
-        styles={{body: {maxHeight: '60vh', overflowY: 'auto', padding: '16px 24px'}}}
-      >
-        {weeklyMeta && (
-          <div className="mb-3 text-[11px]" style={{color: '#64748b', fontFamily: 'Fira Code'}}>
-            {weeklyMeta.dates.map(d => `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)}`).join(' → ')}
-          </div>
-        )}
+      <WeeklySummaryModal
+        visible={weeklyModalVisible}
+        onClose={() => setWeeklyModalVisible(false)}
+        weeklyMeta={weeklyMeta}
+        weeklySummary={weeklySummary}
+        weeklyLoading={weeklyLoading}
+        weeklyScreenshotRef={weeklyScreenshotRef}
+        weeklyScreenshotLoading={weeklyScreenshotLoading}
+        onGenerate={handleGenerateWeekly}
+        onViewInput={handleViewInputData}
+        onScreenshot={() => handleScreenshot(weeklyScreenshotRef, setWeeklyScreenshotLoading, `周总结_${currentDate.format('YYYYMM')}_第${weeklyMeta?.week_index}周.jpg`, () => setWeeklyModalVisible(false))}
+      />
 
-        {/* 生成按钮 - 未生成时显示 */}
-        {!weeklySummary && !weeklyLoading && (
-          <div className="flex flex-col items-center justify-center py-8">
-            <button
-              onClick={handleGenerateWeekly}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all active:scale-95"
-              style={{
-                background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-                color: 'white',
-                boxShadow: '0 2px 8px rgba(99, 102, 241, 0.3)',
-                fontFamily: 'Fira Sans',
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Z"/>
-                <path d="M12 8v8M8 12h8"/>
-              </svg>
-              生成周总结
-            </button>
-            <span className="text-[11px] mt-2" style={{color: '#94a3b8', fontFamily: 'Fira Sans'}}>
-              将本周每日AI分析数据发送至 DeepSeek 生成周度报告
-            </span>
-            <button
-              onClick={handleViewInputData}
-              className="mt-3 text-[11px] px-3 py-1 rounded border transition-all active:bg-gray-100"
-              style={{borderColor: DESIGN.colors.border, color: '#64748b', fontFamily: 'Fira Sans', fontWeight: 600}}
-            >
-              查看输入数据
-            </button>
-          </div>
-        )}
+      <InputDataModal
+        visible={weeklyInputVisible}
+        onClose={() => setWeeklyInputVisible(false)}
+        title="DeepSeek 输入数据"
+        data={weeklyInputData}
+      />
 
-        {/* 加载中 */}
-        {weeklyLoading && (
-          <div className="flex flex-col items-center justify-center py-10">
-            <div className="animate-spin w-8 h-8 border-2 border-t-transparent rounded-full mb-3" style={{borderColor: '#c7d2fe', borderTopColor: '#6366f1'}}></div>
-            <span className="text-xs" style={{color: '#94a3b8', fontFamily: 'Fira Sans'}}>DeepSeek 正在分析本周数据...</span>
-          </div>
-        )}
+      <MonthlySummaryModal
+        visible={monthlyModalVisible}
+        onClose={() => setMonthlyModalVisible(false)}
+        monthLabel={currentDate.format('YYYY年MM月')}
+        monthlySummary={monthlySummary}
+        monthlyLoading={monthlyLoading}
+        monthlyScreenshotRef={monthlyScreenshotRef}
+        monthlyScreenshotLoading={monthlyScreenshotLoading}
+        onGenerate={handleGenerateMonthly}
+        onViewInput={handleViewMonthlyInput}
+        onScreenshot={() => handleScreenshot(monthlyScreenshotRef, setMonthlyScreenshotLoading, `月总结_${currentDate.format('YYYYMM')}.jpg`, () => setMonthlyModalVisible(false))}
+      />
 
-        {/* 生成结果 */}
-        {weeklySummary && !weeklyLoading && (
-          <div>
-            <div ref={weeklyScreenshotRef} className="p-3 rounded-lg" style={{background: '#fafbfc'}}>
-              <div className="text-[11px] mb-2 font-semibold" style={{color: '#6366f1', fontFamily: 'Fira Sans'}}>
-                {weeklyMeta ? `第${weeklyMeta.week_index}周 AI 总结` : ''}
-              </div>
-              <div
-                className="text-[13px] leading-relaxed"
-                style={{color: DESIGN.colors.foreground, fontFamily: 'Fira Sans', whiteSpace: 'pre-wrap'}}
-              >
-                {renderBoldText(weeklySummary)}
-              </div>
-            </div>
-            <div className="mt-4 pt-3 flex items-center gap-2" style={{borderTop: `1px solid ${DESIGN.colors.border}`}}>
-              <button
-                onClick={handleViewInputData}
-                className="text-[11px] px-3 py-1 rounded border transition-all active:bg-gray-100"
-                style={{borderColor: DESIGN.colors.border, color: '#64748b', fontFamily: 'Fira Sans', fontWeight: 600}}
-              >
-                查看输入数据
-              </button>
-              <button
-                onClick={() => handleScreenshot(weeklyScreenshotRef, setWeeklyScreenshotLoading, `周总结_${currentDate.format('YYYYMM')}_第${weeklyMeta?.week_index}周.jpg`)}
-                disabled={weeklyScreenshotLoading}
-                className="text-[11px] px-3 py-1 rounded border transition-all active:bg-gray-100"
-                style={{
-                  borderColor: '#c7d2fe',
-                  color: weeklyScreenshotLoading ? '#9ca3af' : '#6366f1',
-                  fontFamily: 'Fira Sans',
-                  fontWeight: 600,
-                  cursor: weeklyScreenshotLoading ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {weeklyScreenshotLoading ? '截图中...' : '截图'}
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      {/* 输入数据查看对话框 */}
-      <Modal
-        title={
-          <div className="flex items-center gap-2">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/>
-              <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
-            </svg>
-            <span style={{fontFamily: 'Fira Sans', fontWeight: 600}}>
-              DeepSeek 输入数据
-            </span>
-          </div>
-        }
-        open={weeklyInputVisible}
-        onCancel={() => setWeeklyInputVisible(false)}
-        footer={null}
-        width={680}
-        styles={{body: {maxHeight: '65vh', overflowY: 'auto', padding: '16px 24px'}}}
-      >
-        {weeklyInputData ? (
-          <pre className="text-[12px] leading-relaxed whitespace-pre-wrap" style={{color: DESIGN.colors.foreground, fontFamily: 'Fira Code', background: '#f8fafc', padding: '12px', borderRadius: '8px', border: `1px solid ${DESIGN.colors.border}`}}>
-            {weeklyInputData}
-          </pre>
-        ) : (
-          <div className="flex items-center justify-center py-8">
-            <span className="text-xs" style={{color: '#94a3b8'}}>加载中...</span>
-          </div>
-        )}
-      </Modal>
-
-      {/* 月总结对话框 */}
-      <Modal
-        title={
-          <div className="flex items-center gap-2">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-              <line x1="16" y1="2" x2="16" y2="6"/>
-              <line x1="8" y1="2" x2="8" y2="6"/>
-              <line x1="3" y1="10" x2="21" y2="10"/>
-            </svg>
-            <span style={{fontFamily: 'Fira Sans', fontWeight: 600}}>
-              {currentDate.format('YYYY年MM月')} AI 月总结
-            </span>
-          </div>
-        }
-        open={monthlyModalVisible}
-        onCancel={() => setMonthlyModalVisible(false)}
-        footer={null}
-        width={720}
-        styles={{body: {maxHeight: '65vh', overflowY: 'auto', padding: '16px 24px'}}}
-      >
-        {/* 生成按钮 - 未生成时显示 */}
-        {!monthlySummary && !monthlyLoading && (
-          <div className="flex flex-col items-center justify-center py-8">
-            <button
-              onClick={handleGenerateMonthly}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all active:scale-95"
-              style={{
-                background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-                color: 'white',
-                boxShadow: '0 2px 8px rgba(245, 158, 11, 0.3)',
-                fontFamily: 'Fira Sans',
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Z"/>
-                <path d="M12 8v8M8 12h8"/>
-              </svg>
-              生成月总结
-            </button>
-            <span className="text-[11px] mt-2" style={{color: '#94a3b8', fontFamily: 'Fira Sans'}}>
-              将本月所有周AI总结发送至 DeepSeek 生成月度报告
-            </span>
-            <button
-              onClick={handleViewMonthlyInput}
-              className="mt-3 text-[11px] px-3 py-1 rounded border transition-all active:bg-gray-100"
-              style={{borderColor: DESIGN.colors.border, color: '#64748b', fontFamily: 'Fira Sans', fontWeight: 600}}
-            >
-              查看输入数据
-            </button>
-          </div>
-        )}
-
-        {/* 加载中 */}
-        {monthlyLoading && (
-          <div className="flex flex-col items-center justify-center py-10">
-            <div className="animate-spin w-8 h-8 border-2 border-t-transparent rounded-full mb-3" style={{borderColor: '#fde68a', borderTopColor: '#d97706'}}></div>
-            <span className="text-xs" style={{color: '#94a3b8', fontFamily: 'Fira Sans'}}>DeepSeek 正在分析本月数据...</span>
-          </div>
-        )}
-
-        {/* 生成结果 */}
-        {monthlySummary && !monthlyLoading && (
-          <div>
-            <div ref={monthlyScreenshotRef} className="p-3 rounded-lg" style={{background: '#fafbfc'}}>
-              <div className="text-[11px] mb-2 font-semibold" style={{color: '#d97706', fontFamily: 'Fira Sans'}}>
-                {currentDate.format('YYYY年MM月')} AI 月总结
-              </div>
-              <div
-                className="text-[13px] leading-relaxed"
-                style={{color: DESIGN.colors.foreground, fontFamily: 'Fira Sans', whiteSpace: 'pre-wrap'}}
-              >
-                {renderBoldText(monthlySummary)}
-              </div>
-            </div>
-            <div className="mt-4 pt-3 flex items-center gap-2" style={{borderTop: `1px solid ${DESIGN.colors.border}`}}>
-              <button
-                onClick={handleViewMonthlyInput}
-                className="text-[11px] px-3 py-1 rounded border transition-all active:bg-gray-100"
-                style={{borderColor: DESIGN.colors.border, color: '#64748b', fontFamily: 'Fira Sans', fontWeight: 600}}
-              >
-                查看输入数据
-              </button>
-              <button
-                onClick={() => handleScreenshot(monthlyScreenshotRef, setMonthlyScreenshotLoading, `月总结_${currentDate.format('YYYYMM')}.jpg`)}
-                disabled={monthlyScreenshotLoading}
-                className="text-[11px] px-3 py-1 rounded border transition-all active:bg-gray-100"
-                style={{
-                  borderColor: '#fde68a',
-                  color: monthlyScreenshotLoading ? '#9ca3af' : '#d97706',
-                  fontFamily: 'Fira Sans',
-                  fontWeight: 600,
-                  cursor: monthlyScreenshotLoading ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {monthlyScreenshotLoading ? '截图中...' : '截图'}
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      {/* 月总结输入数据查看对话框 */}
-      <Modal
-        title={
-          <div className="flex items-center gap-2">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/>
-              <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
-            </svg>
-            <span style={{fontFamily: 'Fira Sans', fontWeight: 600}}>
-              DeepSeek 月总结输入数据
-            </span>
-          </div>
-        }
-        open={monthlyInputVisible}
-        onCancel={() => setMonthlyInputVisible(false)}
-        footer={null}
-        width={720}
-        styles={{body: {maxHeight: '65vh', overflowY: 'auto', padding: '16px 24px'}}}
-      >
-        {monthlyInputData ? (
-          <pre className="text-[12px] leading-relaxed whitespace-pre-wrap" style={{color: DESIGN.colors.foreground, fontFamily: 'Fira Code', background: '#f8fafc', padding: '12px', borderRadius: '8px', border: `1px solid ${DESIGN.colors.border}`}}>
-            {monthlyInputData}
-          </pre>
-        ) : (
-          <div className="flex items-center justify-center py-8">
-            <span className="text-xs" style={{color: '#94a3b8'}}>加载中...</span>
-          </div>
-        )}
-      </Modal>
+      <InputDataModal
+        visible={monthlyInputVisible}
+        onClose={() => setMonthlyInputVisible(false)}
+        title="DeepSeek 月总结输入数据"
+        data={monthlyInputData}
+      />
       </div>
     </ConfigProvider>
   )
