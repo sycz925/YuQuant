@@ -12,12 +12,12 @@ router = APIRouter(prefix="/api/search", tags=["搜索"])
 @router.get("")
 def unified_search(keyword: str = Query(..., description="搜索关键词")):
     """
-    统一搜索接口 - 同时搜索股票和板块
-    返回格式：{ stocks: [...], sectors: [...] }
+    统一搜索接口 - 同时搜索股票、板块和ETF
+    返回格式：{ stocks: [...], sectors: [...], etfs: [...] }
     """
     try:
         db = get_db()
-        results = {'stocks': [], 'sectors': []}
+        results = {'stocks': [], 'sectors': [], 'etfs': []}
         
         # 搜索股票（支持代码、名称、拼音）
         if keyword:
@@ -52,7 +52,24 @@ def unified_search(keyword: str = Query(..., description="搜索关键词")):
                 {'_id': 0, 'code': 1, 'name': 1}
             ).limit(10)
             results['sectors'] = [{'code': s['code'], 'name': s['name']} for s in sector_cursor]
-        
+
+        # 搜索ETF
+        if keyword:
+            etf_by_code = list(db['etf_basics'].find(
+                {'code': {'$regex': keyword, '$options': 'i'}},
+                {'_id': 0, 'code': 1, 'name': 1}
+            ).limit(5))
+            etf_by_name = list(db['etf_basics'].find(
+                {'name': {'$regex': keyword, '$options': 'i'}},
+                {'_id': 0, 'code': 1, 'name': 1}
+            ).limit(10))
+            seen_codes = set()
+            for e in etf_by_code + etf_by_name:
+                if e['code'] not in seen_codes:
+                    seen_codes.add(e['code'])
+                    results['etfs'].append({'code': e['code'], 'name': e['name']})
+            results['etfs'] = results['etfs'][:15]
+
         return {
             'success': True,
             'data': results

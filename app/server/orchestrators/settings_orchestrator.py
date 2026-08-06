@@ -23,9 +23,18 @@ class SettingsOrchestrator(BaseOrchestrator):
     def execute(self, task_type: str, **kwargs) -> str:
         """执行设置页面任务"""
         import uuid
+        name_by_type = {
+            'sync_indices': '同步指数',
+            'sync_daily': '同步个股',
+            'calculate_rps': '计算个股RPS',
+            'sync_sectors': '同步板块',
+            'calculate_sector_rps': '计算板块RPS',
+            'sync_index_pe': '更新PE',
+            'precompute_base': '预计算基础数据',
+        }
         steps = self._get_steps_for_type(task_type)
         task_id = str(uuid.uuid4())
-        self.task_repo.create_task(task_id, steps)
+        self.task_repo.create_task(task_id, steps, name=name_by_type.get(task_type, task_type))
 
         import threading
         thread = threading.Thread(
@@ -95,60 +104,32 @@ class SettingsOrchestrator(BaseOrchestrator):
     def _sync_indices(self, task_id: str, **kwargs) -> None:
         """同步指数数据"""
         from app.server.factories import get_index_factory
-        from app.data.manager import get_data_manager
 
         self.task_repo.update_step_progress(task_id, 0, status='running', message='同步指数K线...')
 
         factory = get_index_factory()
-        result = factory.sync_kline()
+        factory.sync_kline()
 
-        self.task_repo.update_step_progress(task_id, 0, completed_count=1, message='计算指数涨跌幅...')
-        dm = get_data_manager()
-        dm.calculate_chg_fields(target='index')
+        self.task_repo.update_step_progress(task_id, 0, message='计算指数涨跌幅...')
+        factory.compute_chg()
 
-        self.task_repo.update_step_progress(task_id, 0, status='completed', completed_count=1, message='指数同步完成')
+        self.task_repo.update_step_progress(task_id, 0, status='completed', message='指数同步完成')
 
     def _sync_daily(self, task_id: str, **kwargs) -> None:
         """同步个股日线数据"""
-        from app.data.db import get_db
-        from app.data.manager import get_data_manager
-        from app.data.task_manager import get_task_manager
-
-        tm = get_task_manager()
-        db = get_db()
-
-        self.task_repo.update_step_progress(task_id, 0, status='running', message='获取启用股票...')
-
-        # 获取启用的股票代码
-        stock_codes = [
-            doc['stock_code'] for doc in db['stock_basics'].find(
-                {'is_disable': {'$ne': True}},
-                {'_id': 0, 'stock_code': 1}
-            )
-        ]
-
-        if not stock_codes:
-            self.task_repo.fail_task(task_id, "没有找到股票数据")
-            return
+        from app.server.factories import get_stock_factory
 
         max_workers = kwargs.get('max_workers', 16)
-        min_days = kwargs.get('min_days', 200)
 
-        self.task_repo.update_step_progress(task_id, 0, completed_count=0,
-            message=f'同步 {len(stock_codes)} 只股票...')
+        self.task_repo.update_step_progress(task_id, 0, status='running', message='同步个股日线...')
 
-        dm = get_data_manager()
-        result = dm.sync_daily_data(
-            stock_codes=stock_codes,
-            task_id=task_id,
-            max_workers=max_workers,
-            is_external=True
-        )
+        factory = get_stock_factory()
+        factory.sync_daily(task_id=task_id, max_workers=max_workers)
 
-        self.task_repo.update_step_progress(task_id, 0, completed_count=1, message='计算涨幅字段...')
-        dm.calculate_chg_fields(target='stock')
+        self.task_repo.update_step_progress(task_id, 0, message='计算涨幅字段...')
+        factory.compute_chg()
 
-        self.task_repo.update_step_progress(task_id, 0, status='completed', completed_count=1, message='个股同步完成')
+        self.task_repo.update_step_progress(task_id, 0, status='completed', message='个股同步完成')
 
     def _calculate_rps(self, task_id: str, target: str = 'stock', **kwargs) -> None:
         """计算RPS"""
@@ -159,34 +140,21 @@ class SettingsOrchestrator(BaseOrchestrator):
         aggregator = get_market_aggregator()
         result = aggregator.calculate_rps(target=target)
 
-        self.task_repo.update_step_progress(task_id, 0, status='completed', completed_count=1, message=f'{target}RPS计算完成')
+        self.task_repo.update_step_progress(task_id, 0, status='completed', message=f'{target}RPS计算完成')
 
     def _sync_sectors(self, task_id: str, **kwargs) -> None:
         """同步板块数据"""
-        from app.data.db import get_db
-        from app.data.manager import get_data_manager
+        from app.server.factories import get_sector_factory
 
         self.task_repo.update_step_progress(task_id, 0, status='running', message='同步板块日线...')
 
-        db = get_db()
-        enabled_sectors = set(
-            doc['code'] for doc in db['sector_basics'].find(
-                {'is_disable': {'$ne': True}},
-                {'_id': 0, 'code': 1}
-            )
-        )
+        factory = get_sector_factory()
+        factory.sync_daily(task_id=task_id)
 
-        dm = get_data_manager()
-        result = dm.sync_sector_indices(
-            task_id=task_id,
-            enabled_codes=enabled_sectors,
-            is_external=True,
-        )
+        self.task_repo.update_step_progress(task_id, 0, message='计算板块衍生字段...')
+        factory.compute_chg()
 
-        self.task_repo.update_step_progress(task_id, 0, completed_count=1, message='计算板块衍生字段...')
-        dm.calculate_all_derived_fields(target='sector')
-
-        self.task_repo.update_step_progress(task_id, 0, status='completed', completed_count=1, message='板块同步完成')
+        self.task_repo.update_step_progress(task_id, 0, status='completed', message='板块同步完成')
 
     def _sync_index_pe(self, task_id: str, **kwargs) -> None:
         """同步指数PE数据"""
@@ -199,7 +167,7 @@ class SettingsOrchestrator(BaseOrchestrator):
 
         self.task_repo.update_step_progress(task_id, 0, status='running', message='同步PE数据...')
 
-        from app.server.api.factors import _run_sync_pe
+        from app.server.services.factors_service import _run_sync_pe
         _run_sync_pe(task_id, settings.LEGULEGU_TOKEN, is_external=True)
 
         self.task_repo.update_step_progress(task_id, 0, status='completed', completed_count=1, message='PE同步完成')
@@ -210,7 +178,7 @@ class SettingsOrchestrator(BaseOrchestrator):
 
         self.task_repo.update_step_progress(task_id, 0, status='running', message='预计算基础数据...')
 
-        from app.server.api.factors import _run_precompute_base_for_date
+        from app.server.services.factors_service import _run_precompute_base_for_date
         db = get_db()
 
         # 获取最新交易日

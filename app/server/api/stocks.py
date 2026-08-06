@@ -258,14 +258,13 @@ def get_daily_data(
         # 转换为DailyBar列表
         bars = []
         for trade_date, row in df.iterrows():
-            # 兼容 volume / vol 两种字段名
-            # pytdx 用 vol（单位：手），其他用 volume（单位：股）
-            # 统一返回股数（vol * 100）
-            vol_val = row.get("volume")
+            # 统一以 vol（单位：手）为准，返回股数（vol * 100）
+            # volume 仅作为历史遗留字段的 fallback（单位：股）
+            vol_val = row.get("vol")
             if vol_val is None or pd.isna(vol_val):
-                vol_val = row.get("vol")
-                if vol_val is not None and not pd.isna(vol_val):
-                    vol_val = vol_val * 100  # 手转换为股
+                vol_val = row.get("volume")
+            else:
+                vol_val = vol_val * 100  # 手转换为股
             
             bar = DailyBar(
                 trade_date=str(trade_date),

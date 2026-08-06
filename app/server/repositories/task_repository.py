@@ -25,17 +25,20 @@ class TaskRepository(BaseRepository):
             {'task_id': task_id}
         )
     
-    def create_task(self, task_id: str, steps: List[Dict]) -> str:
+    def create_task(self, task_id: str, steps: List[Dict], name: str = '') -> str:
         """创建带步骤的任务"""
         # 初始化每个步骤的默认值，保留输入中的 total_count 和 completed_count
         initialized_steps = []
         for step in steps:
+            total_count = step.get('total_count', 0)
+            if total_count < 1:
+                total_count = 1
             initialized_step = {
                 'key': step.get('key', ''),
                 'name': step.get('name', ''),
                 'status': 'pending',
                 'completed_count': step.get('completed_count', 0),
-                'total_count': step.get('total_count', 0),
+                'total_count': total_count,
                 'failed_count': 0,
                 'skipped_count': 0,
                 'message': ''
@@ -44,6 +47,7 @@ class TaskRepository(BaseRepository):
         
         doc = {
             'task_id': task_id,
+            'name': name,
             'status': 'running',
             'steps': initialized_steps,
             'created_at': datetime.now(),

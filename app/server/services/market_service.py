@@ -37,7 +37,7 @@ class MarketService:
         try:
             callback.update(0, 50, '获取市场总览...')
             
-            # TODO: 从 market_review.get_market_daily 迁移逻辑
+            # TODO: 从 services.market_data.get_market_daily 迁移逻辑
             
             callback.complete('市场总览获取完成')
             return {}
@@ -56,7 +56,7 @@ class MarketService:
         try:
             callback.update(0, 50, '计算市场信号...')
             
-            # TODO: 从 market_review.calc_market_signals 迁移逻辑
+            # TODO: 从 services.market_signals.calc_market_signals 迁移逻辑
             
             callback.complete('市场信号计算完成')
             return {}
@@ -75,7 +75,7 @@ class MarketService:
         try:
             callback.update(0, 50, '分析新高板块...')
             
-            # TODO: 从 market_review.analyze_new_high_blocks 迁移逻辑
+            # TODO: 从 services.market_sectors.analyze_new_high_blocks 迁移逻辑
             
             callback.complete('新高板块分析完成')
             return {}
@@ -94,7 +94,7 @@ class MarketService:
         try:
             callback.update(0, 50, '分析活跃板块...')
             
-            # TODO: 从 market_review.analyze_active_sectors 迁移逻辑
+            # TODO: 从 services.market_sectors.analyze_active_sectors 迁移逻辑
             
             callback.complete('活跃板块分析完成')
             return {}

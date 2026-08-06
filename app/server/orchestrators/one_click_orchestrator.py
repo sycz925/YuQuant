@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.server.orchestrators.base import BaseOrchestrator
+from app.server.orchestrators.daily_recalc_orchestrator import DailyRecalcOrchestrator as _DailyRecalc
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,12 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
     """
     一键更新编排器
     固定7个步骤：同步指数 → 同步个股 → 板块同步 → 个股RPS → 板块RPS → PE同步 → 预计算
+    RPS和预计算步骤委托给 DailyRecalcOrchestrator
     """
     
     STEP_KEYS = ['sync_index', 'sync_stocks', 'sync_sectors', 'rps_stock', 'rps_sector', 'sync_pe', 'precompute']
     STEP_NAMES = ['同步指数', '同步个股', '同步板块', '计算个股RPS', '计算板块RPS', '更新PE', '预计算基础数据']
-    
+
     def get_steps(self) -> List[Dict[str, str]]:
         return [{'key': k, 'name': n} for k, n in zip(self.STEP_KEYS, self.STEP_NAMES)]
     
@@ -145,7 +147,7 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         # 创建任务
         import uuid
         task_id = str(uuid.uuid4())
-        self.task_repo.create_task(task_id, steps)
+        self.task_repo.create_task(task_id, steps, name='一键更新')
         
         # 使用线程池提交任务
         from app.server.orchestrators.base import _executor
@@ -246,14 +248,17 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             if (now - updated_at) > timedelta(minutes=30):
                 return False
 
+            # 盘中缓存命中还需检查数据量是否达标，避免部分同步被误判为已完成
+            if expected_count > 0:
+                count = db[collection_name].count_documents({date_field: target_date})
+                if count < expected_count:
+                    return False
+
             return True
     
     def execute_step(self, step_key: str, task_id: str, dates: List[str], step_idx: int = 0) -> None:
         """执行单个步骤"""
-        from app.server.factories import (
-            get_index_factory, get_stock_factory,
-            get_sector_factory, get_market_aggregator
-        )
+        from app.server.factories import get_index_factory
 
         total_dates = len(dates)
 
@@ -261,22 +266,11 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         if step_key in ['sync_index', 'sync_stocks', 'sync_sectors']:
             self._execute_sync_step(step_key, task_id, dates, step_idx)
 
-        # 步骤3-7：计算步骤（每次循环更新步骤进度）
-        elif step_key == 'rps_stock':
-            factory = get_stock_factory()
+        # 步骤3-4：RPS计算 → 复用 DailyRecalcOrchestrator.compute_for_step
+        elif step_key in ('rps_stock', 'rps_sector'):
             for i, date in enumerate(dates):
-                logger.info(f"[一键更新] 计算 {date} 个股涨幅和RPS")
-                factory.compute_chg(date)
-                factory.compute_rps(date)
-                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} 个股RPS')
-
-        elif step_key == 'rps_sector':
-            factory = get_sector_factory()
-            for i, date in enumerate(dates):
-                logger.info(f"[一键更新] 计算 {date} 板块涨幅和RPS")
-                factory.compute_chg(date)
-                factory.compute_rps(date)
-                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} 板块RPS')
+                _DailyRecalc.compute_for_step(step_key, date)
+                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} {step_key}')
 
         elif step_key == 'sync_pe':
             factory = get_index_factory()
@@ -285,11 +279,10 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                 factory.sync_pe(date)
                 self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} PE')
 
+        # 步骤6：预计算 → 复用 DailyRecalcOrchestrator.compute_for_step
         elif step_key == 'precompute':
-            aggregator = get_market_aggregator()
             for i, date in enumerate(dates):
-                logger.info(f"[一键更新] 预计算 {date} 基础数据")
-                aggregator.precompute_base_data(date, task_id=task_id)
+                _DailyRecalc.compute_for_step(step_key, date, task_id=task_id)
                 self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} 预计算')
     
     def _execute_sync_step(self, step_key: str, task_id: str, dates: List[str], step_idx: int = 0) -> None:
@@ -361,8 +354,8 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
 
             result = sync_method(date, task_id=task_id, progress_callback=progress_callback)
 
-            # 更新步骤进度（最终状态）
-            self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'同步 {date} 完成')
+            # 更新步骤进度（最终状态）：不覆盖 completed_count，保留 progress_callback 设的实际值
+            self.task_repo.update_step_progress(task_id, step_idx, message=f'同步 {date} 完成')
 
             # 检查失败率，超过5%则停止
             if hasattr(result, 'failed') and hasattr(result, 'total'):

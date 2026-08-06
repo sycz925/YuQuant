@@ -125,14 +125,8 @@ class FactorEngine:
                 day = (day_dt - timedelta(days=1)).strftime('%Y%m%d')
                 continue
 
-            # 从 day_data 中过滤掉 chg_* 不完整的记录（数据不足的板块跳过）
-            valid_data = []
-            for d in day_data:
-                if all(f in d and d[f] is not None for f in chg_fields):
-                    valid_data.append(d)
-            if len(valid_data) < len(day_data):
-                logger.debug(f"[RPS-{data_type}] {day} 跳过{len(day_data)-len(valid_data)}只缺chg的{data_type}")
-            day_data = valid_data
+            # 过滤掉完全没有chg字段的记录（单个字段缺失靠per-field的NaN处理跳过）
+            day_data = [d for d in day_data if any(d.get(f) is not None for f in chg_fields)]
 
             # 检查 RPS 是否已存在（>= 95% 有RPS则停止）
             # 最新交易日永远重算，只有上一天也有才停止
@@ -149,7 +143,6 @@ class FactorEngine:
 
             logger.info(f"[RPS-{data_type}] 计算 {day}（{len(day_data)} 条）")
 
-            stock_codes = [d['stock_code'] for d in day_data]
             set_doc_base = {'update_time': datetime.utcnow()}
             ops = []
 
@@ -161,18 +154,19 @@ class FactorEngine:
                 if valid_count == 0:
                     continue
 
-                ranks = np.zeros(len(vals), dtype=int)
+                valid_indices = np.where(valid_mask)[0]
                 valid_vals = vals[valid_mask]
                 sorted_idx = np.argsort(valid_vals)
                 rank_positions = np.empty_like(sorted_idx)
                 rank_positions[sorted_idx] = np.arange(1, len(sorted_idx) + 1)
-                ranks[valid_mask] = np.round(rank_positions / valid_count * 100).astype(int)
+                ranks = np.round(rank_positions / valid_count * 100).astype(int)
                 ranks = np.clip(ranks, 1, 100)
 
-                for i, code in enumerate(stock_codes):
+                for result_idx, i in enumerate(valid_indices):
+                    code = day_data[i]['stock_code']
                     ops.append(UpdateOne(
                         {'stock_code': code, 'trade_date': day},
-                        {'$set': {rps_field: int(ranks[i]), **set_doc_base}}
+                        {'$set': {rps_field: int(ranks[result_idx]), **set_doc_base}}
                     ))
 
             if ops:
@@ -224,9 +218,8 @@ class FactorEngine:
         if progress_callback:
             progress_callback("加载数据...", 0, 100, "加载")
 
-        # 确定成交量字段
-        # 板块数据优先使用vol字段（因为volume字段可能为0）
-        vol_field = 'vol' if data_type == 'sector' else 'vol'
+        # 确定成交量字段（统一使用 vol 字段）
+        vol_field = 'vol'
 
         cursor = coll.find(
             {'trade_date': {'$in': dates_to_calc}, 'close': {'$gt': 0}},

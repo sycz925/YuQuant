@@ -171,7 +171,7 @@ class StockFactory:
     DATA_SOURCES = ['pytdx', 'akshare', 'baostock', 'yfinance']
     
     def sync_daily(self, target_date: Optional[str] = None,
-                   max_workers: int = 4,
+                   max_workers: int = 16,
                    task_id: str = None,
                    progress_callback: Callable = None) -> SyncResult:
         """

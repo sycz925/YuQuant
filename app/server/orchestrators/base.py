@@ -14,6 +14,8 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="orchestrator")
 
 class BaseOrchestrator(ABC):
     """编排器基类"""
+
+    name = ''
     
     def __init__(self, task_repo=None):
         from app.server.repositories import get_task_repo
@@ -38,7 +40,7 @@ class BaseOrchestrator(ABC):
         import uuid
         steps = self.get_steps()
         task_id = str(uuid.uuid4())
-        self.task_repo.create_task(task_id, steps)
+        self.task_repo.create_task(task_id, steps, name=self.name)
         
         # 使用线程池提交任务
         _executor.submit(self._run_wrapper, task_id, [target_date] if target_date else None)

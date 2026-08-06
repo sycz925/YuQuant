@@ -106,7 +106,7 @@ class MarketAggregator:
             callback.update(0, 100, '计算 CR5/CR10/MA/NH-NL...')
             
             # 调用原始的预计算函数
-            from app.server.api.factors import _run_precompute_base_for_date
+            from app.server.services.factors_service import _run_precompute_base_for_date
             _run_precompute_base_for_date(task_id, target_date, is_external=True)
             
             callback.complete('基础数据预计算完成')
@@ -124,7 +124,7 @@ class MarketAggregator:
             callback.update(0, 100, '生成市场总览...')
             
             # 调用原始的市场总览生成函数
-            from app.server.api.market_review import generate_market_overview
+            from app.server.services.market_signals import generate_market_overview
             generate_market_overview(target_date)
             
             callback.complete('市场总览生成完成')
@@ -142,7 +142,7 @@ class MarketAggregator:
             callback.update(0, 100, '分析新高板块...')
             
             # 调用原始的新高板块分析函数
-            from app.server.api.market_review import analyze_new_high_blocks
+            from app.server.services.market_sectors import analyze_new_high_blocks
             analyze_new_high_blocks(target_date)
             
             callback.complete('新高板块分析完成')
