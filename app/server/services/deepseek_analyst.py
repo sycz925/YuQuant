@@ -398,8 +398,8 @@ class DeepSeekAnalyst:
                     if s.get('rps_50'):
                         rps_parts.append(f"RPS50={s['rps_50']}")
                     rps_info = f", {', '.join(rps_parts)}"
-                count_info = f"(强度共振{s.get('count', 0)}只/{s.get('total', 0)}只, 板块涨{s.get('sector_chg_pct', 0)}%)"
-                msg_parts.append(f"  {s['name']}{count_info}: 达标股均涨{s.get('chg_pct', 0)}%{rps_info}")
+                count_info = f"(强度共振{s.get('count', 0)}只/{s.get('total', 0)}只, 板块涨{s.get('chg_pct', 0)}%)"
+                msg_parts.append(f"  {s['name']}{count_info}: 达标股均涨{s.get('avg_stock_chg_pct', 0)}%{rps_info}")
                 pioneer = s.get('pioneer', [])
                 main_force = s.get('main_force', [])
                 followers = s.get('followers', [])
