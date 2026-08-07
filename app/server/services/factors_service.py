@@ -459,15 +459,17 @@ def _run_compare_sectors_task(task_id):
     try:
         db = get_db()
 
-        # 1. 获取本地所有板块（名称+成分股）
+        # 1. 获取本地所有板块（名称→code，code→板块）
         _compare_update_status(task_id, step='获取本地数据', progress='0%')
-        local_sector_map = {}
+        local_name_to_code = {}
+        local_sector_by_code = {}
         for doc in db['sector_basics'].find({}, {'_id': 0, 'name': 1, 'stock_codes': 1, 'code': 1}):
             name = doc.get('name', '')
-            stock_codes = set(doc.get('stock_codes', []))
+            code = doc.get('code', '')
             if name:
-                key = (name, frozenset(stock_codes))
-                local_sector_map[key] = doc.get('code', '')
+                local_name_to_code[name] = code
+            if code:
+                local_sector_by_code[code] = doc
 
         # 2. 从 pytdx 获取远程板块列表
         _compare_update_status(task_id, step='连接pytdx获取板块', progress='30%')
@@ -475,10 +477,6 @@ def _run_compare_sectors_task(task_id):
         if '_vendor/pytdx' not in sys.path:
             sys.path.insert(0, '_vendor/pytdx')
         from app.data.sources.pytdx_source import PytdxSource
-
-        local_name_to_code = {}
-        for doc in db['sector_basics'].find({}, {'_id': 0, 'name': 1, 'code': 1}):
-            local_name_to_code[doc['name']] = doc.get('code', '')
 
         pytdx = PytdxSource()
         remote_sectors = []
@@ -500,21 +498,25 @@ def _run_compare_sectors_task(task_id):
         except Exception as e:
             logger.warning(f"获取pytdx板块失败: {e}")
 
-        # 3. 按名称+成分股匹配找出新增的板块
+        # 3. 按 code 分类：成分股相同且code本地存在则忽略；否则标记 无code/待更新/待加入
         _compare_update_status(task_id, step='对比数据', progress='80%')
         new_sectors = []
         for sector in remote_sectors:
-            key = (sector['name'], frozenset(sector['all_stock_codes']))
-            if key not in local_sector_map:
-                code = sector.get('code', '')
-                if not code:
-                    status = '无code'
-                elif db['sector_basics'].find_one({'code': code}):
-                    status = '待更新'
-                else:
-                    status = '待加入'
-                sector['status'] = status
-                new_sectors.append(sector)
+            code = sector.get('code', '')
+            stock_codes = sector.get('all_stock_codes', [])
+
+            local = local_sector_by_code.get(code) if code else None
+            if code and local and set(local.get('stock_codes', [])) == set(stock_codes):
+                continue
+
+            if not code:
+                status = '无code'
+            elif local:
+                status = '待更新'
+            else:
+                status = '待加入'
+            sector['status'] = status
+            new_sectors.append(sector)
         
         new_sectors.sort(key=lambda x: -x['stock_count'])
 
@@ -525,7 +527,7 @@ def _run_compare_sectors_task(task_id):
             step='完成',
             progress='100%',
             result={
-                'local_count': len(local_sector_map),
+                'local_count': len(local_sector_by_code),
                 'remote_count': len(remote_sectors),
                 'new_count': len(new_sectors),
                 'new_sectors': new_sectors[:50],
