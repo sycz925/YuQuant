@@ -264,6 +264,18 @@ def _get_month_weeks(year: int, month: int) -> dict:
 
 # ========== AI 输入构建 ==========
 
+_WEEKDAY_CN = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
+
+
+def _format_date_label(date_str: str) -> str:
+    """将 YYYYMMDD 格式化为 'YYYY-MM-DD(星期X)'，解析失败时回退为原格式"""
+    try:
+        dt = _dt.strptime(date_str, '%Y%m%d')
+        return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}({_WEEKDAY_CN[dt.weekday()]})"
+    except (ValueError, TypeError):
+        return date_str
+
+
 def _build_weekly_input_text(week_days: list, ai_docs: dict,
                              new_high_docs: dict = None, lps_docs: dict = None) -> str:
     """构建发送给 DeepSeek 的周总结输入文本"""
@@ -375,7 +387,7 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
         ai = ai_docs.get(date_str)
         if not ai:
             continue
-        formatted = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+        formatted = _format_date_label(date_str)
         parts.append(f"【{formatted}】")
         parts.append(f"市场阶段诊断: {ai.get('market_phase_diagnosis', '无')}")
         parts.append(f"行业集群评估: {ai.get('industry_cluster_evaluation', '无')}")
@@ -528,7 +540,7 @@ def _build_monthly_input_text(month_dates: list, ai_docs: dict,
                 current_week = []
             
             last_week_num = week_num
-            formatted = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            formatted = _format_date_label(date_str)
             
             ai = ai_docs.get(date_str)
             if ai:
