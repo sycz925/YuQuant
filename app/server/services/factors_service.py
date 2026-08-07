@@ -376,7 +376,7 @@ def _run_sync_pe(task_id: str, token: str, is_external: bool = False):
 # ========== 对比任务 ==========
 
 def _run_compare_stocks_task(task_id):
-    """后台执行个股对比任务"""
+    """后台执行个股对比任务：基于次新股板块成分股对比本地，排除北交所"""
     try:
         db = get_db()
 
@@ -388,54 +388,50 @@ def _run_compare_stocks_task(task_id):
             )
         )
 
-        # 2. 从 pytdx 获取远程股票列表
-        _compare_update_status(task_id, step='连接pytdx', progress='20%')
+        # 2. 从 pytdx 获取次新股板块成分股（排除北交所）
+        _compare_update_status(task_id, step='获取次新股板块', progress='30%')
         import sys
         if '_vendor/pytdx' not in sys.path:
             sys.path.insert(0, '_vendor/pytdx')
-        from pytdx.hq import TdxHq_API
-        from app.data.sources.pytdx_source import TDX_SERVERS
+        from app.data.sources.pytdx_source import PytdxSource
 
-        api = TdxHq_API()
+        blocks = PytdxSource.get_concept_blocks() or []
         remote_stocks = []
         seen_codes = set()
-
-        valid_prefixes = ('00', '30', '60', '68')
-
-        for host, port in TDX_SERVERS:
-            try:
-                api.connect(host, port)
-                for market in [0, 1]:
-                    _compare_update_status(task_id, step=f'获取{"沪" if market else "深"}市数据', progress='40%')
-                    count = api.get_security_count(market)
-                    for start in range(0, min(count, 50000), 1000):
-                        items = api.get_security_list(market, start)
-                        for s in items:
-                            code = s.get('code', '')
-                            name = s.get('name', '')
-                            if (code and name and len(code) == 6 and code.isdigit()
-                                and code[:2] in valid_prefixes
-                                and code not in seen_codes):
-                                seen_codes.add(code)
-                                remote_stocks.append({
-                                    'stock_code': code,
-                                    'stock_name': name,
-                                    'market': market,
-                                })
-                api.disconnect()
-                break
-            except Exception as e:
-                logger.warning(f"pytdx连接失败 {host}:{port}: {e}")
+        for block in blocks:
+            if '次新股' not in block.get('name', ''):
                 continue
+            for code in block.get('stock_codes', []):
+                if (code and len(code) == 6 and code.isdigit()
+                        and code not in seen_codes
+                        and not code.startswith(('92', '8', '4'))):
+                    seen_codes.add(code)
+                    remote_stocks.append({
+                        'stock_code': code,
+                        'stock_name': '',
+                        'market': 1 if code.startswith('6') else 0,
+                    })
 
-        # 3. 找出新增的股票
-        _compare_update_status(task_id, step='对比数据', progress='80%')
+        # 3. 找出本地缺失的股票
+        _compare_update_status(task_id, step='对比数据', progress='70%')
         remote_set = {s['stock_code'] for s in remote_stocks}
         new_codes = remote_set - local_codes
         new_stocks = [s for s in remote_stocks if s['stock_code'] in new_codes]
         new_stocks.sort(key=lambda x: x['stock_code'])
 
-        # 4. 存储结果
+        # 4. 补全缺失股票名称（pytdx 遍历两市，无外部依赖）
+        if new_stocks:
+            _compare_update_status(task_id, step='补全股票名称', progress='85%')
+            try:
+                df = PytdxSource.get_stock_basics()
+                if df is not None and not df.empty:
+                    name_map = dict(zip(df['stock_code'], df['stock_name']))
+                    for s in new_stocks:
+                        s['stock_name'] = name_map.get(s['stock_code'], s['stock_code'])
+            except Exception as e:
+                logger.warning(f"获取股票名称失败: {e}")
+
+        # 5. 存储结果
         _compare_update_status(
             task_id,
             status='completed',
@@ -445,7 +441,7 @@ def _run_compare_stocks_task(task_id):
                 'local_count': len(local_codes),
                 'remote_count': len(remote_set),
                 'new_count': len(new_stocks),
-                'new_stocks': new_stocks[:100],
+                'new_stocks': new_stocks,
             }
         )
 
