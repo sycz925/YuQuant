@@ -444,7 +444,7 @@ def analyze_active_sectors(trade_date: str) -> Dict[str, Any]:
     条件：
     1. 板块内流通市值>200亿 且 当日涨幅>5% 的个股 >= 10 只
     2. 其中 RPS10+RPS20+RPS50>250 的个股占比 > 30%
-    3. 板块自身 RPS10+RPS20+RPS50 < 200（板块中期趋势未过热）
+    3. 板块自身 RPS10+RPS20+RPS50 <= 250（板块中期趋势未过热）
     4. 板块当日涨幅 > 2%
     """
     db = get_db()
@@ -504,8 +504,8 @@ def analyze_active_sectors(trade_date: str) -> Dict[str, Any]:
 
         sector_chg = sd.get('chg_pct', 0) or 0
         sector_rps_sum = (sd.get('rps_10', 0) or 0) + (sd.get('rps_20', 0) or 0) + (sd.get('rps_50', 0) or 0)
-        # 板块级前置条件：RPS 和 < 200 且 当日涨幅 > 2%
-        if sector_rps_sum >= 200 or sector_chg <= 2:
+        # 板块级前置条件：RPS 和 <= 250 且 当日涨幅 > 2%
+        if sector_rps_sum > 250 or sector_chg <= 2:
             continue
 
         name = info.get('name', code)
