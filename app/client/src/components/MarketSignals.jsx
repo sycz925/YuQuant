@@ -477,7 +477,7 @@ function MarketSignals({ date }) {
           <div className="flex items-center space-x-1.5 md:space-x-2 mb-2 md:mb-4">
             <div className="w-1 h-3 md:h-4 bg-orange-500 rounded-full"></div>
             <h3 className="text-xs md:text-sm font-bold text-gray-700">异动活跃板块</h3>
-            <Tooltip title="筛选规则：板块中大市值(流通市值Top10%)个股，60%以上今日涨幅≥5%且放量(涨停豁免量能)，符合条件数≥5只">
+            <Tooltip title="筛选规则：板块内流通市值>200亿且涨幅>5%的个股≥10只 + 其中RPS10+20+50>250占比>30% + 板块RPS10+20+50<200 + 板块当日涨幅>2%">
               <span className="text-[10px] md:text-xs text-gray-400 cursor-help">({active_sectors.length}个)</span>
             </Tooltip>
           </div>

@@ -440,12 +440,12 @@ def analyze_low_position_sectors(trade_date: str) -> Dict[str, Any]:
 
 def analyze_active_sectors(trade_date: str) -> Dict[str, Any]:
     """
-    异动活跃板块筛选
+    异动活跃板块筛选（V2）
     条件：
-    1. 板块中大市值(流通市值Top10%)个股
-    2. 其中60%以上今日涨幅>=5%
-    3. 符合条件的大市值个股数量最少要超过5只
-    4. 放量(成交量>=5日均量*1.5)，涨停股豁免量能检查
+    1. 板块内流通市值>200亿 且 当日涨幅>5% 的个股 >= 10 只
+    2. 其中 RPS10+RPS20+RPS50>250 的个股占比 > 30%
+    3. 板块自身 RPS10+RPS20+RPS50 < 200（板块中期趋势未过热）
+    4. 板块当日涨幅 > 2%
     """
     db = get_db()
 
@@ -478,21 +478,17 @@ def analyze_active_sectors(trade_date: str) -> Dict[str, Any]:
         liutong_map[b['stock_code']] = b['liutongguben']
 
     today_stocks = {d['stock_code']: d for d in db['stock_daily'].find(
-        {'trade_date': trade_date, 'close': {'$gt': 0}, 'vol': {'$gt': 0}},
-        {'_id': 0, 'stock_code': 1, 'close': 1, 'vol': 1, 'amount': 1, 'chg_pct': 1,
-         'chg_50d': 1, 'vol_ma5': 1}
+        {'trade_date': trade_date, 'close': {'$gt': 0}},
+        {'_id': 0, 'stock_code': 1, 'close': 1, 'chg_pct': 1, 'chg_50d': 1, 'amount': 1,
+         'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
     )}
 
-    sector_rps_map = {}
+    sector_daily_map = {}
     for doc in db['sector_daily'].find(
         {'trade_date': trade_date, 'stock_code': {'$in': list(enabled_sector_codes)}},
-        {'_id': 0, 'stock_code': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
+        {'_id': 0, 'stock_code': 1, 'chg_pct': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
     ):
-        sector_rps_map[doc['stock_code']] = {
-            'rps_10': doc.get('rps_10'),
-            'rps_20': doc.get('rps_20'),
-            'rps_50': doc.get('rps_50'),
-        }
+        sector_daily_map[doc['stock_code']] = doc
 
     if not today_stocks:
         return {'success': True, 'trade_date': trade_date, 'sectors': []}
@@ -502,104 +498,95 @@ def analyze_active_sectors(trade_date: str) -> Dict[str, Any]:
         info = sector_map.get(code)
         if not info:
             continue
+        sd = sector_daily_map.get(code)
+        if not sd:
+            continue
+
+        sector_chg = sd.get('chg_pct', 0) or 0
+        sector_rps_sum = (sd.get('rps_10', 0) or 0) + (sd.get('rps_20', 0) or 0) + (sd.get('rps_50', 0) or 0)
+        # 板块级前置条件：RPS 和 < 200 且 当日涨幅 > 2%
+        if sector_rps_sum >= 200 or sector_chg <= 2:
+            continue
 
         name = info.get('name', code)
         stocks = info.get('stock_codes', [])
-        total = len(stocks)
-        if total < 10:
+        if len(stocks) < 10:
             continue
 
-        sector_stocks = []
+        # 市值>200亿 且 涨幅>5% 的个股
+        cond_stocks = []
         for s_code in stocks:
-            if s_code not in today_stocks:
+            d = today_stocks.get(s_code)
+            if not d:
                 continue
-            today_data = today_stocks[s_code]
             liutong = liutong_map.get(s_code, 0)
             if liutong <= 0:
                 continue
-            float_mv = liutong * today_data['close'] / 1e8
-            vol_ma5 = today_data.get('vol_ma5', 0) or 0
-            sector_stocks.append({
+            close = d.get('close', 0) or 0
+            if close <= 0:
+                continue
+            float_mv = liutong * close / 1e8
+            chg = d.get('chg_pct', 0) or 0
+            if float_mv <= 200 or chg <= 5:
+                continue
+            rps_sum = (d.get('rps_10', 0) or 0) + (d.get('rps_20', 0) or 0) + (d.get('rps_50', 0) or 0)
+            cond_stocks.append({
                 'stock_code': s_code,
                 'name': stock_name_map.get(s_code, s_code),
-                'close': today_data['close'],
-                'volume': today_data['vol'],
-                'amount': today_data.get('amount', 0) or 0,
-                'chg_pct': today_data.get('chg_pct', 0) or 0,
-                'chg_50d': today_data.get('chg_50d', 0) or 0,
-                'vol_ma5': vol_ma5,
+                'close': close,
+                'amount': d.get('amount', 0) or 0,
+                'chg_pct': chg,
+                'chg_50d': d.get('chg_50d', 0) or 0,
                 'float_mv': float_mv,
+                'rps_sum': rps_sum,
             })
 
-        if len(sector_stocks) < 5:
+        if len(cond_stocks) < 10:
             continue
 
-        sector_stocks.sort(key=lambda x: -x['float_mv'])
-        top_20pct_count = max(1, int(len(sector_stocks) * 0.2))
-        large_cap_stocks = sector_stocks[:top_20pct_count]
-
-        if len(large_cap_stocks) < 5:
+        # RPS和>250 的个股占比 > 30%
+        strong_stocks = [s for s in cond_stocks if s['rps_sum'] > 250]
+        strong_pct = len(strong_stocks) / len(cond_stocks) * 100
+        if strong_pct <= 30:
             continue
 
-        active_count = 0
-        active_stocks = []
-        for s in large_cap_stocks:
-            chg = s['chg_pct']
-
-            if chg < 3.5:
-                continue
-
-            if chg < 6:
-                vol_ma5 = s['vol_ma5']
-                if vol_ma5 <= 0 or s['volume'] < vol_ma5 * 1.5:
-                    continue
-
-            active_count += 1
-            active_stocks.append(s)
-
-        active_pct = active_count / len(large_cap_stocks) * 100
-        if active_pct < 50 or active_count < 5:
-            continue
-
-        avg_chg = sum(s['chg_pct'] for s in sector_stocks) / len(sector_stocks) if sector_stocks else 0
-
-        by_chg50 = sorted(sector_stocks, key=lambda x: -x['chg_50d'])[:3]
+        by_chg50 = sorted(cond_stocks, key=lambda x: -x['chg_50d'])[:3]
         pioneer = [f"{s['name']}(50日{s['chg_50d']:+.1f}%, 今日{s['chg_pct']:+.1f}%)" for s in by_chg50]
 
-        by_mv = sorted(sector_stocks, key=lambda x: -x.get('float_mv', 0))[:10]
+        by_mv = sorted(cond_stocks, key=lambda x: -x['float_mv'])[:10]
         by_mv_chg50 = sorted(by_mv, key=lambda x: -x['chg_50d'])[:3]
         main_force = [f"{s['name']}(50日{s['chg_50d']:+.1f}%, 今日{s['chg_pct']:+.1f}%)" for s in by_mv_chg50]
 
-        non_st = [s for s in sector_stocks if 'ST' not in s['name'].upper()]
+        non_st = [s for s in cond_stocks if 'ST' not in s['name'].upper()]
         by_amount_asc = sorted(non_st, key=lambda x: x['amount'])[:20]
         by_amount_asc_chg = sorted(by_amount_asc, key=lambda x: -x['chg_pct'])[:2]
         followers = [f"{s['name']}({s['chg_pct']:+.1f}%)" for s in by_amount_asc_chg]
 
-        sector_rps = sector_rps_map.get(code, {})
+        avg_chg = sum(s['chg_pct'] for s in cond_stocks) / len(cond_stocks) if cond_stocks else 0
 
-        # 结构化"符合条件"个股列表（供前端弹窗展示）
         stocks_field = [
             {
                 'code': s['stock_code'],
-                'name': s.get('name', s['stock_code']),
-                'close': s.get('close', 0),
-                'pct_chg': s.get('chg_pct', 0) or 0,
-                'chg_pct': s.get('chg_pct', 0) or 0,
-                'chg_50d': s.get('chg_50d', 0) or 0,
-                'amount': s.get('amount', 0) or 0,
+                'name': s['name'],
+                'close': s['close'],
+                'pct_chg': s['chg_pct'],
+                'chg_pct': s['chg_pct'],
+                'chg_50d': s['chg_50d'],
+                'amount': s['amount'],
             }
-            for s in active_stocks
+            for s in strong_stocks
         ]
 
         results.append({
             'name': name,
-            'count': active_count,
-            'total': len(large_cap_stocks),
-            'pct': round(active_pct, 1),
+            'count': len(strong_stocks),
+            'total': len(cond_stocks),
+            'pct': round(strong_pct, 1),
             'chg_pct': round(avg_chg, 2),
-            'rps_10': sector_rps.get('rps_10'),
-            'rps_20': sector_rps.get('rps_20'),
-            'rps_50': sector_rps.get('rps_50'),
+            'sector_chg_pct': round(sector_chg, 2),
+            'rps_10': sd.get('rps_10'),
+            'rps_20': sd.get('rps_20'),
+            'rps_50': sd.get('rps_50'),
             'pioneer': pioneer,
             'main_force': main_force,
             'followers': followers,
