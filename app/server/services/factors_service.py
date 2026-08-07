@@ -517,7 +517,7 @@ def _run_compare_sectors_task(task_id):
             step='完成',
             progress='100%',
             result={
-                'local_count': len(local_codes),
+                'local_count': len(local_sector_map),
                 'remote_count': len(remote_sectors),
                 'new_count': len(new_sectors),
                 'new_sectors': new_sectors[:50],
