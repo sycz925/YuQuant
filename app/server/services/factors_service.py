@@ -530,7 +530,7 @@ def _run_compare_sectors_task(task_id):
                 'local_count': len(local_sector_by_code),
                 'remote_count': len(remote_sectors),
                 'new_count': len(new_sectors),
-                'new_sectors': new_sectors[:50],
+                'new_sectors': new_sectors,
             }
         )
 
