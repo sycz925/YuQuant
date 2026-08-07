@@ -830,24 +830,37 @@ def import_stocks(stocks: List[Dict[str, Any]]):
 
 @router.post("/import-sectors")
 def import_sectors(sectors: List[Dict[str, Any]]):
-    """导入新增的板块到 sector_basics，并自动同步日线数据和技术指标"""
+    """导入或更新板块：新增板块插入 sector_basics，已存在板块同步远程最新成分股"""
     try:
         db = get_db()
         from datetime import datetime as _dt
 
         imported_codes = []
+        updated_codes = []
         skipped = 0
         for sector in sectors:
             code = sector.get('code', '')
             name = sector.get('name', '')
-            stock_codes = sector.get('stock_codes', [])
+            stock_codes = sector.get('all_stock_codes') or sector.get('stock_codes', [])
 
             if not code or not name:
                 continue
 
             existing = db['sector_basics'].find_one({'code': code})
             if existing:
-                skipped += 1
+                old_codes = existing.get('stock_codes', [])
+                if set(old_codes) != set(stock_codes):
+                    db['sector_basics'].update_one(
+                        {'code': code},
+                        {'$set': {
+                            'stock_codes': stock_codes,
+                            'stock_count': len(stock_codes),
+                            'update_time': _dt.now(),
+                        }}
+                    )
+                    updated_codes.append(code)
+                else:
+                    skipped += 1
                 continue
 
             db['sector_basics'].insert_one({
@@ -866,8 +879,9 @@ def import_sectors(sectors: List[Dict[str, Any]]):
         return {
             'success': True,
             'imported': len(imported_codes),
+            'updated': len(updated_codes),
             'skipped': skipped,
-            'message': f'导入完成: 成功 {len(imported_codes)} 个, 已存在 {skipped} 个'
+            'message': f'导入完成: 新增 {len(imported_codes)} 个, 更新 {len(updated_codes)} 个, 未变 {skipped} 个'
         }
     except Exception as e:
         logger.error(f"导入板块失败: {e}")
