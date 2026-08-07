@@ -41,21 +41,6 @@ export default function CompareDataModal({ compareModal, onClose, onImportSucces
     }
   }
 
-  const handleImportOne = async (item) => {
-    try {
-      const res = await factorApi.importSectors([item])
-      if (res?.success) {
-        message.success(res.message)
-        if (onImportSuccess) onImportSuccess()
-      } else {
-        message.error(res?.message || '导入失败')
-      }
-    } catch (e) {
-      console.error('导入失败:', e)
-      message.error('导入失败')
-    }
-  }
-
   const handleClose = () => {
     if (comparePollRef.current) {
       clearInterval(comparePollRef.current)
@@ -114,15 +99,10 @@ export default function CompareDataModal({ compareModal, onClose, onImportSucces
                         <span className="ml-2 text-gray-500">({item.stock_count}只成分股)</span>
                       </div>
                     )}
-                    {compareModal.type === 'sector' && item.code && (
-                      <Button
-                        size="small"
-                        type="primary"
-                        className="bg-blue-500 hover:bg-blue-600"
-                        onClick={() => handleImportOne(item)}
-                      >
-                        加入
-                      </Button>
+                    {compareModal.type === 'sector' && (
+                      <Tag color={item.status === '待更新' ? 'orange' : item.status === '待加入' ? 'blue' : 'default'}>
+                        {item.status}
+                      </Tag>
                     )}
                   </List.Item>
                 )}

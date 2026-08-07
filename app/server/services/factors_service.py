@@ -506,6 +506,14 @@ def _run_compare_sectors_task(task_id):
         for sector in remote_sectors:
             key = (sector['name'], frozenset(sector['all_stock_codes']))
             if key not in local_sector_map:
+                code = sector.get('code', '')
+                if not code:
+                    status = '无code'
+                elif db['sector_basics'].find_one({'code': code}):
+                    status = '待更新'
+                else:
+                    status = '待加入'
+                sector['status'] = status
                 new_sectors.append(sector)
         
         new_sectors.sort(key=lambda x: -x['stock_count'])
