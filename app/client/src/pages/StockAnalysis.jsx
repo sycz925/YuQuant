@@ -12,13 +12,6 @@ import TradingViewChart from '../components/TradingViewChart'
 
 const { Title, Text } = Typography
 
-// 时间周期选项
-const TIME_PERIODS = [
-  { value: 'day', label: '日线' },
-  { value: 'week', label: '周线' },
-  { value: 'month', label: '月线' }
-]
-
 // 防抖函数
 const debounce = (fn, delay) => {
   let timer = null
@@ -36,7 +29,6 @@ function StockAnalysis({ initialCode, initialType }) {
   const [allData, setAllData] = useState([]) // 全部数据
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [timePeriod, setTimePeriod] = useState('day')
   const [currentIndex, setCurrentIndex] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -129,154 +121,6 @@ function StockAnalysis({ initialCode, initialType }) {
     const macd = data.map((_, i) => (dif[i] !== null && dea[i] !== null) ? (dif[i] - dea[i]) * 2 : null)
 
     return { dif, dea, macd }
-  }
-
-  // ISO周计算（与Python isocalendar一致）
-  const getISOWeek = (dateStr) => {
-    const y = parseInt(dateStr.slice(0, 4))
-    const m = parseInt(dateStr.slice(4, 6)) - 1
-    const d = parseInt(dateStr.slice(6, 8))
-    const date = new Date(y, m, d)
-    // 复制日期避免修改
-    const target = new Date(date.valueOf())
-    const dayNr = (date.getDay() + 6) % 7 // 周一=0, 周日=6
-    target.setDate(target.getDate() - dayNr + 3) // 该周周四
-    const jan4 = new Date(target.getFullYear(), 0, 4)
-    const weekNum = Math.round(((target - jan4) / 86400000 - 3 + (jan4.getDay() + 6) % 7) / 7) + 1
-    return `${target.getFullYear()}-W${String(weekNum).padStart(2, '0')}`
-  }
-
-  // 转换周线数据（使用ISO周，与后端一致）
-  const convertToWeekly = (data) => {
-    if (!data || data.length === 0) return []
-
-    const weeklyData = []
-    let currentWeekKey = null
-    let weekData = []
-
-    data.forEach(d => {
-      const weekKey = getISOWeek(d.date)
-
-      if (currentWeekKey !== weekKey && weekData.length > 0) {
-        weeklyData.push({
-          date: weekData[0].date,
-          open: weekData[0].open,
-          high: Math.max(...weekData.map(d => d.high)),
-          low: Math.min(...weekData.map(d => d.low)),
-          close: weekData[weekData.length - 1].close,
-          volume: weekData.reduce((sum, d) => sum + (d.volume || 0), 0),
-          // 均线字段（使用最新一天的数据）
-          ma10: weekData[weekData.length - 1].ma10,
-          ma20: weekData[weekData.length - 1].ma20,
-          ma50: weekData[weekData.length - 1].ma50,
-          ma120: weekData[weekData.length - 1].ma120,
-          vol_ma5: weekData[weekData.length - 1].vol_ma5,
-          vol_ma10: weekData[weekData.length - 1].vol_ma10,
-          vol_ma20: weekData[weekData.length - 1].vol_ma20,
-          vol_ma50: weekData[weekData.length - 1].vol_ma50,
-          rps_20: weekData[weekData.length - 1].rps_20,
-          rps_50: weekData[weekData.length - 1].rps_50,
-          rps_120: weekData[weekData.length - 1].rps_120,
-          rps_250: weekData[weekData.length - 1].rps_250
-        })
-      }
-      currentWeekKey = weekKey
-      weekData.push(d)
-    })
-
-    if (weekData.length > 0) {
-      weeklyData.push({
-        date: weekData[0].date,
-        open: weekData[0].open,
-        high: Math.max(...weekData.map(d => d.high)),
-        low: Math.min(...weekData.map(d => d.low)),
-        close: weekData[weekData.length - 1].close,
-        volume: weekData.reduce((sum, d) => sum + (d.volume || 0), 0),
-        // 均线字段（使用最新一天的数据）
-        ma10: weekData[weekData.length - 1].ma10,
-        ma20: weekData[weekData.length - 1].ma20,
-        ma50: weekData[weekData.length - 1].ma50,
-        ma120: weekData[weekData.length - 1].ma120,
-        vol_ma5: weekData[weekData.length - 1].vol_ma5,
-        vol_ma10: weekData[weekData.length - 1].vol_ma10,
-        vol_ma20: weekData[weekData.length - 1].vol_ma20,
-        vol_ma50: weekData[weekData.length - 1].vol_ma50,
-        rps_20: weekData[weekData.length - 1].rps_20,
-        rps_50: weekData[weekData.length - 1].rps_50,
-        rps_120: weekData[weekData.length - 1].rps_120,
-        rps_250: weekData[weekData.length - 1].rps_250
-      })
-    }
-
-    return weeklyData
-  }
-
-  // 转换月线数据
-  const convertToMonthly = (data) => {
-    if (!data || data.length === 0) return []
-
-    const monthlyData = []
-    let currentMonth = null
-    let monthData = []
-
-    data.forEach(d => {
-      const month = d.date.slice(0, 6)
-
-      if (currentMonth !== month) {
-        if (monthData.length > 0) {
-          monthlyData.push({
-            date: monthData[0].date,
-            open: monthData[0].open,
-            high: Math.max(...monthData.map(d => d.high)),
-            low: Math.min(...monthData.map(d => d.low)),
-            close: monthData[monthData.length - 1].close,
-            volume: monthData.reduce((sum, d) => sum + (d.volume || 0), 0),
-            // 均线字段（使用最新一天的数据）
-            ma10: monthData[monthData.length - 1].ma10,
-            ma20: monthData[monthData.length - 1].ma20,
-            ma50: monthData[monthData.length - 1].ma50,
-            ma120: monthData[monthData.length - 1].ma120,
-            vol_ma5: monthData[monthData.length - 1].vol_ma5,
-            vol_ma10: monthData[monthData.length - 1].vol_ma10,
-            vol_ma20: monthData[monthData.length - 1].vol_ma20,
-            vol_ma50: monthData[monthData.length - 1].vol_ma50,
-            rps_20: monthData[monthData.length - 1].rps_20,
-            rps_50: monthData[monthData.length - 1].rps_50,
-            rps_120: monthData[monthData.length - 1].rps_120,
-            rps_250: monthData[monthData.length - 1].rps_250
-          })
-        }
-        currentMonth = month
-        monthData = []
-      }
-      monthData.push(d)
-    })
-
-    if (monthData.length > 0) {
-      monthlyData.push({
-        date: monthData[0].date,
-        open: monthData[0].open,
-        high: Math.max(...monthData.map(d => d.high)),
-        low: Math.min(...monthData.map(d => d.low)),
-        close: monthData[monthData.length - 1].close,
-        volume: monthData.reduce((sum, d) => sum + (d.volume || 0), 0),
-        // 均线字段（使用最新一天的数据）
-        ma10: monthData[monthData.length - 1].ma10,
-        ma20: monthData[monthData.length - 1].ma20,
-        ma50: monthData[monthData.length - 1].ma50,
-        ma120: monthData[monthData.length - 1].ma120,
-        vol_ma5: monthData[monthData.length - 1].vol_ma5,
-        vol_ma10: monthData[monthData.length - 1].vol_ma10,
-        vol_ma20: monthData[monthData.length - 1].vol_ma20,
-        vol_ma50: monthData[monthData.length - 1].vol_ma50,
-        rps_20: monthData[monthData.length - 1].rps_20,
-        rps_50: monthData[monthData.length - 1].rps_50,
-        rps_120: monthData[monthData.length - 1].rps_120,
-        rps_250: monthData[monthData.length - 1].rps_250
-      })
-    }
-
-    return monthlyData
   }
 
   // 初始加载（最近200条）
@@ -377,13 +221,6 @@ function StockAnalysis({ initialCode, initialType }) {
           }
         }
       })
-
-      // 根据时间周期转换数据
-      if (timePeriod === 'week') {
-        data = convertToWeekly(data)
-      } else if (timePeriod === 'month') {
-        data = convertToMonthly(data)
-      }
 
       setAllData(data)
     } catch (e) {
@@ -509,15 +346,7 @@ function StockAnalysis({ initialCode, initialType }) {
         // 合并数据（新数据在前）
         const mergedData = [...uniqueNewData, ...allData]
 
-        // 根据时间周期转换
-        let processedData = mergedData
-        if (timePeriod === 'week') {
-          processedData = convertToWeekly(mergedData)
-        } else if (timePeriod === 'month') {
-          processedData = convertToMonthly(mergedData)
-        }
-
-        setAllData(processedData)
+        setAllData(mergedData)
 
         // 更新索引以保持当前显示位置
         setCurrentIndex(prev => prev + uniqueNewData.length)
@@ -529,13 +358,6 @@ function StockAnalysis({ initialCode, initialType }) {
     }
   }
 
-  // 当时间周期改变时重新加载数据
-  useEffect(() => {
-    if (selectedCode) {
-      loadInitialData()
-    }
-  }, [timePeriod])
-
   // 获取显示的数据
   const displayData = useMemo(() => {
     if (allData.length === 0) return []
@@ -544,7 +366,7 @@ function StockAnalysis({ initialCode, initialType }) {
     const startIdx = Math.max(0, allData.length - displayCount - currentIndex)
     const endIdx = Math.max(0, allData.length - currentIndex)
     return allData.slice(startIdx, endIdx)
-  }, [allData, currentIndex, timePeriod])
+  }, [allData, currentIndex])
 
   // 左移（显示更早的数据）
   const handleMoveLeft = useCallback(() => {
@@ -557,7 +379,7 @@ function StockAnalysis({ initialCode, initialType }) {
     }
 
     setCurrentIndex(prev => Math.min(prev + 20, maxIndex))
-  }, [allData.length, currentIndex, timePeriod])
+  }, [allData.length, currentIndex])
 
   // 右移（显示更新的数据）
   const handleMoveRight = useCallback(() => {
@@ -616,18 +438,6 @@ function StockAnalysis({ initialCode, initialType }) {
                 ))}
               </Select>
 
-              <div className="flex items-center space-x-2">
-                <Select
-                  value={timePeriod}
-                  onChange={setTimePeriod}
-                  className="w-20"
-                  size="small"
-                >
-                {TIME_PERIODS.map(p => (
-                  <Select.Option key={p.value} value={p.value}>{p.label}</Select.Option>
-                ))}
-              </Select>
-
               <Space size="small">
                 <Button
                   icon={<LeftOutlined />}
@@ -642,7 +452,6 @@ function StockAnalysis({ initialCode, initialType }) {
                   size="small"
                 />
               </Space>
-            </div>
           </div>
         </div>
       </Card>
@@ -669,7 +478,7 @@ function StockAnalysis({ initialCode, initialType }) {
             <Text type="secondary" className="text-[10px] md:text-sm">请先在数据管理页面同步该股票的数据</Text>
           </div>
         ) : (
-          <TradingViewChart data={displayData} height={window.innerWidth < 768 ? 500 : 800} stockCode={selectedCode} period={timePeriod} />
+          <TradingViewChart data={displayData} height={window.innerWidth < 768 ? 500 : 800} stockCode={selectedCode} marketType={marketType} />
         )}
       </Card>
     </div>
