@@ -5,7 +5,7 @@
   - 跌破5日均线:   close < ma5 且 前一日 close >= 前一日 ma5
   - 跌破10日均线:  close < ma10 且 前一日 close >= 前一日 ma10
   - 跌破20日均线:  close < ma20 且 前一日 close >= 前一日 ma20
-  - 5日均线上穿10日均线: ma5 > ma10 且 前一日 ma5 <= 前一日 ma10
+  - 5日均线上穿10日均线: ma5 > ma10 且 前一日 ma5 <= 前一日 ma10 且 当日 ma5 > 前一日 ma5
 
 stock_daily/etf_daily 仅冗余了 ma10/ma20/ma50/ma120，ma5 需现场计算。
 """
@@ -87,7 +87,7 @@ def _check_one(code: str, typ: str, docs: list, name: str, alert_coll, max_dates
                 conditions.append('跌破20日均线')
         if (cur_ma5 is not None and prev_ma5 is not None
                 and cur_ma10 is not None and prev_ma10 is not None):
-            if cur_ma5 > cur_ma10 and prev_ma5 <= prev_ma10:
+            if cur_ma5 > cur_ma10 and prev_ma5 <= prev_ma10 and cur_ma5 > prev_ma5:
                 conditions.append('5日均线上穿10日均线')
 
         if not conditions:
