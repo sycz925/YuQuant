@@ -64,6 +64,10 @@ def _create_indexes(db):
     # 重点关注列表索引（同一 code+type 只能存在一条）
     db['watchlist'].create_index([('code', ASCENDING), ('type', ASCENDING)], unique=True)
 
+    # 关注列表均线预警索引（同一 code+日期+原因 只能存在一条）
+    db['watchlist_alerts'].create_index(
+        [('code', ASCENDING), ('trade_date', ASCENDING), ('reason', ASCENDING)], unique=True)
+
     # 新日线集合索引（stock_daily, sector_daily, index_daily, etf_daily）
     for coll_name in COLLECTION_MAP.values():
         db[coll_name].create_index([('stock_code', ASCENDING), ('trade_date', DESCENDING)])

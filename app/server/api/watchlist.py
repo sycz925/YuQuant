@@ -9,6 +9,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.data.db import get_db, get_collection
 from app.server.models import WatchlistAddRequest, WatchlistItem, WatchlistResponse
+from app.engine.watchlist_alert import check_latest, get_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -112,3 +113,21 @@ def remove_watchlist(code: str):
     if not r.deleted_count:
         raise HTTPException(status_code=404, detail="不在列表中")
     return {'success': True, 'code': code}
+
+
+@router.post("/alerts/check")
+def trigger_alerts_check():
+    """扫描关注列表最新交易日，生成均线预警记录"""
+    new_count = check_latest()
+    return {'success': True, 'new_alerts': new_count}
+
+
+@router.get("/alerts")
+def list_alerts(
+    start_date: Optional[str] = Query(None, description="开始日期 YYYYMMDD"),
+    end_date: Optional[str] = Query(None, description="结束日期 YYYYMMDD"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    """分页查询关注列表均线预警记录"""
+    return get_alerts(start_date, end_date, page, page_size)
