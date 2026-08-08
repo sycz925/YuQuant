@@ -121,11 +121,18 @@ const calculateTDXOverlay = (data) => {
     const cur = idx[t];
     const prev = idx[data[i - 1]?.time];
     const m7 = ma7.find(m => m.time === t)?.value ?? null;
+
+    if (m7 === null) {
+      ma7Full.push({ time: t });
+      kdData.push({ time: t });
+      kkData.push({ time: t });
+      continue;
+    }
     ma7Full.push({ time: t, value: m7 });
 
-    if (!cur || !prev || m7 === null) {
-      kdData.push({ time: t, value: null });
-      kkData.push({ time: t, value: null });
+    if (!cur || !prev) {
+      kdData.push({ time: t });
+      kkData.push({ time: t });
       continue;
     }
     const ema7Up = cur.ema7 > prev.ema7;
@@ -135,8 +142,8 @@ const calculateTDXOverlay = (data) => {
 
     const kd = ema7Up && ema21Up && macdUp && ma10Up;
     const kk = (!ema7Up || !ema21Up) && !macdUp;
-    kdData.push({ time: t, value: kd ? m7 : null });
-    kkData.push({ time: t, value: kk ? m7 : null });
+    kdData.push(kd ? { time: t, value: m7 } : { time: t });
+    kkData.push(kk ? { time: t, value: m7 } : { time: t });
   }
   return { ma7Full, kdData, kkData };
 };
@@ -313,10 +320,10 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
     });
     candleSeries.setData(candles);
 
-    // 通达信公式叠加（MA7 蓝粗线 + KD 红段 + KK 绿段）
+    // 通达信公式叠加（MA7 蓝底 + KD 红段 + KK 绿段，共用同一路径 => 一根线变色）
     const ma7Series = mainChart.addLineSeries({ color: '#5b9bd5', lineWidth: 2, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
-    const kdSeries = mainChart.addLineSeries({ color: '#ef5350', lineWidth: 3, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false, lineType: 1 });
-    const kkSeries = mainChart.addLineSeries({ color: '#26a69a', lineWidth: 3, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false, lineType: 1 });
+    const kdSeries = mainChart.addLineSeries({ color: '#ef5350', lineWidth: 2, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false, lineType: 0 });
+    const kkSeries = mainChart.addLineSeries({ color: '#26a69a', lineWidth: 2, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false, lineType: 0 });
     ma7Series.setData(ma7Full);
     kdSeries.setData(kdData);
     kkSeries.setData(kkData);
