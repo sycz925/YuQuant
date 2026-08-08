@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react'
 import { Table, Input, Button, Space, Tag, message, Select } from 'antd'
-import { PlusOutlined, ReloadOutlined, StarFilled } from '@ant-design/icons'
+import { PlusOutlined, AlertOutlined, StarFilled } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { watchlistApi } from '../api'
@@ -61,6 +61,21 @@ function WatchlistPage() {
       queryClient.invalidateQueries({ queryKey: ['watchlist'] })
     } catch (e) {
       message.error(e?.response?.data?.detail || '删除失败')
+    }
+  }
+
+  const [checking, setChecking] = useState(false)
+  const handleCheckAlerts = async () => {
+    if (checking) return
+    setChecking(true)
+    try {
+      const res = await watchlistApi.checkAlerts()
+      const n = res?.new_alerts || 0
+      message.success(n > 0 ? `预警检查完成，新增 ${n} 条预警` : '预警检查完成，无新增预警')
+    } catch (e) {
+      message.error(e?.response?.data?.detail || '预警检查失败')
+    } finally {
+      setChecking(false)
     }
   }
 
@@ -139,7 +154,8 @@ function WatchlistPage() {
               { value: 'three', label: '三线红' },
             ]}
           />
-          <Button icon={<ReloadOutlined />} onClick={() => queryClient.invalidateQueries({ queryKey: ['watchlist'] })}>刷新</Button>
+          <Button icon={<AlertOutlined />} loading={checking} onClick={handleCheckAlerts}>预警检查</Button>
+          <Button icon={<AlertOutlined />} onClick={() => navigate('/watchlist/alerts')}>预警</Button>
         </Space>
       </div>
 

@@ -13,6 +13,7 @@ import MarketMonitor from './pages/MarketMonitor'
 import ETFPage from './pages/ETFPage'
 import ETFAlertPage from './pages/ETFAlertPage'
 import WatchlistPage from './pages/WatchlistPage'
+import WatchlistAlertPage from './pages/WatchlistAlertPage'
 import SectorDetail from './pages/SectorDetail'
 import ErrorBoundary from './components/ErrorBoundary'
 import { healthApi, oneClickUpdateApi, alertApi } from './api'
@@ -192,6 +193,7 @@ function App() {
             <Route path="/etf" element={<ETFPage />} />
             <Route path="/etf/alerts" element={<ETFAlertPage />} />
             <Route path="/watchlist" element={<WatchlistPage />} />
+            <Route path="/watchlist/alerts" element={<WatchlistAlertPage />} />
             <Route path="/sector/:code" element={<SectorDetail />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>

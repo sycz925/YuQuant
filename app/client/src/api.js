@@ -199,6 +199,8 @@ export const watchlistApi = {
   getList: (params = {}) => api.get('/watchlist', { params }),
   add: (code) => api.post('/watchlist', { code }),
   remove: (code) => api.delete(`/watchlist/${code}`),
+  checkAlerts: () => api.post('/watchlist/alerts/check'),
+  getAlerts: (params = {}) => api.get('/watchlist/alerts', { params }),
 }
 
 export default api
