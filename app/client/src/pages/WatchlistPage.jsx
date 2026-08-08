@@ -154,8 +154,8 @@ function WatchlistPage() {
               { value: 'three', label: '三线红' },
             ]}
           />
-          <Button icon={<AlertOutlined />} loading={checking} onClick={handleCheckAlerts}>预警检查</Button>
-          <Button icon={<AlertOutlined />} onClick={() => navigate('/watchlist/alerts')}>预警</Button>
+          <Button icon={<AlertOutlined />} onClick={() => navigate('/watchlist/alerts')}>预警记录</Button>
+          <Button type="primary" icon={<AlertOutlined />} loading={checking} onClick={handleCheckAlerts}>预警检查</Button>
         </Space>
       </div>
 

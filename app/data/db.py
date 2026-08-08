@@ -68,6 +68,14 @@ def _create_indexes(db):
     db['watchlist_alerts'].create_index(
         [('code', ASCENDING), ('trade_date', ASCENDING), ('reason', ASCENDING)], unique=True)
 
+    # ETF预警索引（同一 code+日期+原因 只能存在一条；同日多种原因可共存）
+    if 'etf_alerts' in db.list_collection_names():
+        etf_alert_idx = list(db['etf_alerts'].list_indexes())
+        if any(idx['name'] == 'code_1_trade_date_1' for idx in etf_alert_idx):
+            db['etf_alerts'].drop_index('code_1_trade_date_1')
+        db['etf_alerts'].create_index(
+            [('code', ASCENDING), ('trade_date', ASCENDING), ('reason', ASCENDING)], unique=True)
+
     # 新日线集合索引（stock_daily, sector_daily, index_daily, etf_daily）
     for coll_name in COLLECTION_MAP.values():
         db[coll_name].create_index([('stock_code', ASCENDING), ('trade_date', DESCENDING)])

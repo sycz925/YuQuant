@@ -193,11 +193,13 @@ def _run_etf_sync(task_id: str):
         if tm.is_cancelled(task_id):
             return
 
-        # Step 4: 计算ENE预警
+        # Step 4: 计算ENE预警 + 5日上穿10日预警
         tm.start_step(task_id, 3)
-        from app.engine.ene_alert import backfill_alerts
-        new_count = backfill_alerts()
-        tm.complete_step(task_id, 3, f'新增{new_count}条预警')
+        from app.engine.ene_alert import backfill_alerts, backfill_cross_alerts
+        ene_count = backfill_alerts()
+        cross_count = backfill_cross_alerts(max_dates=10)
+        new_count = ene_count + cross_count
+        tm.complete_step(task_id, 3, f'新增{new_count}条预警(ENE {ene_count} + 上穿 {cross_count})')
 
         tm.complete_task(task_id, 'ETF同步全部完成')
         logger.info(f'ETF同步任务 {task_id} 全部完成')

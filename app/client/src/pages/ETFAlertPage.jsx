@@ -3,7 +3,6 @@ import { Table, DatePicker, Space, Tag, message, Card, Button } from 'antd'
 import { AlertOutlined, ArrowLeftOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { alertApi } from '../api'
-import dayjs from 'dayjs'
 
 const { RangePicker } = DatePicker
 
@@ -68,48 +67,29 @@ function ETFAlertPage() {
       render: (v) => <span className="font-mono">{v}</span>
     },
     {
-      title: '收盘价(复权)',
+      title: '收盘价',
       dataIndex: 'close',
       key: 'close',
-      width: 120,
-      render: (v, r) => (
-        <span className="font-mono">
-          {v?.toFixed(3)}
-          {r.close_raw && Math.abs(v / r.close_raw - 1) > 0.01 &&
-            <span className="text-gray-400 text-xs ml-1">({r.close_raw.toFixed(3)})</span>
-          }
-        </span>
-      )
-    },
-    {
-      title: '成交额',
-      dataIndex: 'amount',
-      key: 'amount',
       width: 110,
-      render: (v) => v != null && v > 0
-        ? <span className="font-mono">{(v / 1e8).toFixed(2)}亿</span>
-        : '-'
-    },
-    {
-      title: 'ENE中轨(MA10)',
-      dataIndex: 'ene_ma',
-      key: 'ene_ma',
-      width: 130,
       render: (v) => <span className="font-mono">{v?.toFixed(3)}</span>
     },
     {
-      title: 'ENE下轨',
-      dataIndex: 'ene_lower',
-      key: 'ene_lower',
+      title: '当日涨幅',
+      dataIndex: 'chg_pct',
+      key: 'chg_pct',
       width: 100,
-      render: (v) => <span className="font-mono text-green-600">{v?.toFixed(3)}</span>
+      render: (v) => {
+        if (v == null) return '-'
+        const color = v >= 0 ? 'text-red-500' : 'text-green-500'
+        return <span className={`font-mono ${color}`}>{v >= 0 ? '+' : ''}{v.toFixed(2)}%</span>
+      }
     },
     {
       title: '原因',
       dataIndex: 'reason',
       key: 'reason',
       render: (v) => (
-        <Tag color="red" className="text-xs whitespace-normal break-all">
+        <Tag color={v.includes('击穿') ? 'red' : 'blue'} className="text-xs whitespace-normal break-all">
           <AlertOutlined className="mr-1" />{v}
         </Tag>
       )
@@ -129,7 +109,7 @@ function ETFAlertPage() {
 
   return (
     <div>
-      <Card title={<span><AlertOutlined className="mr-2 text-red-500" />ETF ENE下轨击穿预警</span>}
+      <Card title={<span><AlertOutlined className="mr-2 text-red-500" />ETF预警</span>}
         extra={<Space><Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button><Tag color="blue">共 {total} 条</Tag></Space>}
         className="bg-white rounded-lg shadow-sm">
         <div className="mb-4">
@@ -144,7 +124,7 @@ function ETFAlertPage() {
         <Table
           dataSource={data}
           columns={columns}
-          rowKey={(r) => `${r.code}_${r.trade_date}`}
+          rowKey={(r) => `${r.code}_${r.trade_date}_${r.reason}`}
           loading={loading}
           pagination={{
             current: page,

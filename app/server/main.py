@@ -54,12 +54,13 @@ def _start_alert_scheduler():
     """启动ENE预警定时器（每5分钟）"""
     import threading
     import time
-    from app.engine.ene_alert import check_latest, backfill_alerts
+    from app.engine.ene_alert import check_latest, backfill_alerts, backfill_cross_alerts
 
     # 首次启动时回刷历史
     logger.info("[ENE预警] 首次启动，回刷历史数据...")
     try:
         backfill_alerts()
+        backfill_cross_alerts(max_dates=10)
     except Exception as e:
         logger.error(f"[ENE预警] 回刷失败: {e}")
 
