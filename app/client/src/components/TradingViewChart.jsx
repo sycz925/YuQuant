@@ -57,6 +57,18 @@ const calculateMACD = (data, fastPeriod = 12, slowPeriod = 26, signalPeriod = 9)
   return data.map((d, i) => ({ time: d.time, dif: dif[i], dea: dea[i], macd: macd[i] }));
 };
 
+// EMA 计算（主图公式用，输入为收盘价数值数组）
+const calculateEMA = (data, period) => {
+  const k = 2 / (period + 1);
+  let prev = data[0];
+  const res = [prev];
+  for (let i = 1; i < data.length; i++) {
+    prev = data[i] * k + prev * (1 - k);
+    res.push(prev);
+  }
+  return res;
+};
+
 // 均线计算
 const calculateMA = (data, period) => {
   const result = [];
@@ -81,6 +93,54 @@ const calculateVolMA = (data, period) => {
   return result;
 };
 
+// 通达信主图公式：MA7蓝线 + KD红段 + KK绿段
+const calculateTDXOverlay = (data) => {
+  const closes = data.map(d => d.close);
+  const ema7 = calculateEMA(closes, 7);
+  const ema21 = calculateEMA(closes, 21);
+  const ma7 = calculateMA(data, 7);
+  const ma10 = calculateMA(data, 10);
+  const macd = calculateMACD(data);
+
+  // 构建索引映射 time -> 指标
+  const idx = {};
+  data.forEach((d, i) => {
+    idx[d.time] = {
+      ema7: ema7[i], ema21: ema21[i],
+      ma10: ma10.find(m => m.time === d.time)?.value ?? null,
+      macd: macd[i].macd,
+    };
+  });
+
+  const kdData = [];
+  const kkData = [];
+  const ma7Full = [];
+  for (let i = 0; i < data.length; i++) {
+    const d = data[i];
+    const t = d.time;
+    const cur = idx[t];
+    const prev = idx[data[i - 1]?.time];
+    const m7 = ma7.find(m => m.time === t)?.value ?? null;
+    ma7Full.push({ time: t, value: m7 });
+
+    if (!cur || !prev || m7 === null) {
+      kdData.push({ time: t, value: null });
+      kkData.push({ time: t, value: null });
+      continue;
+    }
+    const ema7Up = cur.ema7 > prev.ema7;
+    const ema21Up = cur.ema21 > prev.ema21;
+    const ma10Up = cur.ma10 !== null && prev.ma10 !== null && cur.ma10 > prev.ma10;
+    const macdUp = cur.macd > prev.macd;
+
+    const kd = ema7Up && ema21Up && macdUp && ma10Up;
+    const kk = (!ema7Up || !ema21Up) && !macdUp;
+    kdData.push({ time: t, value: kd ? m7 : null });
+    kkData.push({ time: t, value: kk ? m7 : null });
+  }
+  return { ma7Full, kdData, kkData };
+};
+
 const fmt = (num, dec = 2) => {
   if (num === null || num === undefined || isNaN(num)) return '-';
   return num.toFixed(dec);
@@ -93,10 +153,13 @@ const fmtVol = (vol) => {
   return vol.toString();
 };
 
-export default function TradingViewChart({ data, height = 800, stockCode, period = 'day' }) {
+export default function TradingViewChart({ data, height = 800, stockCode, period = 'day', marketType = 'stock' }) {
   const containerRef = useRef(null);
   const tooltipRef = useRef(null);
   const verticalLineRef = useRef(null);
+
+  // ETF 价格与均线保留 3 位小数，个股 2 位
+  const priceDec = marketType === 'etf' ? 3 : 2;
 
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [hoverData, setHoverData] = useState(null);
@@ -135,19 +198,6 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
         color: isUp ? AQ_STYLES.upColor : AQ_STYLES.downColor
       };
     });
-    // 从数据库读取均线数据
-    const ma10Data = uniqueData.map(d => ({
-      time: formatDateForChart(d.trade_date || d.date),
-      value: d.ma10 !== undefined ? parseFloat(d.ma10) : null
-    })).filter(d => d.value !== null);
-    const ma20Data = uniqueData.map(d => ({
-      time: formatDateForChart(d.trade_date || d.date),
-      value: d.ma20 !== undefined ? parseFloat(d.ma20) : null
-    })).filter(d => d.value !== null);
-    const ma120Data = uniqueData.map(d => ({
-      time: formatDateForChart(d.trade_date || d.date),
-      value: d.ma120 !== undefined ? parseFloat(d.ma120) : null
-    })).filter(d => d.value !== null);
     // 成交量均线
     const volMa5Data = uniqueData.map(d => ({
       time: formatDateForChart(d.trade_date || d.date),
@@ -157,16 +207,19 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       time: formatDateForChart(d.trade_date || d.date),
       value: d.vol_ma50 !== undefined ? parseFloat(d.vol_ma50) : null
     })).filter(d => d.value !== null);
-    return { candles, volumes, ma10Data, ma20Data, ma120Data, volMa5Data, volMa50Data };
+    return { candles, volumes, volMa5Data, volMa50Data };
   }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
-    const { candles, volumes, ma10Data, ma20Data, ma120Data, volMa5Data, volMa50Data } = formatData(data);
+    const { candles, volumes, volMa5Data, volMa50Data } = formatData(data);
 
     // 计算MACD
     const macdData = calculateMACD(candles);
+
+    // 通达信主图公式（MA7蓝线 + KD红段 + KK绿段）
+    const { ma7Full, kdData, kkData } = calculateTDXOverlay(candles);
 
     // 清空容器
     container.querySelectorAll('.chart-wrapper').forEach(el => el.remove());
@@ -256,16 +309,17 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       wickDownColor: AQ_STYLES.wickDown, wickUpColor: AQ_STYLES.wickUp,
       priceLineVisible: false,
       lastValueVisible: false,
+      priceFormat: { type: 'price', precision: priceDec, minMove: 1 / Math.pow(10, priceDec) },
     });
     candleSeries.setData(candles);
 
-    // 均线（使用数据库字段）
-    const ma10Series = mainChart.addLineSeries({ color: '#5b9bd5', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
-    const ma20Series = mainChart.addLineSeries({ color: '#70ad47', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
-    const ma120Series = mainChart.addLineSeries({ color: '#ffc107', lineWidth: 1, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
-    ma10Series.setData(ma10Data);
-    ma20Series.setData(ma20Data);
-    ma120Series.setData(ma120Data);
+    // 通达信公式叠加（MA7 蓝粗线 + KD 红段 + KK 绿段）
+    const ma7Series = mainChart.addLineSeries({ color: '#5b9bd5', lineWidth: 2, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false });
+    const kdSeries = mainChart.addLineSeries({ color: '#ef5350', lineWidth: 3, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false, lineType: 1 });
+    const kkSeries = mainChart.addLineSeries({ color: '#26a69a', lineWidth: 3, crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false, lineType: 1 });
+    ma7Series.setData(ma7Full);
+    kdSeries.setData(kdData);
+    kkSeries.setData(kkData);
 
     // ==================== 成交量图 ====================
     const volumeWrapper = document.createElement('div');
@@ -400,14 +454,14 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
 
     // ==================== 更新标签值的函数 ====================
     const updateLabels = (time) => {
-      // K线标签
-      const ma10 = ma10Data.find(d => d.time === time);
-      const ma20 = ma20Data.find(d => d.time === time);
-      const ma120 = ma120Data.find(d => d.time === time);
+      // K线标签（通达信公式）
+      const ma7 = ma7Full.find(d => d.time === time);
+      const kd = kdData.find(d => d.time === time);
+      const kk = kkData.find(d => d.time === time);
       mainLabel.innerHTML = `
-        <span style="color:#5b9bd5">MA10:${fmt(ma10?.value)}</span>
-        <span style="color:#70ad47">MA20:${fmt(ma20?.value)}</span>
-        <span style="color:#ffc107">MA120:${fmt(ma120?.value)}</span>
+        <span style="color:#5b9bd5">MA7:${fmt(ma7?.value, priceDec)}</span>
+        ${kd?.value !== null && kd?.value !== undefined ? '<span style="color:#ef5350">KD↑</span>' : ''}
+        ${kk?.value !== null && kk?.value !== undefined ? '<span style="color:#26a69a">KK↓</span>' : ''}
       `;
 
       // 成交量标签
@@ -482,9 +536,9 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       const c = candles.find(d => d.time === param.time);
       const v = volumes.find(d => d.time === param.time);
       const m = macdData.find(d => d.time === param.time);
-      const ma10 = ma10Data.find(d => d.time === param.time);
-      const ma20 = ma20Data.find(d => d.time === param.time);
-      const ma120 = ma120Data.find(d => d.time === param.time);
+      const ma7 = ma7Full.find(d => d.time === param.time);
+      const kd = kdData.find(d => d.time === param.time);
+      const kk = kkData.find(d => d.time === param.time);
       const rps10 = rpsFormatted.rps10?.find(d => d.time === param.time);
       const rps20 = rpsFormatted.rps20?.find(d => d.time === param.time);
       const rps50 = rpsFormatted.rps50?.find(d => d.time === param.time);
@@ -512,7 +566,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
           isUp, chg, chgPct,
           volume: v?.value,
           dif: m?.dif, dea: m?.dea, macd: m?.macd,
-          ma10: ma10?.value, ma20: ma20?.value, ma120: ma120?.value,
+          ma7: ma7?.value, kd: kd?.value, kk: kk?.value,
           rps10: rps10?.value, rps20: rps20?.value, rps50: rps50?.value, rps120: rps120?.value, rps250: rps250?.value,
         });
       }
@@ -552,7 +606,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       // 清理自定义元素
       container.querySelectorAll('.crosshair-date-label').forEach(el => el.remove());
     };
-  }, [data, height, formatData, rpsData]);
+  }, [data, height, formatData, rpsData, priceDec]);
 
   // 鼠标移动
   const handleMouseMove = useCallback((e) => {
@@ -619,7 +673,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
             <span>{hoverData.date}</span>
 
             <span style={{ color: '#999' }}>收盘</span>
-            <span style={{ color: isUp ? '#ef5350' : '#26a69a', fontWeight: 'bold' }}>{fmt(hoverData.close)}</span>
+            <span style={{ color: isUp ? '#ef5350' : '#26a69a', fontWeight: 'bold' }}>{fmt(hoverData.close, priceDec)}</span>
 
             <span style={{ color: '#999' }}>涨跌</span>
             <span style={{ color: isUp ? '#ef5350' : '#26a69a' }}>
@@ -631,9 +685,9 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
 
             {/* K线指标 */}
             <div style={{ gridColumn: '1 / -1', marginTop: '6px', borderTop: '1px solid #444', paddingTop: '6px', fontSize: '11px', display: 'flex', gap: '8px' }}>
-              <span style={{ color: '#5b9bd5' }}>MA10: {fmt(hoverData.ma10)}</span>
-              <span style={{ color: '#70ad47' }}>MA20: {fmt(hoverData.ma20)}</span>
-              <span style={{ color: '#ffc107' }}>MA120: {fmt(hoverData.ma120)}</span>
+              <span style={{ color: '#5b9bd5' }}>MA7: {fmt(hoverData.ma7, priceDec)}</span>
+              {hoverData.kd !== null && hoverData.kd !== undefined && <span style={{ color: '#ef5350', fontWeight: 'bold' }}>KD信号</span>}
+              {hoverData.kk !== null && hoverData.kk !== undefined && <span style={{ color: '#26a69a', fontWeight: 'bold' }}>KK信号</span>}
             </div>
 
             {/* MACD指标 */}
