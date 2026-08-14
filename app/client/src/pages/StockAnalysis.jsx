@@ -215,9 +215,15 @@ function StockAnalysis({ initialCode, initialType }) {
             low: item.low,
             close: item.close,
             volume: item.volume,
+            vol_ma5: item.vol_ma5,
+            vol_ma10: item.vol_ma10,
+            vol_ma20: item.vol_ma20,
+            vol_ma50: item.vol_ma50,
             rps_10: item.rps_10,
             rps_20: item.rps_20,
-            rps_50: item.rps_50
+            rps_50: item.rps_50,
+            rps_120: item.rps_120,
+            rps_250: item.rps_250
           }
         }
       })
@@ -331,9 +337,15 @@ function StockAnalysis({ initialCode, initialType }) {
             low: item.low,
             close: item.close,
             volume: item.volume,
+            vol_ma5: item.vol_ma5,
+            vol_ma10: item.vol_ma10,
+            vol_ma20: item.vol_ma20,
+            vol_ma50: item.vol_ma50,
             rps_10: item.rps_10,
             rps_20: item.rps_20,
-            rps_50: item.rps_50
+            rps_50: item.rps_50,
+            rps_120: item.rps_120,
+            rps_250: item.rps_250
           }
         }
       })

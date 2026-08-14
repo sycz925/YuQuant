@@ -62,3 +62,58 @@
 - 根目录下 `tmp/`：存放一次性调试/扫描/修复脚本（如 `scan*_tmp.py`、`fix_*.py`），该目录已加入 `.gitignore`，不得提交版本库。
 - 根目录下 `logs/`：服务运行日志输出目录，已加入 `.gitignore`。
 - 一次性脚本用完即归档至 `tmp/`，禁止散落在根目录或 `scripts/` 下。
+
+## 6. MongoDB 查询注意事项（重要）
+
+> **已发生两次同类问题，必须严格遵守**
+
+### 问题背景
+`trade_date` 字段存储为字符串格式 `YYYYMMDD`（如 `"20260724"`）。使用 `$lte/$gte/$lt/$gt` 比较操作符时，MongoDB 执行的是**字典序比较**，而非日期比较。
+
+### 为什么会出问题
+1. **字典序 vs 日期序**：`"20260710" < "20260709"` 在字典序下为 `False`，但日期上应该是 `True`
+2. **查询返回空结果**：直接查 `trade_date: "20260710"` 能找到数据，但 `$lte: "20260710"` 可能返回 0 条
+3. **隐蔽性高**：代码不会报错，只是静默返回错误结果
+
+### 正确做法
+```python
+# ❌ 错误示例（可能返回空结果）
+db['index_daily'].find({
+    'stock_code': '880003',
+    'trade_date': {'$lte': '20260710'}
+})
+
+# ✅ 正确示例（先用 $lte 查询，再验证结果）
+query = {'stock_code': '880003', 'trade_date': {'$lte': '20260710'}}
+count = db['index_daily'].count_documents(query)
+if count == 0:
+    # 降级方案：先查所有日期，再过滤
+    all_dates = db['index_daily'].distinct('trade_date', {'stock_code': '880003'})
+    valid_dates = [d for d in all_dates if d <= '20260710']
+    # 然后用 $in 查询
+    docs = list(db['index_daily'].find({
+        'stock_code': '880003',
+        'trade_date': {'$in': valid_dates}
+    }))
+```
+
+### 调试清单
+当 `$lte/$gte` 查询返回空结果时：
+1. 用 `count_documents()` 验证查询是否有结果
+2. 用 `distinct('trade_date')` 检查实际存在的日期
+3. 用 Python 过滤验证字典序比较是否正确
+4. 检查索引是否正常：`list(db['collection'].list_indexes())`
+
+### 已知风险点
+| 文件 | 行号 | 查询模式 | 状态 |
+|------|------|----------|------|
+| `app/engine/watchlist_alert.py` | 254 | `$lte` on trade_date | ⚠️ 需验证 |
+| `app/server/services/market_data.py` | 多处 | `$gte/$lte` on trade_date | ⚠️ 需验证 |
+| `app/server/services/market_sectors.py` | 多处 | `$gte/$lte` on trade_date | ⚠️ 需验证 |
+| `app/data/db.py` | 多处 | `$gte/$lte` on trade_date | ⚠️ 需验证 |
+
+### 预防措施
+1. **写入时验证**：确保 `trade_date` 格式始终为 `YYYYMMDD`
+2. **查询后验证**：重要查询后用 `count_documents()` 或 `len(list(...))` 验证结果数量
+3. **单元测试**：为涉及日期范围查询的功能编写测试用例
+4. **代码审查**：新代码使用 `$lte/$gte` 操作符时必须仔细审查

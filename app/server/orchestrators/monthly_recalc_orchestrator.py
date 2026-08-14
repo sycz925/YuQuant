@@ -36,8 +36,8 @@ class MonthlyRecalcOrchestrator(BaseOrchestrator):
 
         steps = []
         for date_str in trading_days:
-            steps.append({'key': 'rps_stock', 'name': f'{date_str} 计算个股RPS', 'total_count': stock_count})
-            steps.append({'key': 'rps_sector', 'name': f'{date_str} 计算板块RPS', 'total_count': sector_count})
+            steps.append({'key': 'rps_stock', 'name': f'{date_str} 计算个股RPS', 'total_count': 1})
+            steps.append({'key': 'rps_sector', 'name': f'{date_str} 计算板块RPS', 'total_count': 1})
             steps.append({'key': 'precompute', 'name': f'{date_str} 预计算基础数据', 'total_count': 1})
 
         task_id = str(uuid.uuid4())
@@ -66,7 +66,7 @@ class MonthlyRecalcOrchestrator(BaseOrchestrator):
                 )
 
                 try:
-                    self.daily_recalc.execute_step(step['key'], task_id, date_str)
+                    self.daily_recalc.execute_step(step['key'], task_id, date_str, global_step_idx=global_step_idx)
                 except Exception as e:
                     logger.error(f'[{self.__class__.__name__}] {date_str} {step["name"]} 失败: {e}', exc_info=True)
                     self.task_repo.update_step_progress(task_id, global_step_idx, status='failed', message=str(e)[:200])

@@ -7,6 +7,7 @@ import logging
 from typing import Dict, Any, List, Optional
 
 from app.data.db import get_db
+from app.engine.watchlist_alert import get_index_tdx_status
 
 logger = logging.getLogger(__name__)
 
@@ -412,9 +413,11 @@ def precompute_market_daily(trade_date: str) -> Dict[str, Any]:
             'amount_yesterday': 0,
             'amount_ma5': ma5_amt,
             'amount_ma20': ma20_amt,
+            'tdx_status': get_index_tdx_status(code, trade_date),
         })
 
-    overview_indices.sort(key=lambda x: -x['pct_chg'])
+    # 按代码排序
+    overview_indices.sort(key=lambda x: x.get('code', ''))
     for idx in overview_indices:
         wick = idx.get('wick', {})
         wick_suffix = ''
@@ -558,6 +561,8 @@ def precompute_market_daily(trade_date: str) -> Dict[str, Any]:
                 'amount_yesterday': i.get('amount_yesterday', 0),
                 'amount_ma5': i.get('amount_ma5', 0),
                 'amount_ma20': i.get('amount_ma20', 0),
+                'tdx_status': i.get('tdx_status'),
+                'pe_ttm': i.get('pe_ttm'),
             } for i in overview_indices],
             'leader': overview_indices[0]['name'] if overview_indices else '',
             'leader_chg': overview_indices[0]['pct_chg'] if overview_indices else 0,

@@ -70,10 +70,11 @@ def main():
             import openai
             client = openai.OpenAI(api_key=analyst.api_key, base_url=analyst.base_url)
 
-            from app.server.api.calendar import MONTHLY_SUMMARY_PROMPT
-            user_message = MONTHLY_SUMMARY_PROMPT.format(weekly_summaries=weekly_summaries)
+            from app.server.api.calendar import MONTHLY_SUMMARY_SYSTEM_PROMPT, MONTHLY_SUMMARY_USER_TEMPLATE
+            user_message = MONTHLY_SUMMARY_USER_TEMPLATE.format(weekly_summaries=weekly_summaries)
 
             print(f"\n5. 构建请求:")
+            print(f"   - System message 长度: {len(MONTHLY_SUMMARY_SYSTEM_PROMPT)} 字符")
             print(f"   - User message 长度: {len(user_message)} 字符")
             print(f"   - 前500字符预览:")
             print(f"     {user_message[:500]}...")

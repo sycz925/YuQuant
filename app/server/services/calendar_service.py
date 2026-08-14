@@ -14,8 +14,11 @@ from app.data.holidays import is_workday
 logger = logging.getLogger(__name__)
 
 # ========== 提示词常量 ==========
+# 规范约定（与日总结 deepseek_analyst.SYSTEM_PROMPT 保持一致）：
+# - *_SYSTEM_PROMPT    → 放入 system 消息：角色设定 + 严格要求
+# - *_USER_TEMPLATE    → 放入 user 消息：仅数据占位符，不含任何指令
 
-WEEKLY_SUMMARY_PROMPT = """你是一位资深的A股量化策略总监，具备深厚的交易经验。请根据以下本周每个交易日的AI分析数据，撰写一份精炼的周度市场总结报告。
+WEEKLY_SUMMARY_SYSTEM_PROMPT = """你是一位资深的A股量化策略总监，具备深厚的交易经验。请根据用户提供的本周每个交易日的AI分析数据，撰写一份精炼的周度市场总结报告。
 
 [严格要求]
 1. 输出必须为中文（简体中文），使用Markdown格式。
@@ -28,13 +31,14 @@ WEEKLY_SUMMARY_PROMPT = """你是一位资深的A股量化策略总监，具备�
 5. 最后给出下周操作建议（仓位建议、风控要点、重点关注的RPS走强板块、警惕的RPS转弱板块）。
 6. 保持专业、果断的语气，避免空话套话。
 7. [文本重点标记规则] 输出文本中，关键术语和重要结论必须使用Markdown加粗语法（**加粗**）进行标记，例如：**量价收紧突破**、**口袋突破**、**技术性止损**、**缩量回调**、**主力出货**等。每段最多标记10个重点词，不要整句加粗。
-
-[每日AI分析数据]
-{daily_analyses}
+8. [实事求是铁律] 分析数据必须做到实事求是：**禁止使用输入数据中不存在的指标（如成交量、放量、缩量、换手率、主力资金流向、资金净流入等）进行任何描述或推断**，只能基于输入中明确提供的字段（涨跌幅、RPS、新高数量等）进行分析。若输入中未提供某指标，严禁臆造、脑补或用先验知识虚构其表现。
 
 请输出周度总结报告。"""
 
-MONTHLY_SUMMARY_PROMPT_DAILY = """你是一位资深的A股量化策略总监，具备深厚的交易经验。请根据以下本月每个交易日的AI分析数据，撰写一份精炼的月度市场总结报告。
+WEEKLY_SUMMARY_USER_TEMPLATE = """[每日AI分析数据]
+{daily_analyses}"""
+
+MONTHLY_SUMMARY_DAILY_SYSTEM_PROMPT = """你是一位资深的A股量化策略总监，具备深厚的交易经验。请根据用户提供的本月每个交易日的AI分析数据，撰写一份精炼的月度市场总结报告。
 
 [严格要求]
 1. 输出必须为中文（简体中文），使用Markdown格式。
@@ -44,13 +48,14 @@ MONTHLY_SUMMARY_PROMPT_DAILY = """你是一位资深的A股量化策略总监，
 5. 最后给出下月操作建议（仓位建议、风控要点、重点关注的方向）。
 6. 保持专业、果断的语气，避免空话套话。
 7. [文本重点标记规则] 输出文本中，关键术语和重要结论必须使用Markdown加粗语法（**加粗**）进行标记。每段最多标记10个重点词，不要整句加粗。
-
-[每日AI分析数据]
-{daily_analyses}
+8. [实事求是铁律] 分析数据必须做到实事求是：**禁止使用输入数据中不存在的指标（如成交量、放量、缩量、换手率、主力资金流向、资金净流入等）进行任何描述或推断**，只能基于输入中明确提供的字段（涨跌幅、RPS、新高数量等）进行分析。若输入中未提供某指标，严禁臆造、脑补或用先验知识虚构其表现。
 
 请输出月度总结报告。"""
 
-MONTHLY_SUMMARY_PROMPT = """你是一位资深的A股量化策略总监。请完全基于用户提供的【周AI总结数据】（作为唯一的事实依据，严禁凭空臆断和捏造任何未提及的数据或个股），撰写一份精炼、专业的月度市场总结报告。
+MONTHLY_SUMMARY_DAILY_USER_TEMPLATE = """[每日AI分析数据]
+{daily_analyses}"""
+
+MONTHLY_SUMMARY_SYSTEM_PROMPT = """你是一位资深的A股量化策略总监。请完全基于用户提供的【周AI总结数据】（作为唯一的事实依据，严禁凭空臆断和捏造任何未提及的数据或个股），撰写一份精炼、专业的月度市场总结报告。
 
 [严格要求]
 1. [输出规范] 使用简体中文、Markdown格式。语气必须果断、硬核、直奔主题，像一位极其严苛的量化总监在下达实战指令，拒绝任何废话和虚饰。关键术语与结论适度**加粗**。
@@ -76,11 +81,12 @@ MONTHLY_SUMMARY_PROMPT = """你是一位资深的A股量化策略总监。请完
 
 3. 保持专业、果断的语气，避免空话套话。
 4. [文本重点标记规则] 输出文本中，关键术语和重要结论必须使用Markdown加粗语法（**加粗**）进行标记，例如：**均线广度崩溃**、**资金抱团**、**主线切换**、**放量突破**、**缩量见顶**等。每段最多标记10个重点词，不要整句加粗。
-
-[各周AI总结数据]
-{weekly_summaries}
+5. [实事求是铁律] 分析数据必须做到实事求是：**禁止使用输入数据中不存在的指标（如成交量、放量、缩量、换手率、主力资金流向、资金净流入等）进行任何描述或推断**，只能基于输入中明确提供的字段（涨跌幅、RPS、新高数量等）进行分析。若输入中未提供某指标，严禁臆造、脑补或用先验知识虚构其表现。
 
 请输出月度总结报告。"""
+
+MONTHLY_SUMMARY_USER_TEMPLATE = """[各周AI总结数据]
+{weekly_summaries}"""
 
 
 # ========== 快照服务 ==========
@@ -95,7 +101,8 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
         'market_change_pct': float,
         'top_sector': str,
         'top_sector_chg': float,
-        'is_final': bool
+        'is_final': bool,
+        'tdx_status': str (如 '日红周蓝')
     }
     """
     if db is None:
@@ -119,11 +126,12 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
         # 从market_daily获取最强板块
         market_doc = db['market_daily'].find_one(
             {'trade_date': trade_date},
-            {'_id': 0, 'new_high': 1, 'ai_analysis': 1}
+            {'_id': 0, 'new_high': 1, 'ai_analysis': 1, 'overview.indices': 1}
         )
         
         top_sector = None
         top_sector_chg = 0
+        tdx_status = ''
         
         if market_doc:
             new_high = market_doc.get('new_high', {})
@@ -148,6 +156,13 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
                                 top_sector_chg = sec_data['chg_pct']
                     except Exception:
                         pass
+            
+            # 从overview.indices中获取平均股价的tdx_status
+            indices = market_doc.get('overview', {}).get('indices', [])
+            for idx in indices:
+                if idx.get('code') == '880003' and idx.get('tdx_status'):
+                    tdx_status = idx['tdx_status']
+                    break
         
         # 从index_daily获取大盘涨跌幅（使用平均股价指数 880003）
         index_doc = db['index_daily'].find_one(
@@ -178,6 +193,7 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
             'top_sector_chg': top_sector_chg,
             'is_final': is_final,
             'core_target_sectors': core_target_sectors,
+            'tdx_status': tdx_status,
         }
         
     except Exception as e:
@@ -345,7 +361,21 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
                 idx_parts.append(f"{name}{chg:+.2f}%")
         if idx_parts:
             date_range = f"{first_day[:4]}-{first_day[4:6]}-{first_day[6:]}~{last_day[:4]}-{last_day[4:6]}-{last_day[6:]}"
-            index_line = f"【本周大盘指数涨跌幅({date_range})】{', '.join(idx_parts)}"
+            index_line = f"【本周大盘指数涨跌幅({date_range})】"
+
+            # 从 market_daily 获取最后一个交易日的指数状态（不实时计算）
+            market_doc = db['market_daily'].find_one({'trade_date': last_day}, {'_id': 0, 'overview.indices': 1})
+            status_map = {}
+            if market_doc and market_doc.get('overview', {}).get('indices'):
+                for idx in market_doc['overview']['indices']:
+                    if idx.get('code') and idx.get('tdx_status'):
+                        status_map[idx['code']] = idx['tdx_status']
+            for code in last_map:
+                name = idx_names.get(code, code)
+                status = status_map.get(code, '')
+                status_info = f" ｜ {status}" if status else ''
+                index_line += f"\n  {name}: {idx_parts[list(last_map.keys()).index(code)]}{status_info}；"
+            index_line += "\n  状态说明[日X周X]: 日为日线，周为周线，红色=不能卖(可观望/能买) 绿色=不能买(可观望/能卖) 蓝色=可观望/能买/能卖，仓位建议重点参考该指标。"
 
     # 批量查 sector_daily 的 chg_pct
     sector_chg_map = {}  # {(name, date): chg_pct}

@@ -8,6 +8,8 @@
 """
 import sys
 import time
+import json
+import hashlib
 import datetime
 import threading
 from typing import Optional, Dict, List
@@ -533,6 +535,51 @@ class PytdxSource:
         return sorted(adjusted, key=lambda x: x['date'])
 
     @staticmethod
+    def xdxr_fingerprint(xdxr_events: List[Dict]) -> Optional[str]:
+        """计算除权除息事件集合的指纹
+
+        用于检测复权基准是否变化：事件数或任一因子（分红/送转/配股）
+        变化都会导致指纹不同。与事件顺序无关。
+
+        Args:
+            xdxr_events: 原始 xdxr 事件列表（get_xdxr_info 返回格式）
+
+        Returns:
+            指纹字符串；无有效复权事件时返回 None
+        """
+        adjusted = PytdxSource._adjust_xdxr_events(xdxr_events or [])
+        if not adjusted:
+            return None
+        # 事件数变化或任一字段变化 → 排序后的序列化结果不同 → 指纹不同
+        canonical = json.dumps(adjusted, sort_keys=True, ensure_ascii=False)
+        return hashlib.md5(canonical.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def clean_stock_name(name: Optional[str]) -> Optional[str]:
+        """清理股票名称中的临时前缀（除权除息标记 XD/XR/DR）
+
+        通达信等数据源在除权除息日会在名称前加 XD(除息)/XR(除权)/DR(除权除息)，
+        次日自动恢复。同步基础信息时若留存这些前缀，会导致名称永久带上脏前缀。
+
+        注意：通达信在除权除息日可能返回不完整名称（如 "XD峰岹科" 而非 "XD峰岹科技"），
+        此函数仅做前缀清理，不做名称纠错。
+
+        Args:
+            name: 原始股票名称
+
+        Returns:
+            清理后的名称；None 原样返回
+        """
+        if not name or not isinstance(name, str):
+            return name
+        for prefix in ('XD', 'XR', 'DR'):
+            if name.startswith(prefix):
+                cleaned = name[len(prefix):]
+                # 仅前缀无名称时保留原名，避免产生空名称
+                return cleaned if cleaned.strip() else name
+        return name
+
+    @staticmethod
     def apply_forward_adjust(df: 'pd.DataFrame', xdxr_events: List[Dict]) -> 'pd.DataFrame':
         """对日线DataFrame应用前复权
 
@@ -566,7 +613,12 @@ class PytdxSource:
             if prev_close is None or prev_close <= 0:
                 continue
 
-            factor = (prev_close - fenhong + peigu * peigujia) / (prev_close * (1 + songzhuangu + peigu))
+            # pytdx 的 fenhong/songzhuangu/peigu 均为每10股单位，需换算为每股
+            fenhong_per = fenhong / 10.0
+            songzhuangu_per = songzhuangu / 10.0
+            peigu_per = peigu / 10.0
+
+            factor = (prev_close - fenhong_per + peigu_per * peigujia) / (prev_close * (1 + songzhuangu_per + peigu_per))
             if factor <= 0 or abs(factor - 1) < 1e-8:
                 continue
 
@@ -621,6 +673,10 @@ class PytdxSource:
                 df['trade_date'] = pd.to_datetime(
                     df.apply(lambda r: f"{int(r.get('year', 2020))}-{int(r.get('month', 1)):02d}-{int(r.get('day', 1)):02d}",
                              axis=1)).dt.strftime('%Y%m%d')
+
+            # get_security_bars 按 start 偏移分页拉取，拼接后可能乱序，需按日期升序
+            df = df.sort_values('trade_date').reset_index(drop=True)
+            df = df.drop_duplicates(subset=['trade_date'], keep='last').reset_index(drop=True)
 
             rename_map = {
                 'open': 'open',
@@ -1404,6 +1460,7 @@ class PytdxSource:
                     code = s.get('code', '')
                     name = s.get('name', '')
                     if code and name and len(code) == 6 and code.isdigit():
+                        name = PytdxSource.clean_stock_name(name)
                         all_stocks.append({
                             'stock_code': code,
                             'stock_name': name,

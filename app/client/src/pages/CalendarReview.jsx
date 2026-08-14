@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { message, notification, DatePicker, ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import 'dayjs/locale/zh-cn'
@@ -35,14 +35,40 @@ const DESIGN = {
   }
 }
 
+// TDX状态颜色（与WatchlistPage、MarketOverview一致）
+const STATUS_COLORS = { '红': '#ef5350', '绿': '#22c55e', '蓝': '#3b82f6' }
+
+const renderTdxStatus = (text) => {
+  if (!text) return null
+  const parts = text.match(/日([红绿蓝])周([红绿蓝])/)
+  if (!parts) return <span>{text}</span>
+  return (
+    <span>
+      <span style={{ color: STATUS_COLORS[parts[1]] }}>日{parts[1]}</span>
+      <span style={{ color: STATUS_COLORS[parts[2]] }}>周{parts[2]}</span>
+    </span>
+  )
+}
+
 // 星期标题（只显示工作日）
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五']
 
 function CalendarReview({ latestTradeDate }) {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [loading, setLoading] = useState(false)
   const [calendarData, setCalendarData] = useState({})
-  const [currentDate, setCurrentDate] = useState(dayjs())
+  const [currentDate, setCurrentDate] = useState(() => {
+    // 从 URL 书签 ?ym=YYYYMM 恢复月份，保证刷新后停留在当前查看的月份
+    const ym = searchParams.get('ym')
+    if (ym && /^\d{6}$/.test(ym)) {
+      const d = dayjs(`${ym}01`, 'YYYYMMDD')
+      if (d.isValid() && !d.isAfter(dayjs().endOf('month'))) {
+        return d
+      }
+    }
+    return dayjs()
+  })
   const [generatingSnapshot, setGeneratingSnapshot] = useState(false)
   const [weekStatus, setWeekStatus] = useState([])
   const [weeklyModalVisible, setWeeklyModalVisible] = useState(false)
@@ -61,6 +87,7 @@ function CalendarReview({ latestTradeDate }) {
   const [weeklyScreenshotLoading, setWeeklyScreenshotLoading] = useState(false)
   const [monthlyScreenshotLoading, setMonthlyScreenshotLoading] = useState(false)
   // 月度重算状态
+  const RECALC_TASK_KEY = 'monthlyRecalcTaskId'
   const [monthlyRecalcRunning, setMonthlyRecalcRunning] = useState(false)
   const [monthlyRecalcTaskId, setMonthlyRecalcTaskId] = useState(null)
   const recalcMetaRef = useRef({ year: null, month: null })
@@ -92,6 +119,7 @@ function CalendarReview({ latestTradeDate }) {
       key: `monthly-recalc-${year}-${month}`,
       closable: true,
     })
+    sessionStorage.removeItem(RECALC_TASK_KEY)
     setMonthlyRecalcRunning(false)
     setMonthlyRecalcTaskId(null)
     loadCalendarData(year, month)
@@ -105,6 +133,7 @@ function CalendarReview({ latestTradeDate }) {
       key: `monthly-recalc-${recalcMetaRef.current.year}-${recalcMetaRef.current.month}`,
       closable: true,
     })
+    sessionStorage.removeItem(RECALC_TASK_KEY)
     setMonthlyRecalcRunning(false)
     setMonthlyRecalcTaskId(null)
   }, [])
@@ -162,6 +191,24 @@ function CalendarReview({ latestTradeDate }) {
     onComplete: handleAiFillComplete,
     onFailed: handleAiFillFailed,
   })
+
+  useEffect(() => {
+    // URL 书签变化时（如手动编辑地址栏）同步月份状态
+    const ym = searchParams.get('ym')
+    if (ym && /^\d{6}$/.test(ym)) {
+      const d = dayjs(`${ym}01`, 'YYYYMMDD')
+      if (d.isValid() && !d.isSame(currentDate, 'month')) {
+        setCurrentDate(d)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
+  // 切换月份：同步状态 + 更新 URL 书签（replace 避免历史堆叠）
+  const setMonth = (date) => {
+    setCurrentDate(date)
+    setSearchParams({ ym: date.format('YYYYMM') }, { replace: true })
+  }
 
   useEffect(() => {
     const y = currentDate.year()
@@ -516,7 +563,7 @@ function CalendarReview({ latestTradeDate }) {
   }, [currentDate])
 
   const handlePrevMonth = () => {
-    setCurrentDate(currentDate.subtract(1, 'month'))
+    setMonth(currentDate.subtract(1, 'month'))
   }
 
   const handleNextMonth = () => {
@@ -527,7 +574,7 @@ function CalendarReview({ latestTradeDate }) {
     if (nextMonth.year() > now.year() || (nextMonth.year() === now.year() && nextMonth.month() > now.month())) {
       return
     }
-    setCurrentDate(nextMonth)
+    setMonth(nextMonth)
   }
 
   const handleGenerateSnapshot = async () => {
@@ -554,6 +601,28 @@ function CalendarReview({ latestTradeDate }) {
     }
   }
 
+  // 清理快照
+  const handleClearSnapshot = async () => {
+    const year = currentDate.year()
+    const month = currentDate.month() + 1
+
+    try {
+      const res = await fetch(`/api/calendar/clear-snapshots?year=${year}&month=${month}`, {
+        method: 'POST'
+      })
+      const data = await res.json()
+      if (data.success) {
+        message.success(`清理 ${year}-${String(month).padStart(2, '0')} 快照完成，共 ${data.count} 天`)
+        // 重新加载日历数据
+        loadCalendarData(year, month)
+      } else {
+        message.error(data.detail || '清理快照失败')
+      }
+    } catch (e) {
+      message.error('清理快照失败')
+    }
+  }
+
   // 月度重算：逐日重算RPS+基础数据
   const handleMonthlyRecalc = async () => {
     if (monthlyRecalcRunning) return
@@ -570,6 +639,7 @@ function CalendarReview({ latestTradeDate }) {
 
       setMonthlyRecalcRunning(true)
       recalcMetaRef.current = { year, month }
+      sessionStorage.setItem(RECALC_TASK_KEY, res.task_id)
 
       const key = `monthly-recalc-${year}-${month}`
       if (res.already_running) {
@@ -598,6 +668,31 @@ function CalendarReview({ latestTradeDate }) {
       setMonthlyRecalcRunning(false)
     }
   }
+
+  // 挂载时检查 sessionStorage，恢复轮询
+  useEffect(() => {
+    const savedTaskId = sessionStorage.getItem(RECALC_TASK_KEY)
+    if (savedTaskId) {
+      calendarApi.getTaskStatus(savedTaskId).then(res => {
+        if (res && res.status === 'running') {
+          // 任务仍在跑，恢复轮询
+          setMonthlyRecalcRunning(true)
+          setMonthlyRecalcTaskId(savedTaskId)
+          // 恢复 recalcMetaRef（从 task name 解析 year/month）
+          const name = res.name || ''
+          const match = name.match(/(\d{4})年(\d{1,2})月/)
+          if (match) {
+            recalcMetaRef.current = { year: parseInt(match[1]), month: parseInt(match[2]) }
+          }
+        } else {
+          // 任务已结束，清除
+          sessionStorage.removeItem(RECALC_TASK_KEY)
+        }
+      }).catch(() => {
+        sessionStorage.removeItem(RECALC_TASK_KEY)
+      })
+    }
+  }, [])
 
   // AI分析补全：只为没有AI分析的日期生成
   const handleMonthlyAiFill = async () => {
@@ -777,12 +872,10 @@ function CalendarReview({ latestTradeDate }) {
             </span>
           </div>
 
-          {/* 第二行：涨跌数 + 成交额 */}
+          {/* 第二行：平均股价状态 + 成交额 */}
           <div className="flex items-center justify-between text-[9px] mt-0.5" style={{fontFamily: 'Fira Code'}}>
             <div>
-              <span style={{color: DESIGN.colors.red}}>{dayData.up_count || 0}</span>
-              <span className="mx-px" style={{color: '#94a3b8'}}>/</span>
-              <span style={{color: DESIGN.colors.green}}>{dayData.down_count || 0}</span>
+              {renderTdxStatus(dayData.tdx_status)}
             </div>
             <span style={{color: '#64748b'}}>{amount}亿</span>
           </div>
@@ -830,12 +923,10 @@ function CalendarReview({ latestTradeDate }) {
             </span>
           </div>
 
-          {/* 第二行：涨跌数 + 成交额 */}
+          {/* 第二行：平均股价状态 + 成交额 */}
           <div className="flex items-center justify-between text-[12px]" style={{fontFamily: 'Fira Code'}}>
             <div className="flex items-center">
-              <span style={{color: DESIGN.colors.red}}>{dayData.up_count || 0}</span>
-              <span className="mx-0.5" style={{color: '#94a3b8'}}>/</span>
-              <span style={{color: DESIGN.colors.green}}>{dayData.down_count || 0}</span>
+              {renderTdxStatus(dayData.tdx_status)}
             </div>
             <div className="flex items-center" style={{color: '#64748b'}}>
               <span>{amount}亿</span>
@@ -885,7 +976,7 @@ function CalendarReview({ latestTradeDate }) {
           value={currentDate}
           onChange={(date) => {
             if (date) {
-              setCurrentDate(date)
+              setMonth(date)
             }
           }}
           disabledDate={(current) => {
@@ -943,6 +1034,18 @@ function CalendarReview({ latestTradeDate }) {
             }}
           >
             {generatingSnapshot ? '生成中...' : '生成快照'}
+          </button>
+          <button
+            onClick={handleClearSnapshot}
+            className="px-2 py-1 text-[9px] sm:text-[10px] rounded border transition-all active:bg-gray-100"
+            style={{
+              background: 'white',
+              borderColor: '#e5e7eb',
+              color: '#ef4444',
+              cursor: 'pointer'
+            }}
+          >
+            清理快照
           </button>
           <button
             onClick={handleMonthlyRecalc}

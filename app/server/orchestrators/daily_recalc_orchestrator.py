@@ -54,9 +54,9 @@ class DailyRecalcOrchestrator(BaseOrchestrator):
             logger.info(f"[DailyRecalc] 预计算 {target_date} 基础数据")
             aggregator.precompute_base_data(target_date, task_id=task_id)
 
-    def execute_step(self, step_key: str, task_id: str, target_date: Optional[str]) -> None:
+    def execute_step(self, step_key: str, task_id: str, target_date: Optional[str], global_step_idx: Optional[int] = None) -> None:
         """执行单个步骤"""
-        step_idx = next(i for i, s in enumerate(self.get_steps()) if s['key'] == step_key)
+        step_idx = global_step_idx if global_step_idx is not None else next(i for i, s in enumerate(self.get_steps()) if s['key'] == step_key)
 
         if step_key == 'rps_stock':
             self.task_repo.update_step_progress(task_id, step_idx, completed_count=0, message='计算个股涨幅...')

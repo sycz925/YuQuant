@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.data.db import get_db
 from app.server.api.deepseek_analyst import get_deepseek_analyst, is_deepseek_available
-from app.server.api.calendar import MONTHLY_SUMMARY_PROMPT
+from app.server.api.calendar import MONTHLY_SUMMARY_SYSTEM_PROMPT, MONTHLY_SUMMARY_USER_TEMPLATE
 
 TARGET_YEAR = 2026
 TARGET_MONTH = 6
@@ -54,10 +54,11 @@ def main():
 
     # 构建请求
     analyst = get_deepseek_analyst()
-    user_message = MONTHLY_SUMMARY_PROMPT.format(weekly_summaries=weekly_summaries)
+    user_message = MONTHLY_SUMMARY_USER_TEMPLATE.format(weekly_summaries=weekly_summaries)
 
     print(f"\n请求参数:")
     print(f"  - Model: {analyst.model}")
+    print(f"  - System message 长度: {len(MONTHLY_SUMMARY_SYSTEM_PROMPT)} 字符")
     print(f"  - User message 长度: {len(user_message)} 字符")
     print(f"  - Enable thinking: {analyst.enable_thinking}")
 
@@ -68,7 +69,7 @@ def main():
         kwargs = {
             'model': analyst.model,
             'messages': [
-                {'role': 'system', 'content': '你是一位专业的A股量化策略分析师，输出中文月度总结报告。'},
+                {'role': 'system', 'content': MONTHLY_SUMMARY_SYSTEM_PROMPT},
                 {'role': 'user', 'content': user_message},
             ],
             'max_tokens': 4096,

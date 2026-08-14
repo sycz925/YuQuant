@@ -55,6 +55,9 @@ def _create_indexes(db):
     db['stock_basics'].create_index([('stock_code', ASCENDING)], unique=True)
     db['stock_basics'].create_index([('market', ASCENDING)])
 
+    # xdxr 除权指纹索引（复权基准漂移检测）
+    db['stock_xdxr'].create_index([('stock_code', ASCENDING)], unique=True)
+
     # 指数基础信息索引（统一用 code 字段，兼容新格式）
     db['index_basics'].create_index([('code', ASCENDING)], unique=True)
 
@@ -136,6 +139,39 @@ def get_stock_basics(stock_code: Optional[str] = None) -> pd.DataFrame:
 
 
 # ==================== 日线数据操作 ====================
+
+def get_xdxr_fingerprint(stock_code: str) -> Optional[str]:
+    """获取个股最近一次同步时使用的 xdxr 除权事件指纹
+
+    用于检测复权基准漂移：当前指纹与存储指纹不一致时，
+    需要对该股触发全量重拉。
+    """
+    db = get_db()
+    doc = db['stock_xdxr'].find_one(
+        {'stock_code': stock_code},
+        {'_id': 0, 'fingerprint': 1}
+    )
+    if not doc:
+        return None
+    return doc.get('fingerprint')
+
+
+def set_xdxr_fingerprint(stock_code: str, fingerprint: Optional[str]) -> None:
+    """记录个股最近一次同步时使用的 xdxr 除权事件指纹"""
+    db = get_db()
+    try:
+        db['stock_xdxr'].update_one(
+            {'stock_code': stock_code},
+            {'$set': {
+                'stock_code': stock_code,
+                'fingerprint': fingerprint,
+                'update_time': datetime.utcnow(),
+            }},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"记录xdxr指纹失败 {stock_code}: {e}")
+
 
 def upsert_daily_data(stock_code: str, trade_date: str, data: Dict[str, Any], data_source: str = 'unknown', data_type: str = 'stock'):
     """更新或插入单条日线数据"""
@@ -282,10 +318,11 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
         if i > 0 and closes[i - 1] > 0:
             doc['chg_pct'] = round(float((curr_close - closes[i - 1]) / closes[i - 1] * 100), 2)
 
-        # MA
+        # MA（etf 保留 3 位小数，其他 2 位）
+        ma_decimals = 3 if data_type == 'etf' else 2
         for p in [10, 20, 50, 120]:
             if i >= p - 1:
-                doc[f'ma{p}'] = round(float(np.mean(closes[i - p + 1:i + 1])), 2)
+                doc[f'ma{p}'] = round(float(np.mean(closes[i - p + 1:i + 1])), ma_decimals)
 
         # VOL_MA
         for p in [5, 10, 20, 50]:

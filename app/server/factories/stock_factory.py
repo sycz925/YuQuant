@@ -261,7 +261,7 @@ class StockFactory:
             # 调用 factor_engine 的 RPS 计算
             from app.engine.factor_engine import FactorEngine
             engine = FactorEngine()
-            result = engine.calculate_rps(data_type='stock', max_dates=None)
+            result = engine.calculate_rps(data_type='stock', max_dates=None, target_date=target_date)
             
             callback.complete(f'个股RPS计算完成: {result}')
             return ComputeResult(success=True, message=f'个股RPS计算完成: {result}')

@@ -17,8 +17,10 @@ from app.server.services.calendar_service import (
     _get_month_weeks,
     _build_weekly_input_text,
     _run_fill_ai_task,
-    WEEKLY_SUMMARY_PROMPT,
-    MONTHLY_SUMMARY_PROMPT,
+    WEEKLY_SUMMARY_SYSTEM_PROMPT,
+    WEEKLY_SUMMARY_USER_TEMPLATE,
+    MONTHLY_SUMMARY_SYSTEM_PROMPT,
+    MONTHLY_SUMMARY_USER_TEMPLATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,57 @@ router = APIRouter(prefix="/api/calendar", tags=["日历复盘"])
 
 # 默认大盘指数代码（上证指数）
 DEFAULT_INDEX_CODE = "880003"  # 平均股价指数
+
+
+def _call_summary_llm(analyst, user_message: str, system_hint: str, max_tokens: int = 8192) -> str:
+    """调用 DeepSeek 生成周/月总结报告。
+
+    背景：thinking 模式下模型会先输出 reasoning_content（思维链），再输出 content
+    （最终报告）。若 max_tokens 预算被推理吃光，content 会被截断为空。因此：
+    1. max_tokens 放大，给 content 预留空间；
+    2. 即使 content 为空，也绝不回退到 reasoning_content（那是思考过程，不是报告）；
+    3. 兜底重试必须显式关闭 thinking（思考模式默认开启，只设 temperature 不会生效）。
+    返回最终 content；若始终为空则返回空字符串（由调用方判失败）。
+    """
+    import openai
+
+    client = openai.OpenAI(api_key=analyst.api_key, base_url=analyst.base_url)
+
+    def _build_kwargs(use_thinking: bool) -> dict:
+        kwargs = {
+            'model': analyst.model,
+            'messages': [
+                {'role': 'system', 'content': system_hint},
+                {'role': 'user', 'content': user_message},
+            ],
+            'max_tokens': max_tokens,
+            'timeout': 300,
+        }
+        if use_thinking:
+            kwargs['reasoning_effort'] = 'high'
+            kwargs['extra_body'] = {'thinking': {'type': 'enabled'}}
+        else:
+            kwargs['temperature'] = analyst.temperature
+            kwargs['extra_body'] = {'thinking': {'type': 'disabled'}}
+        return kwargs
+
+    # 第一次尝试：thinking high（与第1周生成路径一致，保留深度思考质量）
+    try:
+        content = client.chat.completions.create(**_build_kwargs(True)).choices[0].message.content
+    except Exception as e:
+        logger.error(f"[总结] 首次调用失败: {e}")
+        content = None
+
+    # content 为空：推理吃光预算，显式关闭 thinking 重试
+    if not content:
+        logger.warning("[总结] thinking 模式 content 为空（推理耗尽 token 预算），显式关闭 thinking 重试")
+        try:
+            content = client.chat.completions.create(**_build_kwargs(False)).choices[0].message.content
+        except Exception as e:
+            logger.error(f"[总结] 关闭 thinking 重试失败: {e}")
+            content = None
+
+    return content or ''
 
 
 def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, Any]]:
@@ -38,7 +91,8 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
         'market_change_pct': float,
         'top_sector': str,
         'top_sector_chg': float,
-        'is_final': bool
+        'is_final': bool,
+        'tdx_status': str (如 '日红周蓝')
     }
     """
     if db is None:
@@ -62,11 +116,12 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
         # 从market_daily获取最强板块
         market_doc = db['market_daily'].find_one(
             {'trade_date': trade_date},
-            {'_id': 0, 'new_high': 1, 'ai_analysis': 1}
+            {'_id': 0, 'new_high': 1, 'ai_analysis': 1, 'overview.indices': 1}
         )
 
         top_sector = None
         top_sector_chg = 0
+        tdx_status = ''
 
         if market_doc:
             new_high = market_doc.get('new_high', {})
@@ -92,6 +147,13 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
                     except Exception:
                         pass
 
+            # 从overview.indices中获取平均股价的tdx_status
+            indices = market_doc.get('overview', {}).get('indices', [])
+            for idx in indices:
+                if idx.get('code') == '880003' and idx.get('tdx_status'):
+                    tdx_status = idx['tdx_status']
+                    break
+
         # 从index_daily获取大盘涨跌幅（使用平均股价指数 880003）
         index_doc = db['index_daily'].find_one(
             {'stock_code': '880003', 'trade_date': trade_date},
@@ -107,6 +169,7 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
             'top_sector': top_sector,
             'top_sector_chg': top_sector_chg,
             'is_final': base_doc.get('is_final', False),
+            'tdx_status': tdx_status,
         }
 
         return snapshot
@@ -181,6 +244,39 @@ def generate_snapshots_api(
     except Exception as e:
         logger.error(f"生成日历快照失败: {e}")
         raise HTTPException(status_code=500, detail=f"生成日历快照失败: {str(e)}")
+
+
+@router.post("/clear-snapshots")
+def clear_snapshots_api(
+    year: int = Query(..., description="年份 YYYY"),
+    month: int = Query(..., description="月份 1-12"),
+):
+    """清理指定月份的日历快照"""
+    try:
+        db = get_db()
+        import calendar as cal
+        days_in_month = cal.monthrange(year, month)[1]
+        
+        # 构建该月所有日期
+        dates = []
+        for day in range(1, days_in_month + 1):
+            date_str = f"{year}{month:02d}{day:02d}"
+            dates.append(date_str)
+        
+        # 清除 calendar_snapshot 字段
+        result = db['base_data_daily'].update_many(
+            {'date': {'$in': dates}, 'calendar_snapshot': {'$exists': True}},
+            {'$unset': {'calendar_snapshot': ''}}
+        )
+        
+        return {
+            'success': True,
+            'message': f'清理 {year}-{month:02d} 快照完成',
+            'count': result.modified_count
+        }
+    except Exception as e:
+        logger.error(f"清理日历快照失败: {e}")
+        raise HTTPException(status_code=500, detail=f"清理日历快照失败: {str(e)}")
 
 
 @router.get("/daily-summary")
@@ -270,7 +366,7 @@ def get_calendar_daily_summary(
             # 查询market_daily
             market_cursor = db['market_daily'].find(
                 {'trade_date': {'$in': list(missing_dates)}},
-                {'_id': 0, 'trade_date': 1, 'new_high': 1}
+                {'_id': 0, 'trade_date': 1, 'new_high': 1, 'overview.indices': 1}
             )
             market_data = {doc['trade_date']: doc for doc in market_cursor}
             
@@ -329,6 +425,14 @@ def get_calendar_daily_summary(
                 total_count = db['stock_daily'].count_documents({'trade_date': date_str, 'close': {'$gt': 0}})
                 final_count = db['stock_daily'].count_documents({'trade_date': date_str, 'close': {'$gt': 0}, 'is_final': True})
                 is_final = (final_count / total_count > 0.95) if total_count > 0 else False
+
+                # 获取平均股价的tdx_status
+                tdx_status = ''
+                indices = market.get('overview', {}).get('indices', [])
+                for idx in indices:
+                    if idx.get('code') == '880003' and idx.get('tdx_status'):
+                        tdx_status = idx['tdx_status']
+                        break
                 
                 snapshot_data[date_str] = {
                     'up_count': base.get('up_count', 0),
@@ -338,6 +442,7 @@ def get_calendar_daily_summary(
                     'top_sector': top_sector,
                     'top_sector_chg': top_sector_chg,
                     'is_final': is_final,
+                    'tdx_status': tdx_status,
                 }
         
         # 构建结果
@@ -361,6 +466,7 @@ def get_calendar_daily_summary(
                     'top_sector': snap.get('top_sector'),
                     'top_sector_chg': snap.get('top_sector_chg', 0),
                     'is_final': snap.get('is_final', False),
+                    'tdx_status': snap.get('tdx_status', ''),
                     'recommended_position': ai.get('recommended_position', ''),
                     'market_risk_level': ai.get('market_risk_level', ''),
                     'position_management_commentary': ai.get('position_management_commentary', ''),
@@ -379,6 +485,7 @@ def get_calendar_daily_summary(
                     'top_sector': None,
                     'top_sector_chg': 0,
                     'is_final': False,
+                    'tdx_status': '',
                     'recommended_position': '',
                     'market_risk_level': '',
                     'position_management_commentary': '',
@@ -555,39 +662,13 @@ def get_weekly_summary(
                     tm.fail_task(task_id, msg)
                     return
 
-                import openai
-                client = openai.OpenAI(api_key=analyst.api_key, base_url=analyst.base_url)
+                user_message = WEEKLY_SUMMARY_USER_TEMPLATE.format(daily_analyses=daily_analyses)
 
-                user_message = WEEKLY_SUMMARY_PROMPT.format(daily_analyses=daily_analyses)
-
-                kwargs = {
-                    'model': analyst.model,
-                    'messages': [
-                        {'role': 'system', 'content': '你是一位专业的A股量化策略分析师，输出中文周度总结报告。'},
-                        {'role': 'user', 'content': user_message},
-                    ],
-                    'max_tokens': 4096,
-                    'timeout': 300,
-                }
-                if analyst.enable_thinking:
-                    kwargs['reasoning_effort'] = 'high'
-                    kwargs['extra_body'] = {'thinking': {'type': 'enabled'}}
-                else:
-                    kwargs['temperature'] = analyst.temperature
-
-                response = client.chat.completions.create(**kwargs)
-                content = response.choices[0].message.content
-
-                # thinking模式下content可能为空，尝试从reasoning_content获取
-                if not content and hasattr(response.choices[0].message, 'reasoning_content'):
-                    content = response.choices[0].message.reasoning_content
-
-                if not content:
-                    # 重试一次
-                    response = client.chat.completions.create(**kwargs)
-                    content = response.choices[0].message.content
-                    if not content and hasattr(response.choices[0].message, 'reasoning_content'):
-                        content = response.choices[0].message.reasoning_content
+                content = _call_summary_llm(
+                    analyst,
+                    user_message,
+                    WEEKLY_SUMMARY_SYSTEM_PROMPT,
+                )
 
                 if not content:
                     tm.fail_task(task_id, "DeepSeek 返回空内容")
@@ -660,14 +741,14 @@ def get_weekly_input_data(
 
         daily_analyses = _build_weekly_input_text(week_days, ai_docs, new_high_docs, lps_docs)
 
-        # 完整的 user message（含 prompt）
-        full_message = WEEKLY_SUMMARY_PROMPT.format(daily_analyses=daily_analyses)
+        # 完整的 user message（仅数据，指令在 system_message 中）
+        full_message = WEEKLY_SUMMARY_USER_TEMPLATE.format(daily_analyses=daily_analyses)
 
         return {
             'success': True,
             'week_index': week_index,
             'dates': week_days,
-            'system_message': '你是一位专业的A股量化策略分析师，输出中文周度总结报告。',
+            'system_message': WEEKLY_SUMMARY_SYSTEM_PROMPT,
             'user_message': full_message,
         }
 
@@ -936,44 +1017,18 @@ def get_monthly_summary(
                     tm.fail_task(task_id, msg)
                     return
 
-                import openai
-                client = openai.OpenAI(api_key=analyst.api_key, base_url=analyst.base_url)
-
                 # 组装输入：大盘指数 + 周总结
                 full_input = ''
                 if index_line:
                     full_input = index_line + '\n\n'
                 full_input += weekly_summaries
-                user_message = MONTHLY_SUMMARY_PROMPT.format(weekly_summaries=full_input)
+                user_message = MONTHLY_SUMMARY_USER_TEMPLATE.format(weekly_summaries=full_input)
 
-                kwargs = {
-                    'model': analyst.model,
-                    'messages': [
-                        {'role': 'system', 'content': '你是一位专业的A股量化策略分析师，输出中文月度总结报告。'},
-                        {'role': 'user', 'content': user_message},
-                    ],
-                    'max_tokens': 4096,
-                    'timeout': 300,
-                }
-                if analyst.enable_thinking:
-                    kwargs['reasoning_effort'] = 'high'
-                    kwargs['extra_body'] = {'thinking': {'type': 'enabled'}}
-                else:
-                    kwargs['temperature'] = analyst.temperature
-
-                response = client.chat.completions.create(**kwargs)
-                content = response.choices[0].message.content
-
-                # thinking模式下content可能为空，尝试从reasoning_content获取
-                if not content and hasattr(response.choices[0].message, 'reasoning_content'):
-                    content = response.choices[0].message.reasoning_content
-
-                if not content:
-                    # 重试一次
-                    response = client.chat.completions.create(**kwargs)
-                    content = response.choices[0].message.content
-                    if not content and hasattr(response.choices[0].message, 'reasoning_content'):
-                        content = response.choices[0].message.reasoning_content
+                content = _call_summary_llm(
+                    analyst,
+                    user_message,
+                    MONTHLY_SUMMARY_SYSTEM_PROMPT,
+                )
 
                 if not content:
                     tm.fail_task(task_id, "DeepSeek 返回空内容")
@@ -1111,14 +1166,14 @@ def get_monthly_input_data(
         if index_line:
             full_input = index_line + '\n\n'
         full_input += weekly_summaries
-        full_message = MONTHLY_SUMMARY_PROMPT.format(weekly_summaries=full_input)
+        full_message = MONTHLY_SUMMARY_USER_TEMPLATE.format(weekly_summaries=full_input)
 
         return {
             'success': True,
             'year': year,
             'month': month,
             'dates': month_dates,
-            'system_message': '你是一位专业的A股量化策略分析师，输出中文月度总结报告。',
+            'system_message': MONTHLY_SUMMARY_SYSTEM_PROMPT,
             'user_message': full_message,
         }
 
@@ -1250,3 +1305,22 @@ def fill_ai_analysis_api(
     except Exception as e:
         logger.error(f"启动AI分析补全失败: {e}")
         raise HTTPException(status_code=500, detail=f"启动失败: {str(e)[:200]}")
+
+
+@router.get("/running-tasks")
+def get_running_tasks():
+    """获取所有正在运行的任务（用于页面恢复轮询）"""
+    try:
+        db = get_db()
+        running_tasks = list(db['sync_tasks'].find(
+            {'status': 'running'},
+            {'_id': 0, 'task_id': 1, 'name': 1, 'current_step': 1, 'current_stock_name': 1, 'created_at': 1}
+        ).sort('created_at', -1))
+        
+        return {
+            'success': True,
+            'tasks': running_tasks
+        }
+    except Exception as e:
+        logger.error(f"获取运行中任务失败: {e}")
+        return {'success': False, 'tasks': []}

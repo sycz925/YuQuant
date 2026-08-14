@@ -140,6 +140,7 @@ class WatchlistItem(BaseModel):
     rps_10: Optional[int] = Field(None, description="RPS 10日")
     rps_20: Optional[int] = Field(None, description="RPS 20日")
     rps_50: Optional[int] = Field(None, description="RPS 50日")
+    tdx_status: Optional[str] = Field(None, description="通达信MA7状态: red/green/blue")
 
 
 class WatchlistResponse(BaseModel):

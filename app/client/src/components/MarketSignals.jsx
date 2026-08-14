@@ -5,15 +5,15 @@ import { marketReviewApi } from '../api'
 import { DownOutlined, UpOutlined } from '@ant-design/icons'
 
 // 从股票字符串解析当日涨幅，返回颜色class
-// 涨停(>=9.9%)红、下跌(<0)绿、其他蓝
+// 涨幅>5%红、涨幅<-2%绿、其他蓝
 const getStockColor = (stock) => {
   if (!stock) return 'bg-blue-50 text-blue-700 border-blue-200'
   // 匹配 "今日+13.3%" 或 "(+20.0%)" 中的最后一个数字
   const match = stock.match(/今日([+-]?\d+\.?\d*)%/) || stock.match(/\(([+-]?\d+\.?\d*)%\)/)
   if (match) {
     const chg = parseFloat(match[1])
-    if (chg >= 9.9) return 'bg-red-50 text-red-700 border-red-200'
-    if (chg < 0) return 'bg-green-50 text-green-700 border-green-200'
+    if (chg > 5) return 'bg-red-50 text-red-700 border-red-200'
+    if (chg < -2) return 'bg-green-50 text-green-700 border-green-200'
   }
   return 'bg-blue-50 text-blue-700 border-blue-200'
 }
@@ -361,7 +361,7 @@ function MarketSignals({ date }) {
           <div className="flex items-center space-x-1.5 md:space-x-2 mb-2 md:mb-4">
             <div className="w-1 h-3 md:h-4 bg-emerald-500 rounded-full"></div>
             <h3 className="text-xs md:text-sm font-bold text-gray-700">低位潜力板块</h3>
-            <Tooltip title="筛选规则：MA10>MA20 + RPS10>85(短线爆发力) + RPS50<70(长线低位) + 近3天有1天以上≥15%个股创20日新高 + 近5天有4天净新高>-10">
+            <Tooltip title="筛选规则：板块涨幅>2% + MA10>MA20 + RPS10>85(短线爆发力) + RPS50<70(长线低位) + 近3天有1天以上≥15%个股创20日新高 + 近5天有4天净新高>-10">
               <span className="text-[10px] md:text-xs text-gray-400 cursor-help">({lps_sectors.length}个)</span>
             </Tooltip>
           </div>

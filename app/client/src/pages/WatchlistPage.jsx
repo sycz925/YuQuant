@@ -14,6 +14,7 @@ function WatchlistPage() {
 
   const keyword = searchParams.get('keyword') || ''
   const rpsRed = searchParams.get('rpsRed') || undefined
+  const tdxStatus = searchParams.get('tdxStatus') || undefined
   const sortBy = searchParams.get('sortBy') || null
   const sortOrder = searchParams.get('sortOrder') || 'desc'
 
@@ -27,11 +28,12 @@ function WatchlistPage() {
   }, [setSearchParams])
 
   const { data = [], isFetching } = useQuery({
-    queryKey: ['watchlist', keyword, rpsRed, sortBy, sortOrder],
+    queryKey: ['watchlist', keyword, rpsRed, tdxStatus, sortBy, sortOrder],
     queryFn: () => {
       const params = {}
       if (keyword) params.keyword = keyword
       if (rpsRed) params.rps_red = rpsRed
+      if (tdxStatus) params.tdx_status = tdxStatus
       if (sortBy) { params.sort_by = sortBy; params.sort_order = sortOrder }
       return watchlistApi.getList(params).then(r => r.data || [])
     },
@@ -72,12 +74,15 @@ function WatchlistPage() {
       const res = await watchlistApi.checkAlerts()
       const n = res?.new_alerts || 0
       message.success(n > 0 ? `预警检查完成，新增 ${n} 条预警` : '预警检查完成，无新增预警')
+      queryClient.invalidateQueries({ queryKey: ['watchlist'] })
     } catch (e) {
       message.error(e?.response?.data?.detail || '预警检查失败')
     } finally {
       setChecking(false)
     }
   }
+
+  const STATUS_COLORS = { '红': '#ef5350', '绿': '#22c55e', '蓝': '#3b82f6' }
 
   const renderChange = (value) => {
     if (value == null) return '-'
@@ -89,9 +94,24 @@ function WatchlistPage() {
     ? <span className={`font-mono ${v >= 90 ? 'text-red-500 font-bold' : v >= 80 ? 'text-orange-500' : v <= 20 ? 'text-green-500' : ''}`}>{v}</span>
     : '-'
 
+  const renderStatus = (text) => {
+    if (!text) return '-'
+    // 解析 "日红周绿" 格式
+    const parts = text.match(/日([红绿蓝])周([红绿蓝])/)
+    if (!parts) return <span>{text}</span>
+    return (
+      <span>
+        <span style={{ color: STATUS_COLORS[parts[1]] }}>日{parts[1]}</span>
+        <span style={{ color: STATUS_COLORS[parts[2]] }}>周{parts[2]}</span>
+      </span>
+    )
+  }
+
   const columns = [
-    { title: '代码', dataIndex: 'code', key: 'code', width: 110,
+    { title: '代码', dataIndex: 'code', key: 'code', width: 80,
       render: (v) => <span className="font-mono text-gray-500">{v}</span> },
+    { title: '状态', key: 'tdx_status', width: 120,
+      render: (_, r) => renderStatus(r.tdx_status) },
     { title: '名称', dataIndex: 'name', key: 'name', width: 200,
       render: (v, r) => (
         <span className="font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
@@ -152,6 +172,18 @@ function WatchlistPage() {
               { value: 'one', label: '一线红' },
               { value: 'two', label: '二线红' },
               { value: 'three', label: '三线红' },
+            ]}
+          />
+          <Select
+            placeholder="状态筛选"
+            allowClear
+            style={{ width: 110 }}
+            value={tdxStatus}
+            onChange={(v) => updateParam('tdxStatus', v)}
+            options={[
+              { value: '红', label: <span style={{ color: '#ef5350' }}>红</span> },
+              { value: '绿', label: <span style={{ color: '#22c55e' }}>绿</span> },
+              { value: '蓝', label: <span style={{ color: '#3b82f6' }}>蓝</span> },
             ]}
           />
           <Button icon={<AlertOutlined />} onClick={() => navigate('/watchlist/alerts')}>预警记录</Button>

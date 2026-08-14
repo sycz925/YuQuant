@@ -21,8 +21,10 @@ class SectorFactory:
     
     def get_sector_list(self, page: Optional[int] = None, page_size: int = 50,
                         keyword: Optional[str] = None, filter_mode: Optional[str] = None,
-                        limit: Optional[int] = None, min_stock_count: int = 0) -> Dict[str, Any]:
-        """获取板块列表"""
+                        limit: Optional[int] = None, min_stock_count: int = 0,
+                        sort_by: Optional[str] = None, sort_order: str = 'desc',
+                        rps_red: Optional[str] = None) -> Dict[str, Any]:
+        """获取板块列表（含最新行情数据）"""
         from app.data.db import get_db
         
         db = get_db()
@@ -42,21 +44,30 @@ class SectorFactory:
         )
         items = list(cursor)
         
-        # 获取最新 RPS 数据
+        # 获取最新行情数据（含 RPS / 涨跌幅 / 区间涨幅）
         sector_coll = db['sector_daily']
         latest_doc = sector_coll.find_one({}, sort=[('trade_date', -1)], projection={'trade_date': 1, '_id': 0})
         if latest_doc:
             latest_date = latest_doc['trade_date']
-            rps_cursor = sector_coll.find(
+            daily_cursor = sector_coll.find(
                 {'trade_date': latest_date},
-                {'_id': 0, 'stock_code': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1},
+                {'_id': 0, 'stock_code': 1, 'close': 1, 'chg_pct': 1,
+                 'chg_5d': 1, 'chg_10d': 1, 'chg_20d': 1, 'chg_50d': 1, 'chg_120d': 1,
+                 'rps_10': 1, 'rps_20': 1, 'rps_50': 1},
             )
-            rps_map = {d['stock_code']: d for d in rps_cursor}
+            daily_map = {d['stock_code']: d for d in daily_cursor}
             for item in items:
-                rps = rps_map.get(item['code'], {})
-                item['rps_10'] = rps.get('rps_10')
-                item['rps_20'] = rps.get('rps_20')
-                item['rps_50'] = rps.get('rps_50')
+                daily = daily_map.get(item['code'], {})
+                item['close'] = daily.get('close')
+                item['change_pct'] = daily.get('chg_pct')
+                item['chg_5d'] = daily.get('chg_5d')
+                item['chg_10d'] = daily.get('chg_10d')
+                item['chg_20d'] = daily.get('chg_20d')
+                item['chg_50d'] = daily.get('chg_50d')
+                item['chg_120d'] = daily.get('chg_120d')
+                item['rps_10'] = daily.get('rps_10')
+                item['rps_20'] = daily.get('rps_20')
+                item['rps_50'] = daily.get('rps_50')
                 item['exclude_sync'] = item.get('is_disable', False)
         
         # 关键词搜索
@@ -74,6 +85,28 @@ class SectorFactory:
                      kw in i.get('code', '').lower() or
                      kw in i.get('name', '').lower() or
                      kw in get_pinyin(i.get('name', ''))]
+        
+        # 排序
+        if sort_by and sort_by in ('code', 'name', 'close', 'change_pct',
+                                   'chg_5d', 'chg_10d', 'chg_20d', 'chg_50d', 'chg_120d',
+                                   'rps_10', 'rps_20', 'rps_50'):
+            reverse = sort_order == 'desc'
+            items.sort(key=lambda i: (i.get(sort_by) if i.get(sort_by) is not None else (float('-inf') if reverse else float('inf'))), reverse=reverse)
+
+        # RPS红筛选
+        if rps_red in ('one', 'two', 'three'):
+            rps_threshold = 87
+            filtered = []
+            for item in items:
+                rps_values = [v for v in (item.get('rps_10'), item.get('rps_20'), item.get('rps_50')) if v is not None]
+                red_count = sum(1 for v in rps_values if v > rps_threshold)
+                if rps_red == 'one' and red_count >= 1:
+                    filtered.append(item)
+                elif rps_red == 'two' and red_count >= 2:
+                    filtered.append(item)
+                elif rps_red == 'three' and red_count >= 3:
+                    filtered.append(item)
+            items = filtered
         
         total = len(items)
         if limit and page is None:
@@ -224,7 +257,7 @@ class SectorFactory:
             # 调用 factor_engine 的 RPS 计算
             from app.engine.factor_engine import FactorEngine
             engine = FactorEngine()
-            result = engine.calculate_rps(data_type='sector', max_dates=None)
+            result = engine.calculate_rps(data_type='sector', max_dates=None, target_date=target_date)
             
             callback.complete(f'板块RPS计算完成: {result}')
             return ComputeResult(success=True, message=f'板块RPS计算完成: {result}')

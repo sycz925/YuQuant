@@ -130,9 +130,9 @@ def sync_etf():
         etf_count = len(df) if not df.empty else 84
 
         steps = [
-            {'key': 'basics', 'name': '同步ETF基础信息', 'total_count': 1, 'completed_count': 0},
             {'key': 'daily', 'name': '同步ETF日线', 'total_count': etf_count, 'completed_count': 0},
             {'key': 'rps', 'name': '计算ETF RPS', 'total_count': 1, 'completed_count': 0},
+            {'key': 'derive', 'name': '补全ETF均线', 'total_count': 1, 'completed_count': 0},
             {'key': 'alert', 'name': '计算ENE预警', 'total_count': 1, 'completed_count': 0},
         ]
         task_id = tm.create_task_with_steps(steps, name='ETF同步')
@@ -155,16 +155,8 @@ def _run_etf_sync(task_id: str):
     dm = get_data_manager()
 
     try:
-        # Step 1: 同步基础信息
+        # Step 1: 同步日线
         tm.start_step(task_id, 0)
-        count = dm.sync_etf_basics()
-        tm.complete_step(task_id, 0, f'基础信息 {count} 只')
-
-        if tm.is_cancelled(task_id):
-            return
-
-        # Step 2: 同步日线
-        tm.start_step(task_id, 1)
         result = dm.sync_etf_daily()
         success = result.get('success', 0)
         fail = result.get('fail', 0)
@@ -173,22 +165,36 @@ def _run_etf_sync(task_id: str):
         db['sync_tasks'].update_one(
             {'task_id': task_id},
             {'$set': {
-                f'steps.1.completed_count': success + fail,
-                f'steps.1.message': f'成功{success} 失败{fail}',
+                f'steps.0.completed_count': success + fail,
+                f'steps.0.message': f'成功{success} 失败{fail}',
                 'updated_at': dt.utcnow().isoformat()
             }}
         )
-        tm.complete_step(task_id, 1, f'日线: 成功{success} 失败{fail}')
+        tm.complete_step(task_id, 0, f'日线: 成功{success} 失败{fail}')
+
+        # 全部失败时终止任务
+        if success == 0 and fail > 0:
+            tm.fail_task(task_id, f'ETF日线同步全部失败({fail}只)，请检查数据源pytdx连接')
+            logger.error(f'ETF同步任务 {task_id} 日线全部失败({fail}只)')
+            return
 
         if tm.is_cancelled(task_id):
             return
 
-        # Step 3: 计算RPS
-        tm.start_step(task_id, 2)
+        # Step 2: 计算RPS
+        tm.start_step(task_id, 1)
         from app.engine.factor_engine import FactorEngine
         engine = FactorEngine()
         rps_result = engine.calculate_rps(data_type='etf', max_dates=50)
-        tm.complete_step(task_id, 2, f'RPS: {rps_result.get("dates", 0)}天')
+        tm.complete_step(task_id, 1, f'RPS: {rps_result.get("dates", 0)}天')
+
+        if tm.is_cancelled(task_id):
+            return
+
+        # Step 3: 补全ETF均线（重算历史MA为3位精度）
+        tm.start_step(task_id, 2)
+        derive_result = engine.calculate_derived_fields(data_type='etf', backfill=True)
+        tm.complete_step(task_id, 2, f'均线补全: {derive_result.get("dates", 0)}天 {derive_result.get("updates", 0)}条')
 
         if tm.is_cancelled(task_id):
             return

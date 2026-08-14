@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import { Button, Tag, Tooltip, notification } from 'antd'
-import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined, FundOutlined, AlertOutlined, StarOutlined } from '@ant-design/icons'
+import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined, FundOutlined, AlertOutlined, StarOutlined, AppstoreOutlined } from '@ant-design/icons'
 import CalendarReview from './pages/CalendarReview'
 import ReviewDetail from './pages/ReviewDetail'
 import StockAnalysis from './pages/StockAnalysis'
@@ -12,6 +12,7 @@ import MarketAnalysis from './pages/MarketAnalysis'
 import MarketMonitor from './pages/MarketMonitor'
 import ETFPage from './pages/ETFPage'
 import ETFAlertPage from './pages/ETFAlertPage'
+import SectorPage from './pages/SectorPage'
 import WatchlistPage from './pages/WatchlistPage'
 import WatchlistAlertPage from './pages/WatchlistAlertPage'
 import SectorDetail from './pages/SectorDetail'
@@ -112,6 +113,10 @@ function App() {
                 <span className="text-lg sm:text-xl md:text-2xl">📊</span>
                 <span className="text-base sm:text-lg md:text-xl font-bold">A股量化</span>
               </Link>
+              <Link to="/sectors" className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs sm:text-sm text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1">
+                <AppstoreOutlined />
+                <span>板块</span>
+              </Link>
               <Link to="/etf" className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs sm:text-sm text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1">
                 <FundOutlined />
                 <span>ETF</span>
@@ -190,6 +195,7 @@ function App() {
             <Route path="/market-monitor" element={<MarketMonitor />} />
             <Route path="/market-analysis" element={<MarketAnalysis />} />
             <Route path="/test-index" element={<TestIndexChart />} />
+            <Route path="/sectors" element={<SectorPage />} />
             <Route path="/etf" element={<ETFPage />} />
             <Route path="/etf/alerts" element={<ETFAlertPage />} />
             <Route path="/watchlist" element={<WatchlistPage />} />

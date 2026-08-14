@@ -18,9 +18,10 @@ from .db import (
     get_daily_data, bulk_upsert_daily_data, has_daily_data,
     get_stock_sync_start_date, get_sector_sync_start_date,
     get_index_basics, upsert_index_basics,
-    get_etf_basics, bulk_upsert_etf_basics
+    get_etf_basics, bulk_upsert_etf_basics,
+    get_xdxr_fingerprint, set_xdxr_fingerprint
 )
-from .sources.pytdx_source import PytdxSource as PyTdXSource
+from .sources.pytdx_source import PytdxSource as PyTdXSource, MARKET_SH, MARKET_SZ
 from .sources.akshare_source import AkShareSource
 from .sources.baostock_source import BaoStockSource
 from .sources.yfinance_source import YFinanceSource
@@ -52,6 +53,11 @@ _SOCKET_TIMEOUT = 30  # 秒，兜底网络超时（线程池内避免阻塞）
 # 数据源熔断：连续失败达到阈值后暂停该源一段时间
 BREAKER_FAIL_THRESHOLD = 10
 BREAKER_COOLDOWN_SECONDS = 120
+
+# xdxr 除权指纹缓存（进程生命周期内，按日期隔离）
+# 同一交易日内同一股票的 xdxr 事件不变，无需反复拉取
+# 结构：{date: {stock_code: fingerprint}}，fingerprint None=拉取失败，''=无事件
+_XDXR_FINGERPRINT_CACHE: Dict[str, Dict[str, Optional[str]]] = {}
 
 
 class _SourceBreaker:
@@ -137,6 +143,25 @@ class DataManager:
         if df is None or df.empty:
             return 0
 
+        # 清理名称中的临时前缀（XD/XR/DR 除权除息标记），避免脏前缀留库
+        df['stock_name'] = df['stock_name'].apply(PyTdXSource.clean_stock_name)
+
+        # 从 AkShare 获取正确名称覆盖（通达信除权除息日名称可能不完整）
+        try:
+            ak_df = self.akshare.get_stock_basics()
+            if ak_df is not None and not ak_df.empty:
+                ak_map = dict(zip(ak_df['stock_code'], ak_df['stock_name']))
+                corrected = 0
+                for idx, row in df.iterrows():
+                    correct_name = ak_map.get(row['stock_code'])
+                    if correct_name and correct_name != row['stock_name']:
+                        df.at[idx, 'stock_name'] = correct_name
+                        corrected += 1
+                if corrected > 0:
+                    logger.info(f'[数据更新] AkShare名称纠错: {corrected} 条')
+        except Exception as e:
+            logger.warning(f'[数据更新] AkShare名称纠错失败: {e}')
+
         # 保存到 MongoDB
         docs = []
         for _, row in df.iterrows():
@@ -193,13 +218,28 @@ class DataManager:
         return len(docs)
 
     @staticmethod
-    def _forward_adjust_records(records: List[Dict]) -> List[Dict]:
+    @staticmethod
+    def _should_full_reload(stored_fp: Optional[str], current_fp: Optional[str]) -> bool:
+        """判断是否需要触发该股全量重拉
+
+        语义（指纹约定：None=从未记录，''=已记录但无事件，其他=事件指纹）：
+        - stored_fp is None（从未记录）→ 不重拉（首次同步本身就是全量回溯）
+        - stored_fp == current_fp → 无变化，不重拉
+        - 其他情况（有记录且发生变化）→ 触发全量重拉
+        """
+        if stored_fp is None:
+            return False
+        return stored_fp != current_fp
+
+    def _forward_adjust_records(self, records: List[Dict]) -> List[Dict]:
         """检测除权跳空，对 close/open/high/low 做前复权。
 
         前复权（最新为基准，历史价格向下除）：
           检测到除权日时，该日之前的全部价格除以复权系数 prev_close/open。
           原始价格存入 close_raw/open_raw/high_raw/low_raw。
         """
+        # 数据源可能返回乱序（如 PyTdX 分段拉取拼接），必须先按日期升序，否则断点被误判为除权跳空
+        records = sorted(records, key=lambda r: str(r['trade_date']))
         n = len(records)
         if n < 2:
             return records
@@ -244,68 +284,237 @@ class DataManager:
 
         return records
 
-    def sync_etf_daily(self, etf_codes: List[str] = None, max_workers: int = 16) -> dict:
-        """同步ETF日线数据"""
+    def sync_etf_daily(self, etf_codes: List[str] = None, max_workers: int = 16,
+                       task_id: str = None, progress_callback: Callable = None) -> dict:
+        """同步ETF日线数据 — 逐日检查，跳过已同步日期（与一键更新个股同步逻辑一致）"""
+        from .db import get_db
+        from .task_manager import get_task_manager
+
+        db = get_db()
+        tm = get_task_manager() if task_id else None
+
         df = get_etf_basics()
         if df.empty:
-            return {'total': 0, 'success': 0, 'fail': 0}
+            return {'total': 0, 'success': 0, 'fail': 0, 'skipped': 0}
 
         if etf_codes is not None:
             df = df[df['code'].isin(etf_codes)]
 
         etf_list = df.to_dict('records')
         total = len(etf_list)
+        today = self._today_str()
+
+        # 确定需要同步的日期列表（从最新交易日往前）
+        from .holidays import is_workday
+
+        # 从数据库获取最新交易日
+        latest_doc = db['stock_daily'].find_one(
+            {'close': {'$gt': 0}},
+            sort=[('trade_date', -1)],
+            projection={'trade_date': 1, '_id': 0}
+        )
+        latest_trade = latest_doc['trade_date'] if latest_doc else today
+
+        # 收集需要同步的日期（最多回溯10天）
+        dates_to_check = []
+        day = latest_trade
+        for _ in range(10):
+            if is_workday(day):
+                dates_to_check.append(day)
+            day = (datetime.strptime(day, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
+
+        # 逐日检查是否需要同步
+        dates_to_sync = []
+        for date in dates_to_check:
+            if not self._is_etf_synced_for_date(date, total):
+                dates_to_sync.append(date)
+            else:
+                logger.info(f"[ETF同步] 日期 {date} 已有数据，跳过")
+
+        if not dates_to_sync:
+            logger.info(f"[ETF同步] 所有日期数据已存在，跳过")
+            return {'total': total, 'success': 0, 'fail': 0, 'skipped': total}
+
+        logger.info(f"[ETF同步] 需要同步 {len(dates_to_sync)} 个日期: {dates_to_sync}")
+
         success = 0
         fail = 0
+        days_synced = 0
 
-        end_date = self._today_str()
-        start_date = (datetime.now(BJ_TZ) - timedelta(days=550)).strftime('%Y%m%d')
+        # 逐日同步（与一键更新逻辑一致）
+        for date in dates_to_sync:
+            days_synced += 1
+            logger.info(f"[ETF同步] 同步日期 {date}")
 
-        def _sync_one(etf: dict) -> bool:
-            code = etf['code']
-            # yfinance 对 A 股支持极差（DNS 无法解析），已从瀑布中移除
-            # BaoStock IP 被服务端黑名单，已移除
-            sources = [
-                (self.pytdx, 'PyTdX'),
-                (self.akshare, 'AkShare'),
-            ]
-            for source_obj, source_name in sources:
-                try:
-                    if source_name == 'PyTdX':
-                        df_data, src = source_obj.get_daily_data(code, start_date, end_date)
-                    elif source_name == 'AkShare':
-                        df_data, src = source_obj.get_etf_daily(code, start_date, end_date)
+            if progress_callback:
+                progress_callback(0, total, f"同步 {date}...")
+            elif tm and task_id:
+                tm.update_task_progress(task_id, current_stock=date,
+                                        current_stock_name=f"同步 {date}...",
+                                        total_count=total, completed_count=0)
+
+            day_success = 0
+            day_fail = 0
+
+            def _sync_one(etf: dict) -> bool:
+                code = etf['code']
+                sources = [
+                    (self.pytdx, 'PyTdX'),
+                    (self.akshare, 'AkShare'),
+                ]
+                for source_obj, source_name in sources:
+                    try:
+                        if source_name == 'PyTdX':
+                            df_data, src = source_obj.get_daily_data(code, date, date)
+                        elif source_name == 'AkShare':
+                            df_data, src = source_obj.get_etf_daily(code, date, date)
+                        else:
+                            df_data, src = source_obj.get_daily_data(code, date, date)
+                        if df_data is not None and not df_data.empty:
+                            records = df_data.to_dict('records')
+                            records = self._forward_adjust_records(records)
+                            bulk_upsert_daily_data(code, records, src, 'etf')
+                            return True
+                    except Exception as e:
+                        logger.warning(f"ETF {code} {source_name} 同步失败: {e}")
+                return False
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_sync_one, etf): etf for etf in etf_list}
+                for future in as_completed(futures):
+                    if future.result():
+                        day_success += 1
                     else:
-                        df_data, src = source_obj.get_daily_data(code, start_date, end_date)
-                    if df_data is not None and not df_data.empty:
-                        records = df_data.to_dict('records')
-                        records = self._forward_adjust_records(records)
-                        bulk_upsert_daily_data(code, records, src, 'etf')
-                        return True
-                except Exception as e:
-                    logger.warning(f"ETF {code} {source_name} 同步失败: {e}")
+                        day_fail += 1
+
+                    done = day_success + day_fail
+                    if done % 50 == 0 or done == total:
+                        if progress_callback:
+                            progress_callback(done, total, f"同步 {date}")
+                        elif tm and task_id:
+                            tm.update_task_progress(task_id, current_stock=date,
+                                                    current_stock_name=f"同步 {date}",
+                                                    total_count=total, completed_count=done)
+
+            success += day_success
+            fail += day_fail
+            logger.info(f"[ETF同步] {date} 完成: 成功{day_success} 失败{day_fail}")
+
+            # 检查失败率，超过50%则停止（ETF数量少，阈值放宽）
+            if total > 0 and day_fail / total > 0.5:
+                logger.error(f"[ETF同步] {date} 失败率 {day_fail/total:.1%} 超过阈值，停止执行")
+                break
+
+        logger.info(f"ETF日线同步完成: {days_synced}天, 成功{success}, 失败{fail}")
+
+        # RPS 计算由调用方（_run_etf_sync Step2）负责，此处不重复计算
+
+        return {'total': total, 'success': success, 'fail': fail, 'skipped': total * days_synced - success}
+
+    def _is_etf_synced_for_date(self, target_date: str, expected_count: int = 0) -> bool:
+        """
+        检查指定日期的ETF数据是否已同步（与一键更新 _is_data_synced_for_date 逻辑一致）
+        盘中（15:30前）：30分钟缓存，需要重新同步
+        盘后（15:30后）：is_final=True 才跳过
+        """
+        from .db import get_db
+        db = get_db()
+        now = datetime.now(BJ_TZ)
+        today_str = now.strftime('%Y%m%d')
+
+        # 非今天的数据，检查 is_final=True
+        if target_date != today_str:
+            count = db['etf_daily'].count_documents({'trade_date': target_date, 'is_final': True})
+            if expected_count > 0:
+                return count >= expected_count
+            return count > 0
+
+        # 今天的数据
+        is_market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
+
+        if is_market_closed:
+            # 盘后：检查 is_final=True
+            count = db['etf_daily'].count_documents({'trade_date': target_date, 'is_final': True})
+            if expected_count > 0:
+                return count >= expected_count
+            return count > 0
+        else:
+            # 盘中：30分钟缓存，检查最后更新时间
+            latest = db['etf_daily'].find_one(
+                {'trade_date': target_date},
+                sort=[('updated_at', -1)],
+                projection={'updated_at': 1, '_id': 0}
+            )
+            if not latest:
+                return False
+
+            updated_at = latest.get('updated_at')
+            if not updated_at:
+                return False
+
+            if isinstance(updated_at, str):
+                updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+
+            if (now - updated_at) > timedelta(minutes=30):
+                return False
+
+            if expected_count > 0:
+                count = db['etf_daily'].count_documents({'trade_date': target_date})
+                if count < expected_count:
+                    return False
+
+            return True
+
+    def _get_xdxr_fingerprint(self, stock_code: str) -> Optional[str]:
+        """获取个股当前 xdxr 除权事件指纹（带日内缓存）
+
+        约定：None=拉取失败/无事件（与 db 中 None 语义一致），
+        实际指纹字符串=有事件。缓存按日期隔离，当日重复调用零开销。
+        """
+        today = self._today_str()
+        cache = _XDXR_FINGERPRINT_CACHE.setdefault(today, {})
+        if stock_code in cache:
+            return cache[stock_code]
+
+        fp = None
+        try:
+            xdxr = PyTdXSource._fetch_xdxr_events(
+                MARKET_SH if stock_code.startswith(('5', '6', '8', '9')) else MARKET_SZ,
+                stock_code
+            )
+            fp = PyTdXSource.xdxr_fingerprint(xdxr) if xdxr else ''
+        except Exception as e:
+            logger.warning(f"获取 {stock_code} xdxr 指纹失败: {e}")
+            fp = None
+
+        cache[stock_code] = fp
+        return fp
+
+    def _full_reload_stock(self, stock_code: str, end_date: str) -> bool:
+        """除权基准变化后全量重拉该股历史并覆盖写入
+
+        前复权基准基于最新 xdxr 事件，新除权会令全部历史价格等比缩放。
+        个股同步默认增量（只写目标日），历史 is_final 记录不会随新除权
+        重算，导致除权日前后价格断裂。此处拉全量历史覆盖，修复漂移。
+
+        :return: 是否重拉成功
+        """
+        # 全量窗口：回溯到足够深的历史（上限10年由 _find_sync_boundary 界定，
+        # 这里从今天往前推10年，与逐日回溯覆盖范围对齐）
+        start_date = (datetime.now(BJ_TZ) - timedelta(days=3650)).strftime('%Y%m%d')
+        try:
+            df, source = self.pytdx.get_daily_data(stock_code, start_date, end_date)
+        except Exception as e:
+            logger.warning(f"{stock_code} 全量重拉数据源异常: {e}")
+            return False
+        if df is None or (hasattr(df, 'empty') and df.empty):
+            logger.warning(f"{stock_code} 全量重拉无数据，跳过")
             return False
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_sync_one, etf): etf for etf in etf_list}
-            for future in as_completed(futures):
-                if future.result():
-                    success += 1
-                else:
-                    fail += 1
-
-        logger.info(f"ETF日线同步完成: 成功{success}, 失败{fail}")
-
-        if success > 0:
-            try:
-                from app.engine.factor_engine import FactorEngine
-                engine = FactorEngine()
-                rps_result = engine.calculate_rps(data_type='etf', max_dates=50)
-                logger.info(f"ETF RPS计算完成: {rps_result}")
-            except Exception as e:
-                logger.warning(f"ETF RPS计算失败: {e}")
-
-        return {'total': total, 'success': success, 'fail': fail}
+        records = df.to_dict('records')
+        bulk_upsert_daily_data(stock_code, records, source or 'pytdx')
+        logger.info(f"{stock_code} 除权基准变化，全量重拉 {len(records)} 条 ({start_date}~{end_date})")
+        return True
 
     def _sync_single_stock(self, stock_code: str, stock_name: str, start_date: str, end_date: str) -> Dict:
         """同步单只股票数据（线程池内调用，不更新任务状态）
@@ -424,8 +633,29 @@ class DataManager:
 
             df, source = holder[0]
             if df is not None and not df.empty:
+                # 复权基准漂移检测：仅对 PyTdX 源执行（有 xdxr 事件）
+                # 除权事件变化 → 全量重拉覆盖历史，修复前复权断裂
+                if source_name == 'PyTdX':
+                    stored_fp = get_xdxr_fingerprint(stock_code)
+                    current_fp = self._get_xdxr_fingerprint(stock_code)
+                    # current_fp 为 None 表示本次拉取失败，不触发重拉
+                    if current_fp is not None and self._should_full_reload(stored_fp, current_fp):
+                        reloaded = self._full_reload_stock(stock_code, end_date)
+                        if reloaded:
+                            set_xdxr_fingerprint(stock_code, current_fp)
+                            result['status'] = 'success'
+                            result['source'] = source
+                            result['reloaded'] = True
+                            breaker.record_success(source_name)
+                            return result
+                        logger.warning(f"{stock_code} 全量重拉失败，回退增量写入")
+
                 records = df.to_dict('records')
                 bulk_upsert_daily_data(stock_code, records, source)
+                # 同步成功即记录指纹（首次记录或确认无变化）
+                if source_name == 'PyTdX':
+                    current_fp = self._get_xdxr_fingerprint(stock_code)
+                    set_xdxr_fingerprint(stock_code, current_fp)
                 result['status'] = 'success'
                 result['source'] = source
                 breaker.record_success(source_name)
@@ -749,14 +979,19 @@ class DataManager:
                     new_records = []
                     for _, r in kline.iterrows():
                         if str(r['trade_date']) == day:
-                            new_records.append({
+                            record = {
                                 'trade_date': day,
                                 'close': float(r['close']),
                                 'open': float(r.get('open', 0)),
                                 'high': float(r.get('high', 0)),
                                 'low': float(r.get('low', 0)),
                                 'amount': float(r.get('amount', 0)),
-                            })
+                            }
+                            # akshare返回volume单位是"手"，转为"股"与pytdx一致
+                            vol = float(r.get('volume', 0) or 0)
+                            if vol > 0:
+                                record['vol'] = vol * 100
+                            new_records.append(record)
                     if new_records:
                         from app.data.db import bulk_upsert_daily_data
                         bulk_upsert_daily_data(sector_code, new_records, data_source, 'sector')

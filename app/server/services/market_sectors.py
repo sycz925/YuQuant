@@ -254,11 +254,12 @@ def analyze_low_position_sectors(trade_date: str) -> Dict[str, Any]:
     """
     低位潜力板块筛选
     条件：
-    1. MA10 > MA20
-    2. RPS10 > 85（短线爆发力）
-    3. RPS50 < 70（长线趋势尚未走强，低位）
-    4. 近3天有1天以上 >=15% 的股票创20日新高
-    5. 近5天有4天净新高(20日新高-20日新低) > -10
+    1. 板块当日涨幅 > 2%
+    2. MA10 > MA20
+    3. RPS10 > 85（短线爆发力）
+    4. RPS50 < 70（长线趋势尚未走强，低位）
+    5. 近3天有1天以上 >=15% 的股票创20日新高
+    6. 近5天有4天净新高(20日新高-20日新低) > -10
     """
     from datetime import timedelta
     db = get_db()
@@ -273,6 +274,7 @@ def analyze_low_position_sectors(trade_date: str) -> Dict[str, Any]:
         {
             'trade_date': trade_date,
             'stock_code': {'$in': list(enabled_sector_codes)},
+            'chg_pct': {'$gt': 2},
             'ma10': {'$gt': 0}, 'ma20': {'$gt': 0},
             'rps_10': {'$gt': 85}, 'rps_50': {'$lt': 70},
         },

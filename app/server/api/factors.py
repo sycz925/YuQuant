@@ -151,12 +151,16 @@ def get_sector_list(
     filter_mode: Optional[str] = Query(None, description="筛选模式: enabled/disabled"),
     limit: Optional[int] = Query(None, description="返回数量（兼容旧接口）"),
     min_stock_count: Optional[int] = Query(5, description="最少成分股数"),
+    sort_by: Optional[str] = Query(None, description="排序字段"),
+    sort_order: Optional[str] = Query("desc", description="排序方向"),
+    rps_red: Optional[str] = Query(None, description="RPS红筛选: one/two/three"),
 ):
-    """获取板块列表（支持分页、搜索和状态筛选，含RPS数据）"""
+    """获取板块列表（支持分页、搜索、状态筛选和排序，含最新行情数据）"""
     try:
         factory = get_sector_factory()
         return factory.get_sector_list(
             page, page_size or 50, keyword, filter_mode, limit, min_stock_count or 0,
+            sort_by, sort_order, rps_red,
         )
     except Exception as e:
         logger.error(f"获取板块列表失败: {e}")
@@ -172,9 +176,15 @@ class SectorDailyBar(BaseModel):
     volume: Optional[float] = None
     amount: Optional[float] = None
     change_pct: Optional[float] = None
+    vol_ma5: Optional[float] = None
+    vol_ma10: Optional[float] = None
+    vol_ma20: Optional[float] = None
+    vol_ma50: Optional[float] = None
     rps_10: Optional[float] = None
     rps_20: Optional[float] = None
     rps_50: Optional[float] = None
+    rps_120: Optional[float] = None
+    rps_250: Optional[float] = None
 
 
 class SectorDailyResponse(BaseModel):
@@ -207,6 +217,7 @@ def get_sector_daily_data(
             query,
             {'_id': 0, 'trade_date': 1, 'open': 1, 'high': 1, 'low': 1, 'close': 1,
              'vol': 1, 'amount': 1, 'change_pct': 1,
+             'vol_ma5': 1, 'vol_ma10': 1, 'vol_ma20': 1, 'vol_ma50': 1,
              'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1}
         ).sort('trade_date', -1).limit(limit)
 

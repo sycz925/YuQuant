@@ -160,6 +160,8 @@ export const calendarApi = {
   getMonthlyInputData: (year, month) => api.get('/calendar/monthly-input-data', { params: { year, month } }),
   // 月度重算
   recalculateMonth: (year, month) => api.post('/calendar/recalculate-month', null, { params: { year, month } }),
+  // 获取运行中的任务
+  getRunningTasks: () => api.get('/calendar/running-tasks'),
   // AI分析补全
   fillAiAnalysis: (year, month) => api.post('/calendar/fill-ai-analysis', null, { params: { year, month } }),
   // 通用任务查询

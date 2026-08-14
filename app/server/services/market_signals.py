@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 
 from app.data.db import get_db
 from app.server.services.market_data import get_latest_trade_date, _build_stock_industry_map
+from app.engine.watchlist_alert import get_index_tdx_status
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,7 @@ def generate_market_overview(latest_date: Optional[str] = None) -> Dict[str, Any
             'pct_chg': float(row['pct_chg']),
             'wick': wick,
             'comment': row['comment'],
+            'tdx_status': get_index_tdx_status(code, today),
         })
 
     # 获取指数PE_TTM（从 index_basics 读取，由 sync-index-pe 写入）
@@ -270,6 +272,9 @@ def generate_market_overview(latest_date: Optional[str] = None) -> Dict[str, Any
             wick_indices.append(f"{name}回撤{w['upper_pct']}%/反弹{w['lower_pct']}%")
     if wick_indices:
         conclusion += f"。{'、'.join(wick_indices)}，关注反弹和回撤力度"
+
+    # 按代码排序
+    indices.sort(key=lambda x: x.get('code', ''))
 
     return {
         'success': True,

@@ -52,7 +52,8 @@ class FactorEngine:
         logger.info("FactorEngine 初始化完成")
 
     def calculate_rps(self, data_type: str = 'stock', max_dates: Optional[int] = None,
-                       progress_callback=None, excluded_codes: Optional[List[str]] = None) -> Dict[str, int]:
+                       progress_callback=None, excluded_codes: Optional[List[str]] = None,
+                       target_date: Optional[str] = None) -> Dict[str, int]:
         """
         计算 RPS（相对强度）— 递归边界模式
 
@@ -60,6 +61,9 @@ class FactorEngine:
         - chg_* 缺失 → 跳过该记录
         - 有 chg_* 无 RPS → 计算
         - 有 RPS → 停止
+
+        Args:
+            target_date: 指定日期时只计算该日期的RPS（单日模式），None 为递归模式
         """
         from app.data.db import get_collection
         from pymongo import UpdateOne
@@ -76,7 +80,11 @@ class FactorEngine:
             chg_fields = ['chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'chg_250d']
             chg_field_map = {'chg_10d': 'rps_10', 'chg_20d': 'rps_20', 'chg_50d': 'rps_50', 'chg_120d': 'rps_120', 'chg_250d': 'rps_250'}
 
-        # 获取最新交易日
+        # 单日模式：只计算指定日期的RPS
+        if target_date:
+            return self._calculate_rps_for_date(coll, target_date, data_type, rps_check_field, chg_fields, chg_field_map, progress_callback, excluded_codes)
+
+        # 递归模式：从最新交易日往前
         latest = coll.find_one(
             {'close': {'$exists': True, '$gt': 0}},
             sort=[('trade_date', -1)],
@@ -183,6 +191,69 @@ class FactorEngine:
 
         logger.info(f"[RPS-{data_type}] 计算完成: {days_calculated} 天, {total_updates} 条更新")
         return {'dates': days_calculated, 'codes': 0, 'updates': total_updates, 'skipped': 0}
+
+    def _calculate_rps_for_date(self, coll, target_date: str, data_type: str,
+                                 rps_check_field: str, chg_fields: list, chg_field_map: dict,
+                                 progress_callback=None, excluded_codes: Optional[List[str]] = None) -> Dict[str, int]:
+        """单日模式：只计算指定日期的RPS"""
+        from pymongo import UpdateOne
+        from datetime import timedelta
+
+        query = {'trade_date': target_date, 'close': {'$gt': 0}}
+        if excluded_codes:
+            query['stock_code'] = {'$nin': excluded_codes}
+
+        projection = {'_id': 0, 'stock_code': 1, 'trade_date': 1}
+        for f in chg_fields:
+            projection[f] = 1
+        projection[rps_check_field] = 1
+
+        day_data = list(coll.find(query, projection))
+        if not day_data:
+            logger.info(f"[RPS-{data_type}] {target_date} 无交易数据，跳过")
+            return {'dates': 0, 'codes': 0, 'updates': 0, 'skipped': 0}
+
+        day_data = [d for d in day_data if any(d.get(f) is not None for f in chg_fields)]
+
+        if progress_callback:
+            progress_callback(f"{target_date} 计算中...", 1, 1)
+
+        logger.info(f"[RPS-{data_type}] 计算 {target_date}（{len(day_data)} 条）")
+
+        set_doc_base = {'update_time': datetime.utcnow()}
+        ops = []
+
+        for chg_field, rps_field in chg_field_map.items():
+            vals = np.array([d.get(chg_field) for d in day_data], dtype=float)
+            valid_mask = ~np.isnan(vals) & (vals != 0)
+            valid_count = valid_mask.sum()
+
+            if valid_count == 0:
+                continue
+
+            valid_indices = np.where(valid_mask)[0]
+            valid_vals = vals[valid_mask]
+            sorted_idx = np.argsort(valid_vals)
+            rank_positions = np.empty_like(sorted_idx)
+            rank_positions[sorted_idx] = np.arange(1, len(sorted_idx) + 1)
+            ranks = np.round(rank_positions / valid_count * 100).astype(int)
+            ranks = np.clip(ranks, 1, 100)
+
+            for result_idx, i in enumerate(valid_indices):
+                code = day_data[i]['stock_code']
+                ops.append(UpdateOne(
+                    {'stock_code': code, 'trade_date': target_date},
+                    {'$set': {rps_field: int(ranks[result_idx]), **set_doc_base}}
+                ))
+
+        if ops:
+            coll.bulk_write(ops, ordered=False)
+
+        if progress_callback:
+            progress_callback(f"{target_date} RPS计算完成", 1, 1)
+
+        logger.info(f"[RPS-{data_type}] {target_date} 计算完成: {len(ops)} 条更新")
+        return {'dates': 1, 'codes': 0, 'updates': len(ops), 'skipped': 0}
 
     def calculate_derived_fields(self, data_type: str = 'stock', trade_date: str = None,
                                   progress_callback=None, backfill: bool = False) -> Dict[str, int]:
@@ -294,11 +365,12 @@ class FactorEngine:
                     if prev_close > 0:
                         set_doc['chg_pct'] = round((curr_close - prev_close) / prev_close * 100, 2)
 
-                # 2. 均线 MA
+                # 2. 均线 MA（etf 保留 3 位小数，其他 2 位）
+                ma_decimals = 3 if data_type == 'etf' else 2
                 for period in MA_PERIODS:
                     if i >= period - 1:
                         ma_val = np.mean(close_arr[i - period + 1:i + 1])
-                        set_doc[f'ma{period}'] = round(float(ma_val), 2)
+                        set_doc[f'ma{period}'] = round(float(ma_val), ma_decimals)
 
                 # 3. 成交量均线 VOL_MA
                 if vol_arr is not None:

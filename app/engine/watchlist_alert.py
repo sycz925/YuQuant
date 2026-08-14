@@ -114,8 +114,8 @@ def _check_one(code: str, typ: str, docs: list, name: str, alert_coll, max_dates
     return new_count
 
 
-def check_latest(max_dates: int = 1) -> int:
-    """扫描重点关注列表全部标的最近 max_dates 个交易日，返回新增预警数"""
+def check_latest(max_dates: int = 1) -> Dict:
+    """扫描重点关注列表全部标的最近 max_dates 个交易日，返回新增预警数和各标的TDX状态"""
     from app.data.db import get_db
     db = get_db()
     alert_coll = db[ALERT_COLL]
@@ -123,6 +123,7 @@ def check_latest(max_dates: int = 1) -> int:
 
     limit = max_dates + 20
     total_new = 0
+    statuses = {}
     for e in entries:
         code = e['code']
         typ = e.get('type', 'stock')
@@ -136,11 +137,158 @@ def check_latest(max_dates: int = 1) -> int:
             docs.reverse()
             new_count = _check_one(code, typ, docs, name, alert_coll, max_dates)
             total_new += new_count
+            daily_status = get_tdx_status(code, typ)
+            weekly_status = get_weekly_tdx_status(code, typ)
+            status_text = f'日{daily_status}周{weekly_status}'
+            statuses[code] = status_text
+            db['watchlist'].update_one({'code': code}, {'$set': {'tdx_status': status_text}})
         except Exception as ex:
             logger.error(f'[Watchlist预警] 检查{code}失败: {ex}')
+            statuses[code] = '日蓝周蓝'
 
     logger.info(f'[Watchlist预警] 检查完成，新增{total_new}条')
-    return total_new
+    return {'new_alerts': total_new, 'statuses': statuses}
+
+
+def get_tdx_status(code: str, typ: str) -> str:
+    """根据最新日线数据计算通达信MA7变色线状态：红/绿/蓝"""
+    from app.data.db import get_db
+    db = get_db()
+    coll = db['etf_daily'] if typ == 'etf' else db['stock_daily']
+    docs = list(coll.find(
+        {'stock_code': code, 'close': {'$gt': 0}},
+        {'_id': 0, 'trade_date': 1, 'close': 1}
+    ).sort('trade_date', -1).limit(30))
+    if len(docs) < 22:
+        return '蓝'
+    docs.reverse()
+    closes = [d['close'] for d in docs]
+    return _calc_tdx_status(closes)
+
+
+def get_weekly_tdx_status(code: str, typ: str) -> str:
+    """根据最新周线数据计算通达信MA7变色线状态：红/绿/蓝"""
+    from app.data.db import get_db
+    from datetime import datetime
+    db = get_db()
+    coll = db['etf_daily'] if typ == 'etf' else db['stock_daily']
+    docs = list(coll.find(
+        {'stock_code': code, 'close': {'$gt': 0}},
+        {'_id': 0, 'trade_date': 1, 'close': 1}
+    ).sort('trade_date', -1).limit(150))
+    if len(docs) < 50:
+        return '蓝'
+    docs.reverse()
+
+    # 日线转周线：按ISO周分组，取每周最后一个交易日的收盘价
+    weekly = {}
+    for d in docs:
+        td = d['trade_date']
+        dt = datetime.strptime(td, '%Y%m%d')
+        year, week, _ = dt.isocalendar()
+        key = f'{year}-W{week:02d}'
+        weekly[key] = d['close']
+
+    closes = list(weekly.values())
+    if len(closes) < 22:
+        return '蓝'
+    return _calc_tdx_status(closes)
+
+
+def _calc_tdx_status(closes: list) -> str:
+    """根据收盘价序列计算通达信MA7变色线状态：红/绿/蓝
+    
+    规则：
+    - 红：EMA7↑ 且 EMA21↑ 且 MACD↑（不能卖/观望/能买）
+    - 绿：(EMA7↓ 或 EMA21↓) 且 MACD↓（不能买/观望/能卖）
+    - 蓝：其他情况（观望/能买/能卖）
+    """
+    def ema(arr, period):
+        k = 2 / (period + 1)
+        prev = arr[0]
+        res = [prev]
+        for i in range(1, len(arr)):
+            prev = arr[i] * k + prev * (1 - k)
+            res.append(prev)
+        return res
+
+    emad = ema(closes, 7)
+    emac = ema(closes, 14)
+
+    ema_fast = ema(closes, 12)
+    ema_slow = ema(closes, 26)
+    dif = [f - s for f, s in zip(ema_fast, ema_slow)]
+    dea = ema(dif, 9)
+    macd_arr = [(d - de) * 2 for d, de in zip(dif, dea)]
+
+    n = len(closes)
+    cur, prev = n - 1, n - 2
+    emad_up = emad[cur] > emad[prev]
+    emac_up = emac[cur] > emac[prev]
+    macd_up = macd_arr[cur] > macd_arr[prev]
+
+    kd = emad_up and emac_up and macd_up
+    kk = (not emad_up or not emac_up) and not macd_up
+    if kd:
+        return '红'
+    elif kk:
+        return '绿'
+    return '蓝'
+
+
+def get_index_tdx_status(code: str, trade_date: str = None) -> str:
+    """根据指数日线数据计算通达信MA7变色线状态：日X周X
+    Args:
+        code: 指数代码
+        trade_date: 指定日期（可选），不传则取最新数据
+    """
+    from app.data.db import get_db
+    from datetime import datetime
+    db = get_db()
+
+    # 构建查询条件
+    query = {'stock_code': code, 'close': {'$gt': 0}}
+    if trade_date:
+        query['trade_date'] = {'$lte': trade_date}
+
+    # 日线状态
+    docs = list(db['index_daily'].find(
+        query,
+        {'_id': 0, 'trade_date': 1, 'close': 1}
+    ).sort('trade_date', -1).limit(30))
+    if len(docs) < 22:
+        daily_status = '蓝'
+    else:
+        docs.reverse()
+        closes = [d['close'] for d in docs]
+        daily_status = _calc_tdx_status(closes)
+
+    # 周线状态
+    query_all = {'stock_code': code, 'close': {'$gt': 0}}
+    if trade_date:
+        query_all['trade_date'] = {'$lte': trade_date}
+    docs_all = list(db['index_daily'].find(
+        query_all,
+        {'_id': 0, 'trade_date': 1, 'close': 1}
+    ).sort('trade_date', -1).limit(150))
+    if len(docs_all) < 50:
+        weekly_status = '蓝'
+    else:
+        docs_all.reverse()
+        weekly = {}
+        for d in docs_all:
+            td = d['trade_date']
+            dt = datetime.strptime(td, '%Y%m%d')
+            year, week, _ = dt.isocalendar()
+            key = f'{year}-W{week:02d}'
+            weekly[key] = d['close']
+        closes_weekly = list(weekly.values())
+        if len(closes_weekly) < 22:
+            weekly_status = '蓝'
+        else:
+            weekly_status = _calc_tdx_status(closes_weekly)
+
+    return f'日{daily_status}周{weekly_status}'
 
 
 def get_alerts(start_date: Optional[str] = None, end_date: Optional[str] = None,

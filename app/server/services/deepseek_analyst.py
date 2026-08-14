@@ -71,6 +71,7 @@ Your task is to analyze the daily A-share structured market data provided by the
 8. [ACTIVE SECTORS - 异动活跃板块] 用户提供的"异动活跃板块"是当日出现集体异动的板块（板块内流通市值>200亿且涨幅>5%的个股≥10只，其中RPS10+20+50>250占比>30%，且板块自身RPS10+20+50≤250、当日涨幅>2%）。这些板块代表"中期趋势强度已建立 + 大市值放量突破 + 内部强度共振"的启动信号。分析时必须重视以下信号：(1) RPS10>85且RPS20>80说明短线动量已扩散至中线，是趋势转折信号而非一日游；(2) 板块内多只个股50日涨幅>30%说明资金已持续介入；(3) 板块名称与新高板块不同但相关（如医药vs新材料），可能是产业链轮动。禁止将RPS走强的异动板块简单定性为"超跌反弹"或"一日游"，必须基于数据判断是情绪脉冲还是趋势转折。
 9. [DYNAMIC POSITION ADJUSTMENT] 仓位动态调整：在评估仓位时，虽然要严格遵循中期均线广度（站上50日线占比），但必须引入"短期动量与赚钱效应"的进攻加权。若数据同时满足以下两个条件：① 1个月/3个月新高差出现显著多头喷发（如1个月新高差接近或超过1000）；② 头部核心资金组（RPS20 95%~100%分位或成交额95%~100%分位）的平均涨幅极强（>4%），说明全市场最顶尖的股票正在疯狂赚钱，主线右侧进攻动量极强。此时必须打破中期广度的保守限制，允许并建议将总仓位区间上限提升至 60% 到 100%，定义为"核心主线右侧主升期"，不可一味盲目恐高。
 10. [涨跌停板规则] 涨跌停幅度因板块而异：主板±10%，创业板/科创板±20%，北交所±30%。判断涨停/跌停必须先看股票代码前缀确定板块，再对比涨幅是否达到阈值。禁止将未触及涨跌停的个股称为"涨停/跌停"。
+11. [DATA FIDELITY - 实事求是铁律] 分析数据必须做到实事求是：**禁止使用输入数据中不存在的指标（如成交量、放量、缩量、换手率、主力资金流向、资金净流入等）进行任何描述或推断**，只能基于输入中明确提供的字段（涨跌幅、RPS、新高数量、均线占比、价差等）进行分析。若输入中未提供某指标，严禁臆造、脑补或用先验知识虚构其表现。
 
 [STRICT TEXT FORMATTING RULE]
 1. When outputting long text in `market_phase_diagnosis` and `industry_cluster_evaluation`, you MUST highlight important terms using Markdown bold syntax.
@@ -223,7 +224,6 @@ class DeepSeekAnalyst:
         if indices:
             msg_parts.append("【主要大盘指数涨跌幅】")
             for idx in indices:
-                pe_info = f" (PE_TTM: {idx['pe_ttm']})" if idx.get('pe_ttm') else ''
                 if is_trading:
                     vol_info = ''
                 else:
@@ -233,14 +233,13 @@ class DeepSeekAnalyst:
                     vol_ma20 = idx.get('amount_ma20', 0)
                     vol_info = f" | 成交额: {vol_today}亿(昨{vol_yest}亿 MA5:{vol_ma5}亿 MA20:{vol_ma20}亿)" if vol_today else ''
                 comment = idx.get('comment', '')
-                # 只提取影线信息（去掉括号）
                 import re
                 wick_match = re.search(r'（([^）]*)）', comment)
                 comment_info = f" {wick_match.group(1)}" if wick_match else ''
-                msg_parts.append(f"  {idx['name']}: {idx.get('pct_chg', 0):+.2f}%{comment_info}{pe_info}{vol_info}")
-            leader = indices[0].get('name', '') if indices else ''
-            leader_chg = indices[0].get('pct_chg', 0) if indices else 0
-            msg_parts.append(f"  领涨: {leader} ({leader_chg:+.2f}%)")
+                tdx_status = idx.get('tdx_status', '')
+                status_info = f" [{tdx_status}]" if tdx_status else ''
+                msg_parts.append(f"  {idx['name']}: {idx.get('pct_chg', 0):+.2f}%{status_info}{comment_info}{vol_info}")
+            msg_parts.append("  状态说明[日X周X]: 日为日线，周为周线，红色=不能卖(可观望/能买) 绿色=不能买(可观望/能卖) 蓝色=可观望/能买/能卖，仓位配置重点参考该指标。")
 
         msg_parts.append("")
         msg_parts.append("【市场运行状态量化指标】")
@@ -253,6 +252,25 @@ class DeepSeekAnalyst:
         msg_parts.append(f"  250日新高-新低差: {signals.get('nh', 0) - signals.get('nl', 0)} (新高{signals.get('nh', 0)} / 新低{signals.get('nl', 0)})")
         msg_parts.append(f"  3个月新高-新低差: {signals.get('nh_3m', 0) - signals.get('nl_3m', 0)} (新高{signals.get('nh_3m', 0)} / 新低{signals.get('nl_3m', 0)})")
         msg_parts.append(f"  1个月新高-新低差: {signals.get('nh_1m', 0) - signals.get('nl_1m', 0)} (新高{signals.get('nh_1m', 0)} / 新低{signals.get('nl_1m', 0)})")
+
+        if trade_date:
+            try:
+                from app.data.db import get_db
+                db = get_db()
+                prev_dates = sorted([d for d in db['market_daily'].distinct('trade_date') if d < trade_date], reverse=True)
+                if prev_dates:
+                    prev_doc = db['market_daily'].find_one(
+                        {'trade_date': prev_dates[0]},
+                        {'_id': 0, 'trade_date': 1, 'ai_analysis': 1}
+                    )
+                    prev_ai = (prev_doc or {}).get('ai_analysis') or {}
+                    prev_diagnosis = prev_ai.get('market_phase_diagnosis') or ''
+                    if prev_diagnosis and prev_ai.get('source') != 'failed':
+                        msg_parts.append("")
+                        msg_parts.append(f"【上个交易日市场阶段诊断】（{prev_dates[0]}）")
+                        msg_parts.append(prev_diagnosis)
+            except Exception as e:
+                logger.warning(f"[DeepSeek] 获取上个交易日阶段诊断失败: {e}")
 
         if trade_date:
             group_stats = self._compute_group_stats(trade_date, is_trading)
@@ -368,7 +386,7 @@ class DeepSeekAnalyst:
         if lps:
             msg_parts.append("")
             msg_parts.append("【低位潜力板块】")
-            msg_parts.append("筛选条件：MA10>MA20 + RPS10>85(短线爆发力) + RPS50<70(长线低位) + 近3天有1天以上≥15%个股创20日新高 + 近5天有4天净新高>-10")
+            msg_parts.append("筛选条件：板块涨幅>2% + MA10>MA20 + RPS10>85(短线爆发力) + RPS50<70(长线低位) + 近3天有1天以上≥15%个股创20日新高 + 近5天有4天净新高>-10")
             for s in lps:
                 count_info = f"(创20日近新高{s.get('count', 0)}个)"
                 msg_parts.append(f"  {s['name']}{count_info}: 涨幅{s.get('chg_pct', 0)}%, RPS10={s.get('rps_10', 0)}, RPS20={s.get('rps_20', 0)}, RPS50={s.get('rps_50', 0)}")
@@ -456,17 +474,10 @@ class DeepSeekAnalyst:
         """从缓存的 group_stats 格式化为文本"""
         lines = []
 
-        rps_stats = group_stats.get('rps_stats', [])
-        if rps_stats:
-            lines.append("  按RPS20分组（每组5%股票，从低到高，显示该组平均涨幅）：")
-            for g in rps_stats:
-                label = g.get('category_label', '')
-                avg_chg = g.get('avg_chg', 0)
-                lines.append(f"    RPS20 {label}: 均涨{avg_chg:+.2f}%")
-
         amount_stats = group_stats.get('amount_stats', [])
         if amount_stats:
-            lines.append("")
+            if lines:
+                lines.append("")
             lines.append("  按成交额分组（每组5%股票，从低到高，显示该组平均涨幅）：")
             for g in amount_stats:
                 label = g.get('category_label', '')
@@ -535,21 +546,6 @@ class DeepSeekAnalyst:
         total = len(merged)
         n_groups = 20
         lines = []
-
-        rps_items = [(d['rps_20'], d['chg_pct']) for d in merged if d.get('rps_20') is not None and d['rps_20'] > 0]
-        if rps_items:
-            rps_items.sort(key=lambda x: x[0])
-            group_size = len(rps_items) // n_groups
-            lines.append("  按RPS20分组（每组5%股票，从低到高，显示该组平均涨幅）：")
-            for i in range(n_groups):
-                start = i * group_size
-                end = start + group_size if i < n_groups - 1 else len(rps_items)
-                grp = [c for _, c in rps_items[start:end]]
-                if grp:
-                    avg = sum(grp) / len(grp)
-                    pct_lo = round(start / len(rps_items) * 100)
-                    pct_hi = round(end / len(rps_items) * 100)
-                    lines.append(f"    RPS20 {pct_lo:3d}%~{pct_hi:3d}%分位: 均涨{avg:+.2f}%")
 
         amt_items = [(d['amount'], d['chg_pct']) for d in merged if d['amount'] > 0]
         if amt_items:

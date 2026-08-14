@@ -9,7 +9,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.data.db import get_db, get_collection
 from app.server.models import WatchlistAddRequest, WatchlistItem, WatchlistResponse
-from app.engine.watchlist_alert import check_latest, get_alerts
+from app.engine.watchlist_alert import check_latest, get_alerts, get_tdx_status
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,9 @@ def _resolve(entry: dict) -> WatchlistItem:
     )
     if latest:
         quote_fields = {k: latest.get(k) for k in _QUOTE_FIELDS if k not in ('_id', 'chg_pct')}
-        return WatchlistItem(code=code, name=name, type=typ, change_pct=latest.get('chg_pct'), **quote_fields)
-    return WatchlistItem(code=code, name=name, type=typ)
+        return WatchlistItem(code=code, name=name, type=typ, change_pct=latest.get('chg_pct'),
+                             tdx_status=entry.get('tdx_status'), **quote_fields)
+    return WatchlistItem(code=code, name=name, type=typ, tdx_status=entry.get('tdx_status'))
 
 
 @router.get("", response_model=WatchlistResponse)
@@ -51,6 +52,7 @@ def get_watchlist(
     sort_by: Optional[str] = Query(None, description="排序字段"),
     sort_order: Optional[str] = Query("desc", description="排序方向"),
     rps_red: Optional[str] = Query(None, description="RPS红筛选: one/two/three"),
+    tdx_status: Optional[str] = Query(None, description="通达信状态: red/green/blue"),
 ):
     """获取重点关注列表（含最新行情）"""
     db = get_db()
@@ -76,6 +78,10 @@ def get_watchlist(
             elif rps_red == 'three' and red_count >= 3:
                 filtered.append(item)
         items = filtered
+
+    # 通达信状态筛选（包含匹配：日红、周绿等）
+    if tdx_status in ('红', '绿', '蓝'):
+        items = [i for i in items if i.tdx_status and tdx_status in i.tdx_status]
 
     # 排序
     if sort_by and sort_by in ('change_pct', 'chg_5d', 'chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'close', 'rps_10', 'rps_20', 'rps_50'):
@@ -117,9 +123,9 @@ def remove_watchlist(code: str):
 
 @router.post("/alerts/check")
 def trigger_alerts_check():
-    """扫描关注列表最新交易日，生成均线预警记录"""
-    new_count = check_latest()
-    return {'success': True, 'new_alerts': new_count}
+    """扫描关注列表最新交易日，生成均线预警记录，并返回各标的TDX状态"""
+    result = check_latest()
+    return result
 
 
 @router.get("/alerts")

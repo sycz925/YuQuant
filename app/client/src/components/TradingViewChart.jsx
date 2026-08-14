@@ -152,23 +152,19 @@ const calculateTDXOverlay = (data) => {
   }
   if (current) segments.push(current);
 
-  // 为每个段添加边界点以确保连续性（相邻段共享端点）
-  const segmentsWithBoundary = segments.map((seg, i) => {
-    let pts = [...seg.points];
-    // 添加前一段的最后一个点
-    if (i > 0) {
-      const lastPoint = segments[i - 1].points[segments[i - 1].points.length - 1];
-      pts = [lastPoint, ...pts];
-    }
-    // 添加后一段的第一个点
-    if (i < segments.length - 1) {
-      const nextPoint = segments[i + 1].points[0];
-      pts = [...pts, nextPoint];
-    }
-    return { color: seg.color, points: pts };
+  // 单series + per-point color（forward-looking：点A的颜色决定A→B的线段）
+  const COLOR_HEX = { blue: '#3b82f6', red: '#ef5350', green: '#22c55e' };
+  const ma7Data = colorPoints.map((p, i) => {
+    // 用下一个点的颜色（这样当前点→下一个点的线段颜色才正确）
+    const nextColor = i < colorPoints.length - 1 ? colorPoints[i + 1].color : p.color;
+    return { time: p.time, value: p.value, color: COLOR_HEX[nextColor] };
   });
 
-  return { segments: segmentsWithBoundary };
+  // 用于标签查找的数据
+  const kdData = colorPoints.filter(p => p.color === 'red');
+  const kkData = colorPoints.filter(p => p.color === 'green');
+
+  return { segments, ma7Data, kdData, kkData };
 };
 
 const fmt = (num, dec = 2) => {
@@ -197,7 +193,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
   // 从data中提取RPS数据（与K线使用相同周期的日期）
   const rpsData = useMemo(() => {
     if (!data || data.length === 0) return [];
-    return data.filter(d => d.rps_10 !== undefined || d.rps_20 !== undefined || d.rps_50 !== undefined);
+    return data;
   }, [data]);
 
   // 格式化数据
@@ -249,15 +245,7 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
     const macdData = calculateMACD(candles);
 
     // 通达信主图公式（MA7蓝线 + KD红段 + KK绿段）
-    const { segments } = calculateTDXOverlay(candles);
-
-    // 平铺所有segment的点用于标签和悬浮框查找
-    const allPoints = segments.flatMap(seg => seg.points);
-    // 构建时间->颜色映射用于判断当日状态
-    const colorByTime = {};
-    segments.forEach(seg => {
-      seg.points.forEach(p => { colorByTime[p.time] = seg.color; });
-    });
+    const { ma7Data, kdData, kkData } = calculateTDXOverlay(candles);
 
     // 清空容器
     container.querySelectorAll('.chart-wrapper').forEach(el => el.remove());
@@ -352,18 +340,14 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
     candleSeries.setData(candles);
 
     // 通达信公式叠加：一根变色MA7线（蓝/红/绿）
-    const colorMap = { blue: '#5b9bd5', red: '#ef5350', green: '#26a69a' };
-    segments.forEach(seg => {
-      const series = mainChart.addLineSeries({
-        color: colorMap[seg.color],
-        lineWidth: 2,
-        lineType: 0,
-        crosshairMarkerVisible: false,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      series.setData(seg.points);
+    const ma7Series = mainChart.addLineSeries({
+      lineWidth: 2,
+      lineType: 0,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false,
     });
+    ma7Series.setData(ma7Data);
 
     // ==================== 成交量图 ====================
     const volumeWrapper = document.createElement('div');
@@ -476,11 +460,11 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
         return Array.from(map.values()).sort((a, b) => a.time.localeCompare(b.time));
       };
       rpsFormatted = {
-        rps10: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_10 })).filter(d => d.value !== null && d.value !== undefined)),
-        rps20: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_20 })).filter(d => d.value !== null && d.value !== undefined)),
-        rps50: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_50 })).filter(d => d.value !== null && d.value !== undefined)),
-        rps120: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_120 })).filter(d => d.value !== null && d.value !== undefined)),
-        rps250: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_250 })).filter(d => d.value !== null && d.value !== undefined)),
+        rps10: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_10 ?? 0 }))),
+        rps20: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_20 ?? 0 }))),
+        rps50: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_50 ?? 0 }))),
+        rps120: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_120 ?? 0 }))),
+        rps250: dedup(rpsData.map(d => ({ time: rpsTime(d), value: d.rps_250 ?? 0 }))),
       };
     }
 
@@ -499,10 +483,12 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
     // ==================== 更新标签值的函数 ====================
     const updateLabels = (time) => {
       // K线标签（通达信公式变色线）
-      const ma7 = allPoints.find(d => d.time === time);
-      const dayColor = colorByTime[time] || 'blue';
+      const ma7 = ma7Data.find(d => d.time === time);
+      const kdPt = kdData.find(d => d.time === time);
+      const kkPt = kkData.find(d => d.time === time);
+      const dayColor = kdPt?.value != null ? 'red' : kkPt?.value != null ? 'green' : 'blue';
       const colorLabel = dayColor === 'red' ? 'KD↑' : dayColor === 'green' ? 'KK↓' : '';
-      const labelColor = dayColor === 'red' ? '#ef5350' : dayColor === 'green' ? '#26a69a' : '#5b9bd5';
+      const labelColor = dayColor === 'red' ? '#ef5350' : dayColor === 'green' ? '#22c55e' : '#3b82f6';
       mainLabel.innerHTML = `
         <span style="color:${labelColor}">MAXX:${fmt(ma7?.value, priceDec)}</span>
         ${colorLabel ? `<span style="color:${labelColor}">${colorLabel}</span>` : ''}
@@ -580,8 +566,10 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       const c = candles.find(d => d.time === param.time);
       const v = volumes.find(d => d.time === param.time);
       const m = macdData.find(d => d.time === param.time);
-      const ma7 = allPoints.find(d => d.time === param.time);
-      const dayColor = colorByTime[param.time] || 'blue';
+      const ma7 = ma7Data.find(d => d.time === param.time);
+      const kdPt = kdData.find(d => d.time === param.time);
+      const kkPt = kkData.find(d => d.time === param.time);
+      const dayColor = kdPt ? 'red' : kkPt ? 'green' : 'blue';
       const rps10 = rpsFormatted.rps10?.find(d => d.time === param.time);
       const rps20 = rpsFormatted.rps20?.find(d => d.time === param.time);
       const rps50 = rpsFormatted.rps50?.find(d => d.time === param.time);
@@ -728,11 +716,11 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
 
             {/* K线指标 - 通达信公式变色线 */}
             <div style={{ gridColumn: '1 / -1', marginTop: '6px', borderTop: '1px solid #444', paddingTop: '6px', fontSize: '11px', display: 'flex', gap: '8px' }}>
-              <span style={{ color: hoverData.dayColor === 'red' ? '#ef5350' : hoverData.dayColor === 'green' ? '#26a69a' : '#5b9bd5' }}>
+              <span style={{ color: hoverData.dayColor === 'red' ? '#ef5350' : hoverData.dayColor === 'green' ? '#22c55e' : '#3b82f6' }}>
                 MAXX: {fmt(hoverData.ma7, priceDec)}
               </span>
               {hoverData.dayColor === 'red' && <span style={{ color: '#ef5350', fontWeight: 'bold' }}>KD↑</span>}
-              {hoverData.dayColor === 'green' && <span style={{ color: '#26a69a', fontWeight: 'bold' }}>KK↓</span>}
+              {hoverData.dayColor === 'green' && <span style={{ color: '#22c55e', fontWeight: 'bold' }}>KK↓</span>}
             </div>
 
             {/* MACD指标 */}

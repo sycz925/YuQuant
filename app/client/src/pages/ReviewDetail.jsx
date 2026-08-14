@@ -14,6 +14,8 @@ const TABS = [
   { key: 'analysis', label: '市场分析', icon: '🔬' },
 ]
 
+const RECALC_TASK_KEY = 'recalcTaskId'
+
 function ReviewDetail({ latestTradeDate }) {
   const { date } = useParams()
   const navigate = useNavigate()
@@ -52,6 +54,7 @@ function ReviewDetail({ latestTradeDate }) {
       key: recalcNotifyKey.current,
       closable: true,
     })
+    sessionStorage.removeItem(RECALC_TASK_KEY)
     setRecalcTaskId(null)
   }, [])
 
@@ -63,6 +66,7 @@ function ReviewDetail({ latestTradeDate }) {
       key: recalcNotifyKey.current,
       closable: true,
     })
+    sessionStorage.removeItem(RECALC_TASK_KEY)
     setRecalcTaskId(null)
   }, [])
 
@@ -72,6 +76,25 @@ function ReviewDetail({ latestTradeDate }) {
     onComplete: handleRecalcComplete,
     onFailed: handleRecalcFailed,
   })
+
+  // 挂载时检查 sessionStorage，恢复轮询（切页后回到本页时进度不丢）
+  useEffect(() => {
+    const savedTaskId = sessionStorage.getItem(RECALC_TASK_KEY)
+    if (savedTaskId) {
+      calendarApi.getTaskStatus(savedTaskId).then(res => {
+        if (res && res.status === 'running') {
+          // 任务仍在跑，恢复轮询
+          recalcNotifyKey.current = `recalc-${res.name || currentDate}`
+          setRecalcTaskId(savedTaskId)
+        } else {
+          // 任务已结束，清除
+          sessionStorage.removeItem(RECALC_TASK_KEY)
+        }
+      }).catch(() => {
+        sessionStorage.removeItem(RECALC_TASK_KEY)
+      })
+    }
+  }, [])
 
   // 从后端获取交易日列表
   useEffect(() => {
@@ -232,6 +255,7 @@ function ReviewDetail({ latestTradeDate }) {
         })
       }
 
+      sessionStorage.setItem(RECALC_TASK_KEY, res.task_id)
       setRecalcTaskId(res.task_id)
 
     } catch (e) {

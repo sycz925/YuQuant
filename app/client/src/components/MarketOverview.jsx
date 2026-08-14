@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Spin } from 'antd'
+import { Spin, Table } from 'antd'
 import { marketReviewApi } from '../api'
 
 function MarketOverview({ date }) {
@@ -44,23 +44,100 @@ function MarketOverview({ date }) {
 
   if (!data || !data.indices || data.indices.length === 0) return null
 
-  const { indices, conclusion, trade_date } = data
+  const { indices, trade_date } = data
 
   const formatDate = (d) => {
     if (!d || d.length !== 8) return d
     return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`
   }
 
-  const getChgColor = (v) => {
-    if (v > 0) return 'text-red-600'
-    if (v < 0) return 'text-green-600'
-    return 'text-gray-500'
+  const STATUS_COLORS = { '红': '#ef5350', '绿': '#22c55e', '蓝': '#3b82f6' }
+
+  const renderStatus = (text) => {
+    if (!text) return '-'
+    const parts = text.match(/日([红绿蓝])周([红绿蓝])/)
+    if (!parts) return <span>{text}</span>
+    return (
+      <span>
+        <span style={{ color: STATUS_COLORS[parts[1]] }}>日{parts[1]}</span>
+        <span style={{ color: STATUS_COLORS[parts[2]] }}>周{parts[2]}</span>
+      </span>
+    )
   }
 
-  const renderComment = (comment) => {
-    if (!comment) return '-'
-    return comment
-  }
+  const columns = [
+    {
+      title: '指数名称',
+      dataIndex: 'name',
+      key: 'name',
+      width: 120,
+      render: (v, _, idx) => (
+        <span className={`font-bold ${idx === 0 ? 'text-indigo-600' : 'text-gray-900'}`}>
+          {v}
+        </span>
+      ),
+    },
+    {
+      title: '代码',
+      dataIndex: 'code',
+      key: 'code',
+      width: 60,
+      render: (v) => <span className="font-mono text-gray-400 text-xs">{v}</span>,
+    },
+    {
+      title: '最新价',
+      dataIndex: 'close',
+      key: 'close',
+      width: 100,
+      align: 'center',
+      render: (v) => <span className="font-mono font-bold text-gray-700">{v?.toFixed(2)}</span>,
+    },
+    {
+      title: '涨跌幅',
+      dataIndex: 'pct_chg',
+      key: 'pct_chg',
+      width: 100,
+      align: 'center',
+      sorter: (a, b) => (a.pct_chg || 0) - (b.pct_chg || 0),
+      render: (v) => (
+        <span className={`font-mono font-bold ${v > 0 ? 'text-red-600' : v < 0 ? 'text-green-600' : 'text-gray-500'}`}>
+          {v > 0 ? '+' : ''}{v?.toFixed(2)}%
+        </span>
+      ),
+    },
+    {
+      title: '状态',
+      dataIndex: 'tdx_status',
+      key: 'tdx_status',
+      width: 100,
+      align: 'center',
+      render: (v) => renderStatus(v),
+    },
+    {
+      title: 'PE_TTM',
+      dataIndex: 'pe_ttm',
+      key: 'pe_ttm',
+      width: 100,
+      align: 'center',
+      render: (v) => <span className="font-mono text-gray-500 text-xs">{v ? v.toFixed(2) : '-'}</span>,
+    },
+    {
+      title: '点评',
+      dataIndex: 'comment',
+      key: 'comment',
+      render: (v) => (
+        <span className={`text-xs font-medium ${
+          (v || '').includes('爆发') ? 'text-orange-500' :
+          (v || '').includes('最强') ? 'text-indigo-500' :
+          (v || '').includes('偏强') ? 'text-red-500' :
+          (v || '').includes('调整') ? 'text-green-500' :
+          'text-gray-500'
+        }`}>
+          {v || '-'}
+        </span>
+      ),
+    },
+  ]
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -73,98 +150,16 @@ function MarketOverview({ date }) {
         <span className="text-[10px] md:text-xs text-gray-400 font-mono">{formatDate(trade_date)}</span>
       </div>
 
-      {/* 指数列表 */}
+      {/* 指数表格 */}
       <div className="p-3 md:p-6">
-        {/* 移动端：紧凑卡片列表 */}
-        <div className="md:hidden space-y-2">
-          {indices.map((item, idx) => (
-            <div
-              key={item.code}
-              className={`py-2 px-3 rounded-lg ${
-                idx === 0 ? 'bg-indigo-50/50' : 'bg-gray-50/30'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2 min-w-0">
-                  <span className={`text-xs font-bold truncate ${idx === 0 ? 'text-indigo-600' : 'text-gray-900'}`}>
-                    {item.name}
-                  </span>
-                </div>
-                <div className="flex items-center space-x-3 flex-shrink-0">
-                  <span className="text-xs font-mono font-bold text-gray-600">
-                    {item.close?.toFixed(2)}
-                  </span>
-                  <span className={`text-xs font-mono font-bold min-w-[60px] text-right ${getChgColor(item.pct_chg)}`}>
-                    {item.pct_chg > 0 ? '+' : ''}{item.pct_chg?.toFixed(2)}%
-                  </span>
-                  {item.pe_ttm && <span className="text-[10px] font-mono text-gray-400">PE:{item.pe_ttm.toFixed(1)}</span>}
-                </div>
-              </div>
-              {item.comment && (
-                <div className="mt-1 text-[10px] text-gray-400 truncate">{renderComment(item.comment)}</div>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {/* 桌面端：完整表格 */}
-        <table className="hidden md:table w-full">
-          <thead>
-            <tr className="border-b border-gray-100">
-              <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">指数名称</th>
-              <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">代码</th>
-              <th className="text-right text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">最新价</th>
-              <th className="text-right text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">涨跌幅</th>
-              <th className="text-right text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3">PE_TTM</th>
-              <th className="text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider pb-3 pl-4">点评</th>
-            </tr>
-          </thead>
-          <tbody>
-            {indices.map((item, idx) => (
-              <tr
-                key={item.code}
-                className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors ${
-                  idx === 0 ? 'bg-indigo-50/30' : ''
-                }`}
-              >
-                <td className="py-3">
-                  <span className={`text-sm font-bold ${idx === 0 ? 'text-indigo-600' : 'text-gray-900'}`}>
-                    {item.name}
-                  </span>
-                </td>
-                <td className="py-3">
-                  <span className="text-xs font-mono text-gray-400">{item.code}</span>
-                </td>
-                <td className="py-3 text-right">
-                  <span className="text-sm font-mono font-bold text-gray-700">
-                    {item.close?.toFixed(2)}
-                  </span>
-                </td>
-                <td className="py-3 text-right">
-                  <span className={`text-sm font-mono font-bold ${getChgColor(item.pct_chg)}`}>
-                    {item.pct_chg > 0 ? '+' : ''}{item.pct_chg?.toFixed(2)}%
-                  </span>
-                </td>
-                <td className="py-3 text-right">
-                  <span className="text-xs font-mono text-gray-500">
-                    {item.pe_ttm ? item.pe_ttm.toFixed(2) : '-'}
-                  </span>
-                </td>
-                <td className="py-3 pl-4">
-                  <span className={`text-xs font-medium ${
-                    (item.comment || '').includes('爆发') ? 'text-orange-500' :
-                    (item.comment || '').includes('最强') ? 'text-indigo-500' :
-                    (item.comment || '').includes('偏强') ? 'text-red-500' :
-                    (item.comment || '').includes('调整') ? 'text-green-500' :
-                    'text-gray-500'
-                  }`}>
-                    {renderComment(item.comment)}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table
+          dataSource={indices}
+          columns={columns}
+          rowKey="code"
+          pagination={false}
+          size="small"
+          scroll={{ x: 700 }}
+        />
       </div>
     </div>
   )
