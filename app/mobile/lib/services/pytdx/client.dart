@@ -11,6 +11,9 @@ class TdxClient {
   int _serverIndex = 0;
   bool _connected = false;
   Uint8List _buffer = Uint8List(0);
+  StreamSubscription<List<int>>? _socketSub;
+  Completer<Uint8List>? _pendingRead;
+  int _pendingReadCount = 0;
 
   bool get isConnected => _connected;
 
@@ -27,9 +30,14 @@ class TdxClient {
       _log('尝试连接 ${server.$1}:${server.$2} (${i + 1}/${tdxServers.length})');
       try {
         _buffer = Uint8List(0);
+        _pendingRead = null;
+        _pendingReadCount = 0;
+        _socketSub?.cancel();
         _socket = await Socket.connect(server.$1, server.$2, timeout: const Duration(seconds: 8));
         _serverIndex = idx;
-        _log('TCP连接成功，开始握手...');
+        _log('TCP连接成功，开始监听...');
+        _startListening();
+        _log('开始握手...');
         await _handshake();
         _connected = true;
         _log('握手完成，连接就绪');
@@ -44,12 +52,51 @@ class TdxClient {
     throw Exception('无法连接到任何行情服务器: $lastError');
   }
 
+  void _startListening() {
+    _socketSub = _socket!.listen(
+      (chunk) {
+        _log('Socket收到: ${chunk.length} 字节');
+        if (_pendingRead != null && !_pendingRead!.isCompleted) {
+          _buffer = Uint8List.fromList([..._buffer, ...chunk]);
+          _tryCompletePendingRead();
+        } else {
+          _buffer = Uint8List.fromList([..._buffer, ...chunk]);
+        }
+      },
+      onError: (e) {
+        _log('Socket错误: $e');
+        if (_pendingRead != null && !_pendingRead!.isCompleted) {
+          _pendingRead!.completeError(e);
+        }
+      },
+      onDone: () {
+        _log('Socket关闭');
+        if (_pendingRead != null && !_pendingRead!.isCompleted) {
+          _pendingRead!.completeError(Exception('连接关闭'));
+        }
+      },
+    );
+  }
+
+  void _tryCompletePendingRead() {
+    if (_pendingRead == null || _pendingRead!.isCompleted) return;
+    if (_buffer.length >= _pendingReadCount) {
+      final result = _buffer.sublist(0, _pendingReadCount);
+      _buffer = _buffer.sublist(_pendingReadCount);
+      _log('缓冲区满足: 取出 ${result.length} 字节, 剩余 ${_buffer.length} 字节');
+      _pendingRead!.complete(result);
+    }
+  }
+
   Future<void> disconnect() async {
     _log('断开连接');
+    _socketSub?.cancel();
+    _socketSub = null;
     await _socket?.close();
     _socket = null;
     _connected = false;
     _buffer = Uint8List(0);
+    _pendingRead = null;
   }
 
   Future<void> _handshake() async {
@@ -120,56 +167,16 @@ class TdxClient {
       return result;
     }
 
-    // 缓冲区不够，从 socket 继续读
-    final data = BytesBuilder();
-    data.add(_buffer);
-    int received = _buffer.length;
-    _buffer = Uint8List(0);
-    _log('缓冲区不足 ($received/$count), 从socket继续读...');
+    // 缓冲区不够，等待 socket 数据
+    _log('缓冲区不足 (${_buffer.length}/$count), 等待数据...');
+    _pendingReadCount = count;
+    _pendingRead = Completer<Uint8List>();
 
-    final completer = Completer<Uint8List>();
-    late StreamSubscription<List<int>> sub;
-    sub = _socket!.listen(
-      (chunk) {
-        data.add(chunk);
-        received += chunk.length;
-        _log('接收数据: +${chunk.length} 字节, 累计 $received/$count');
-        if (received >= count) {
-          final allData = data.takeBytes();
-          // 保存多余数据到缓冲区
-          if (allData.length > count) {
-            _buffer = allData.sublist(count);
-            _log('保存到缓冲区: ${_buffer.length} 字节');
-          }
-          if (!completer.isCompleted) {
-            completer.complete(allData.sublist(0, count));
-          }
-          sub.cancel();
-        }
-      },
-      onError: (e) {
-        _log('Socket错误: $e');
-        if (!completer.isCompleted) completer.completeError(e);
-      },
-      onDone: () {
-        _log('Socket关闭, 已接收 $received/$count 字节');
-        if (!completer.isCompleted) {
-          if (received >= count) {
-            final allData = data.takeBytes();
-            if (allData.length > count) {
-              _buffer = allData.sublist(count);
-            }
-            completer.complete(allData.sublist(0, count));
-          } else {
-            completer.completeError(Exception('连接提前关闭: 收到 $received/$count 字节'));
-          }
-        }
-      },
-    );
+    // 如果缓冲区已经有数据，尝试完成
+    _tryCompletePendingRead();
 
-    return completer.future.timeout(const Duration(seconds: 10), onTimeout: () {
-      sub.cancel();
-      throw TimeoutException('读取超时: 已收到 $received/$count 字节');
+    return _pendingRead!.future.timeout(const Duration(seconds: 10), onTimeout: () {
+      throw TimeoutException('读取超时: 缓冲区 ${_buffer.length}/$count 字节');
     });
   }
 
