@@ -10,6 +10,7 @@ class TdxClient {
   Socket? _socket;
   int _serverIndex = 0;
   bool _connected = false;
+  Uint8List _buffer = Uint8List(0);
 
   bool get isConnected => _connected;
 
@@ -25,6 +26,7 @@ class TdxClient {
       final server = tdxServers[idx];
       _log('尝试连接 ${server.$1}:${server.$2} (${i + 1}/${tdxServers.length})');
       try {
+        _buffer = Uint8List(0);
         _socket = await Socket.connect(server.$1, server.$2, timeout: const Duration(seconds: 8));
         _serverIndex = idx;
         _log('TCP连接成功，开始握手...');
@@ -47,6 +49,7 @@ class TdxClient {
     await _socket?.close();
     _socket = null;
     _connected = false;
+    _buffer = Uint8List(0);
   }
 
   Future<void> _handshake() async {
@@ -90,7 +93,7 @@ class TdxClient {
   }
 
   Future<Uint8List> _readResponse() async {
-    _log('等待响应头 (${TdxPacket.headerSize} 字节)...');
+    _log('等待响应头 (${TdxPacket.headerSize} 字节), 缓冲区: ${_buffer.length} 字节');
     final headerBytes = await _readExact(TdxPacket.headerSize);
     _log('收到头部: ${headerBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
     final header = TdxPacket.parseHeader(headerBytes);
@@ -109,10 +112,22 @@ class TdxClient {
   }
 
   Future<Uint8List> _readExact(int count) async {
-    final completer = Completer<Uint8List>();
-    final data = BytesBuilder();
-    int received = 0;
+    // 先从缓冲区取数据
+    if (_buffer.length >= count) {
+      final result = _buffer.sublist(0, count);
+      _buffer = _buffer.sublist(count);
+      _log('从缓冲区读取: ${result.length} 字节, 剩余缓冲: ${_buffer.length} 字节');
+      return result;
+    }
 
+    // 缓冲区不够，从 socket 继续读
+    final data = BytesBuilder();
+    data.add(_buffer);
+    int received = _buffer.length;
+    _buffer = Uint8List(0);
+    _log('缓冲区不足 ($received/$count), 从socket继续读...');
+
+    final completer = Completer<Uint8List>();
     late StreamSubscription<List<int>> sub;
     sub = _socket!.listen(
       (chunk) {
@@ -120,7 +135,15 @@ class TdxClient {
         received += chunk.length;
         _log('接收数据: +${chunk.length} 字节, 累计 $received/$count');
         if (received >= count) {
-          completer.complete(data.takeBytes());
+          final allData = data.takeBytes();
+          // 保存多余数据到缓冲区
+          if (allData.length > count) {
+            _buffer = allData.sublist(count);
+            _log('保存到缓冲区: ${_buffer.length} 字节');
+          }
+          if (!completer.isCompleted) {
+            completer.complete(allData.sublist(0, count));
+          }
           sub.cancel();
         }
       },
@@ -132,7 +155,11 @@ class TdxClient {
         _log('Socket关闭, 已接收 $received/$count 字节');
         if (!completer.isCompleted) {
           if (received >= count) {
-            completer.complete(data.takeBytes());
+            final allData = data.takeBytes();
+            if (allData.length > count) {
+              _buffer = allData.sublist(count);
+            }
+            completer.complete(allData.sublist(0, count));
           } else {
             completer.completeError(Exception('连接提前关闭: 收到 $received/$count 字节'));
           }
