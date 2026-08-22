@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:developer' as developer;
 import 'protocol.dart';
 import 'parser.dart';
 import 'servers.dart';
@@ -12,67 +13,96 @@ class TdxClient {
 
   bool get isConnected => _connected;
 
+  void _log(String msg) {
+    developer.log(msg, name: 'TdxClient');
+    print('[TdxClient] $msg');
+  }
+
   Future<void> connect() async {
     String lastError = '';
     for (int i = 0; i < tdxServers.length; i++) {
       final idx = (_serverIndex + i) % tdxServers.length;
       final server = tdxServers[idx];
+      _log('尝试连接 ${server.$1}:${server.$2} (${i + 1}/${tdxServers.length})');
       try {
-        _socket = await Socket.connect(server.$1, server.$2, timeout: const Duration(seconds: 10));
+        _socket = await Socket.connect(server.$1, server.$2, timeout: const Duration(seconds: 8));
         _serverIndex = idx;
+        _log('TCP连接成功，开始握手...');
         await _handshake();
         _connected = true;
+        _log('握手完成，连接就绪');
         return;
       } catch (e) {
-        lastError = '${server.$1}:${server.$2} - $e';
+        lastError = '${server.$1}:${server.$2} -> $e';
+        _log('连接失败: $lastError');
         continue;
       }
     }
+    _log('所有服务器均不可达，最后错误: $lastError');
     throw Exception('无法连接到任何行情服务器: $lastError');
   }
 
   Future<void> disconnect() async {
+    _log('断开连接');
     await _socket?.close();
     _socket = null;
     _connected = false;
   }
 
   Future<void> _handshake() async {
+    _log('发送 setupCmd1...');
     await _sendRaw(TdxPacket.setupCmd1);
-    await _readResponse();
+    final resp1 = await _readResponse();
+    _log('setupCmd1 响应: ${resp1.length} 字节');
+
+    _log('发送 setupCmd2...');
     await _sendRaw(TdxPacket.setupCmd2);
-    await _readResponse();
+    final resp2 = await _readResponse();
+    _log('setupCmd2 响应: ${resp2.length} 字节');
+
+    _log('发送 setupCmd3...');
     await _sendRaw(TdxPacket.setupCmd3);
-    await _readResponse();
+    final resp3 = await _readResponse();
+    _log('setupCmd3 响应: ${resp3.length} 字节');
   }
 
   Future<void> _sendRaw(Uint8List data) async {
+    _log('发送数据: ${data.length} 字节, hex: ${data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ').substring(0, 60)}...');
     _socket?.add(data);
     await _socket?.flush();
   }
 
-  Future<Uint8List> _sendAndReceive(Uint8List request) async {
-    if (!_connected) await connect();
+  Future<Uint8List> _sendAndReceive(Uint8List request, String tag) async {
+    if (!_connected) {
+      _log('$tag: 未连接，尝试重连...');
+      await connect();
+    }
     try {
       await _sendRaw(request);
       return await _readResponse();
     } catch (e) {
+      _log('$tag: 收发失败 -> $e');
       _connected = false;
       rethrow;
     }
   }
 
   Future<Uint8List> _readResponse() async {
+    _log('等待响应头 (${TdxPacket.headerSize} 字节)...');
     final headerBytes = await _readExact(TdxPacket.headerSize);
+    _log('收到头部: ${headerBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
     final header = TdxPacket.parseHeader(headerBytes);
     final zipsize = header['zipsize']!;
     final unzipsize = header['unzipsize']!;
+    _log('解析头部: zipsize=$zipsize, unzipsize=$unzipsize');
 
     var body = await _readExact(zipsize);
 
     if (zipsize != unzipsize) {
+      _log('解压数据: $zipsize -> $unzipsize');
       body = Uint8List.fromList(zlib.decode(body));
     }
+    _log('响应体: ${body.length} 字节');
     return body;
   }
 
@@ -82,30 +112,47 @@ class TdxClient {
     int received = 0;
 
     late StreamSubscription<List<int>> sub;
-    sub = _socket!.listen((chunk) {
-      data.add(chunk);
-      received += chunk.length;
-      if (received >= count) {
-        completer.complete(data.takeBytes());
-        sub.cancel();
-      }
-    });
+    sub = _socket!.listen(
+      (chunk) {
+        data.add(chunk);
+        received += chunk.length;
+        _log('接收数据: +${chunk.length} 字节, 累计 $received/$count');
+        if (received >= count) {
+          completer.complete(data.takeBytes());
+          sub.cancel();
+        }
+      },
+      onError: (e) {
+        _log('Socket错误: $e');
+        if (!completer.isCompleted) completer.completeError(e);
+      },
+      onDone: () {
+        _log('Socket关闭, 已接收 $received/$count 字节');
+        if (!completer.isCompleted) {
+          if (received >= count) {
+            completer.complete(data.takeBytes());
+          } else {
+            completer.completeError(Exception('连接提前关闭: 收到 $received/$count 字节'));
+          }
+        }
+      },
+    );
 
-    return completer.future.timeout(const Duration(seconds: 5), onTimeout: () {
+    return completer.future.timeout(const Duration(seconds: 10), onTimeout: () {
       sub.cancel();
-      throw TimeoutException('Read timeout');
+      throw TimeoutException('读取超时: 已收到 $received/$count 字节');
     });
   }
 
   Future<int> getSecurityCount(int market) async {
     final request = TdxPacket.makeGetSecurityCount(market);
-    final body = await _sendAndReceive(request);
+    final body = await _sendAndReceive(request, 'getSecurityCount');
     return TdxParser.parseCount(body);
   }
 
   Future<List<Map<String, dynamic>>> getSecurityList(int market, int start) async {
     final request = TdxPacket.makeGetSecurityList(market, start);
-    final body = await _sendAndReceive(request);
+    final body = await _sendAndReceive(request, 'getSecurityList');
     return TdxParser.parseSecurityList(body);
   }
 
@@ -113,20 +160,19 @@ class TdxClient {
     int market, String code, int category, int start, int count,
   ) async {
     final request = TdxPacket.makeGetSecurityBars(market, code, category, start, count);
-    final body = await _sendAndReceive(request);
+    final body = await _sendAndReceive(request, 'getSecurityBars($code)');
     return TdxParser.parseSecurityBars(body);
   }
 
   Future<List<Map<String, dynamic>>> getSecurityQuotes(List<Map<String, dynamic>> stocks) async {
     final request = TdxPacket.makeGetSecurityQuotes(stocks);
-    final body = await _sendAndReceive(request);
+    final body = await _sendAndReceive(request, 'getSecurityQuotes');
     return TdxParser.parseSecurityQuotes(body);
   }
 
   Future<List<Map<String, dynamic>>> getXdXrInfo(int market, String code) async {
     final request = TdxPacket.makeGetXdXrInfo(market, code);
-    final body = await _sendAndReceive(request);
+    final body = await _sendAndReceive(request, 'getXdXrInfo');
     return TdxParser.parseXdXrInfo(body);
   }
-
 }

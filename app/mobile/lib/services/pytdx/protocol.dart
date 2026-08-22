@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 class TdxPacket {
   static const int magic = 0x010c;
@@ -122,13 +123,15 @@ class TdxPacket {
       throw Exception('Header too short: ${headerBytes.length}');
     }
     final bd = ByteData.view(headerBytes.buffer);
-    return {
+    final result = {
       'field1': bd.getUint32(0, Endian.little),
       'field2': bd.getUint32(4, Endian.little),
       'field3': bd.getUint32(8, Endian.little),
       'zipsize': bd.getUint16(12, Endian.little),
       'unzipsize': bd.getUint16(14, Endian.little),
     };
+    developer.log('Header解析: field1=${result['field1']}, field2=${result['field2']}, field3=${result['field3']}, zipsize=${result['zipsize']}, unzipsize=${result['unzipsize']}', name: 'TdxProtocol');
+    return result;
   }
 
   // --- Helpers ---

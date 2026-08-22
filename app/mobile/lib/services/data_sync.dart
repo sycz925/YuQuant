@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 import 'database.dart';
 import 'pytdx/client.dart';
 import 'pytdx/protocol.dart';
@@ -14,30 +15,52 @@ class DataSyncService {
   final DatabaseHelper _db = DatabaseHelper.instance;
   bool _stopped = false;
 
+  void _log(String msg) {
+    developer.log(msg, name: 'DataSync');
+    print('[DataSync] $msg');
+  }
+
   void stop() {
     _stopped = true;
+    _log('同步已停止');
   }
 
   Future<void> sync(Function(SyncStep step, int current, int total, String status) onProgress) async {
     _stopped = false;
+    _log('=== 开始同步 ===');
     try {
+      _log('步骤1: 连接服务器');
+      onProgress(SyncStep.basics, 0, 1, '连接行情服务器...');
       await _client.connect();
+      _log('服务器连接成功');
 
-      onProgress(SyncStep.basics, 0, 1, 'running');
+      _log('步骤2: 同步基本信息');
+      onProgress(SyncStep.basics, 0, 1, '同步ETF/指数列表...');
       await _syncBasics(onProgress);
+      _log('基本信息同步完成');
 
-      onProgress(SyncStep.indexDaily, 0, 1, 'running');
+      _log('步骤3: 同步指数日线');
+      onProgress(SyncStep.indexDaily, 0, 1, '同步指数日线数据...');
       await _syncIndexDaily(onProgress);
+      _log('指数日线同步完成');
 
       if (_stopped) return;
-      onProgress(SyncStep.etfDaily, 0, 1, 'running');
+      _log('步骤4: 同步ETF日线');
+      onProgress(SyncStep.etfDaily, 0, 1, '同步ETF日线数据...');
       await _syncEtfDaily(onProgress);
+      _log('ETF日线同步完成');
 
       if (_stopped) return;
-      onProgress(SyncStep.calculate, 0, 1, 'running');
+      _log('步骤5: 计算指标');
+      onProgress(SyncStep.calculate, 0, 1, '计算RPS/MA指标...');
       await _calculateIndicators(onProgress);
+      _log('指标计算完成');
 
       onProgress(SyncStep.calculate, 1, 1, 'completed');
+      _log('=== 同步完成 ===');
+    } catch (e, stack) {
+      _log('同步异常: $e\n$stack');
+      rethrow;
     } finally {
       await _client.disconnect();
     }
