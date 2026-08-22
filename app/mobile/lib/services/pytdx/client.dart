@@ -67,7 +67,9 @@ class TdxClient {
   }
 
   Future<void> _sendRaw(Uint8List data) async {
-    _log('发送数据: ${data.length} 字节, hex: ${data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ').substring(0, 60)}...');
+    final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+    final hexDisplay = hex.length > 60 ? '${hex.substring(0, 60)}...' : hex;
+    _log('发送数据: ${data.length} 字节, hex: $hexDisplay');
     _socket?.add(data);
     await _socket?.flush();
   }
