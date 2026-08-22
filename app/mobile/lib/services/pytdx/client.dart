@@ -13,20 +13,22 @@ class TdxClient {
   bool get isConnected => _connected;
 
   Future<void> connect() async {
+    String lastError = '';
     for (int i = 0; i < tdxServers.length; i++) {
       final idx = (_serverIndex + i) % tdxServers.length;
       final server = tdxServers[idx];
       try {
-        _socket = await Socket.connect(server.$1, server.$2, timeout: const Duration(seconds: 5));
+        _socket = await Socket.connect(server.$1, server.$2, timeout: const Duration(seconds: 10));
         _serverIndex = idx;
         await _handshake();
         _connected = true;
         return;
-      } catch (_) {
+      } catch (e) {
+        lastError = '${server.$1}:${server.$2} - $e';
         continue;
       }
     }
-    throw Exception('Failed to connect to any TDX server');
+    throw Exception('无法连接到任何行情服务器: $lastError');
   }
 
   Future<void> disconnect() async {

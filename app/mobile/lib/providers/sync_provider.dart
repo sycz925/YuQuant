@@ -31,9 +31,12 @@ class SyncProvider extends ChangeNotifier {
     if (_running) return;
     _running = true;
     _error = null;
+    _status = '连接服务器中...';
     notifyListeners();
 
     try {
+      _status = '正在连接行情服务器...';
+      notifyListeners();
       await _sync.sync((step, current, total, status) {
         _currentStep = step;
         _current = current;
@@ -42,7 +45,7 @@ class SyncProvider extends ChangeNotifier {
         notifyListeners();
       });
     } catch (e) {
-      _error = e.toString();
+      _error = e.toString().replaceAll('Exception: ', '');
       _status = '失败';
     } finally {
       _running = false;
