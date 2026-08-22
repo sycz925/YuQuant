@@ -8,12 +8,14 @@ class SyncProvider extends ChangeNotifier {
   int _current = 0;
   int _total = 0;
   bool _running = false;
+  String? _error;
 
   SyncStep? get currentStep => _currentStep;
   String get status => _status;
   int get current => _current;
   int get total => _total;
   bool get running => _running;
+  String? get error => _error;
 
   String get currentName {
     switch (_currentStep) {
@@ -28,6 +30,7 @@ class SyncProvider extends ChangeNotifier {
   Future<void> startSync() async {
     if (_running) return;
     _running = true;
+    _error = null;
     notifyListeners();
 
     try {
@@ -38,10 +41,11 @@ class SyncProvider extends ChangeNotifier {
         _status = status;
         notifyListeners();
       });
+    } catch (e) {
+      _error = e.toString();
+      _status = '失败';
     } finally {
       _running = false;
-      _currentStep = null;
-      _status = '完成';
       notifyListeners();
     }
   }
@@ -51,6 +55,11 @@ class SyncProvider extends ChangeNotifier {
     _running = false;
     _currentStep = null;
     _status = '已停止';
+    notifyListeners();
+  }
+
+  void clearError() {
+    _error = null;
     notifyListeners();
   }
 }
