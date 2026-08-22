@@ -9,49 +9,41 @@ import '../models/index_basic.dart';
 
 enum SyncStep { basics, indexDaily, etfDaily, calculate }
 
-class SyncProgress {
-  final SyncStep step;
-  final int current;
-  final int total;
-  final String status;
-
-  SyncProgress({required this.step, this.current = 0, this.total = 0, this.status = 'running'});
-}
-
 class DataSyncService {
   final TdxClient _client = TdxClient();
   final DatabaseHelper _db = DatabaseHelper.instance;
+  bool _stopped = false;
 
-  Future<void> syncAll({
-    Function(SyncProgress)? onProgress,
-  }) async {
+  void stop() {
+    _stopped = true;
+  }
+
+  Future<void> sync(Function(SyncStep step, int current, int total, String status) onProgress) async {
+    _stopped = false;
     try {
       await _client.connect();
 
-      // Step 1: Sync basics
-      onProgress?.call(SyncProgress(step: SyncStep.basics, status: 'running'));
+      onProgress(SyncStep.basics, 0, 1, 'running');
       await _syncBasics(onProgress);
 
-      // Step 2: Sync index daily
-      onProgress?.call(SyncProgress(step: SyncStep.indexDaily, status: 'running'));
+      onProgress(SyncStep.indexDaily, 0, 1, 'running');
       await _syncIndexDaily(onProgress);
 
-      // Step 3: Sync ETF daily
-      onProgress?.call(SyncProgress(step: SyncStep.etfDaily, status: 'running'));
+      if (_stopped) return;
+      onProgress(SyncStep.etfDaily, 0, 1, 'running');
       await _syncEtfDaily(onProgress);
 
-      // Step 4: Calculate indicators
-      onProgress?.call(SyncProgress(step: SyncStep.calculate, status: 'running'));
+      if (_stopped) return;
+      onProgress(SyncStep.calculate, 0, 1, 'running');
       await _calculateIndicators(onProgress);
 
-      onProgress?.call(SyncProgress(step: SyncStep.calculate, status: 'completed'));
+      onProgress(SyncStep.calculate, 1, 1, 'completed');
     } finally {
       await _client.disconnect();
     }
   }
 
-  Future<void> _syncBasics(Function(SyncProgress)? onProgress) async {
-    // Sync ETF basics
+  Future<void> _syncBasics(Function(SyncStep step, int current, int total, String status) onProgress) async {
     final etfList = <EtfBasic>[];
     int start = 0;
     while (true) {
@@ -67,7 +59,6 @@ class DataSyncService {
       if (items.length < 1000) break;
     }
 
-    // Also check Shenzhen
     start = 0;
     while (true) {
       final items = await _client.getSecurityList(TdxPacket.marketSZ, start);
@@ -84,7 +75,6 @@ class DataSyncService {
 
     await _db.bulkUpsertEtfBasics(etfList);
 
-    // Sync index basics (hardcoded for now)
     final indexList = [
       IndexBasic(code: '000001', name: '上证指数', market: 1),
       IndexBasic(code: '399001', name: '深证成指', market: 0),
@@ -95,10 +85,10 @@ class DataSyncService {
     ];
     await _db.bulkUpsertIndexBasics(indexList);
 
-    onProgress?.call(SyncProgress(step: SyncStep.basics, current: 1, total: 1, status: 'completed'));
+    onProgress(SyncStep.basics, 1, 1, 'completed');
   }
 
-  Future<void> _syncIndexDaily(Function(SyncProgress)? onProgress) async {
+  Future<void> _syncIndexDaily(Function(SyncStep step, int current, int total, String status) onProgress) async {
     final indices = await _db.getIndexBasics(enabledOnly: true);
     for (int i = 0; i < indices.length; i++) {
       final idx = indices[i];
@@ -117,14 +107,15 @@ class DataSyncService {
         isFinal: true,
       )).toList();
       await _db.upsertDailyBars('index', dailyBars);
-      onProgress?.call(SyncProgress(step: SyncStep.indexDaily, current: i + 1, total: indices.length));
+      onProgress(SyncStep.indexDaily, i + 1, indices.length, 'running');
     }
-    onProgress?.call(SyncProgress(step: SyncStep.indexDaily, current: indices.length, total: indices.length, status: 'completed'));
+    onProgress(SyncStep.indexDaily, indices.length, indices.length, 'completed');
   }
 
-  Future<void> _syncEtfDaily(Function(SyncProgress)? onProgress) async {
+  Future<void> _syncEtfDaily(Function(SyncStep step, int current, int total, String status) onProgress) async {
     final etfs = await _db.getEtfBasics();
     for (int i = 0; i < etfs.length; i++) {
+      if (_stopped) return;
       final etf = etfs[i];
       final market = etf.code.startsWith('5') || etf.code.startsWith('6') ? TdxPacket.marketSH : TdxPacket.marketSZ;
       try {
@@ -143,18 +134,17 @@ class DataSyncService {
         )).toList();
         await _db.upsertDailyBars('etf', dailyBars);
       } catch (_) {}
-      onProgress?.call(SyncProgress(step: SyncStep.etfDaily, current: i + 1, total: etfs.length));
+      onProgress(SyncStep.etfDaily, i + 1, etfs.length, 'running');
     }
-    onProgress?.call(SyncProgress(step: SyncStep.etfDaily, current: etfs.length, total: etfs.length, status: 'completed'));
+    onProgress(SyncStep.etfDaily, etfs.length, etfs.length, 'completed');
   }
 
-  Future<void> _calculateIndicators(Function(SyncProgress)? onProgress) async {
+  Future<void> _calculateIndicators(Function(SyncStep step, int current, int total, String status) onProgress) async {
     final bars = await _db.getAllLatestDailyBars('etf');
     if (bars.isEmpty) return;
 
-    // Calculate RPS for each period
     for (final period in [10, 20, 50, 120]) {
-      final allReturns = bars.where((b) => true).map((b) {
+      final allReturns = bars.map((b) {
         switch (period) {
           case 10: return b.chg10d ?? 0.0;
           case 20: return b.chg20d ?? 0.0;
@@ -180,7 +170,8 @@ class DataSyncService {
           await _db.updateRps('etf', bar.stockCode, bar.tradeDate, {'rps_$period': rps});
         }
       }
+      onProgress(SyncStep.calculate, period ~/ 10, 12, 'running');
     }
-    onProgress?.call(SyncProgress(step: SyncStep.calculate, current: 1, total: 1, status: 'completed'));
+    onProgress(SyncStep.calculate, 12, 12, 'completed');
   }
 }
