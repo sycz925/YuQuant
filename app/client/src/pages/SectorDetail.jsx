@@ -93,7 +93,7 @@ function SectorDetail() {
       sortOrder: sorterOrder(`chg_${d}`),
       render: v => v != null ? <span style={{ color: v > 0 ? COLORS.red : v < 0 ? COLORS.green : COLORS.gray }}>{v > 0 ? '+' : ''}{v.toFixed(2)}%</span> : '-',
     })),
-    ...['10', '20', '50'].map(d => ({
+    ...['10', '50', '120'].map(d => ({
       title: `RPS${d}`,
       dataIndex: `rps_${d}`,
       width: 75,

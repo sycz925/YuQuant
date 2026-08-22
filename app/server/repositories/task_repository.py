@@ -19,6 +19,13 @@ class TaskRepository(BaseRepository):
             sort=[('created_at', -1)]
         )
     
+    def find_running_by_stock_name(self, name_regex: str) -> Optional[Dict]:
+        """按 current_stock_name 正则匹配查找运行中的任务"""
+        return self.collection.find_one(
+            {'status': 'running', 'current_stock_name': {'$regex': name_regex}},
+            sort=[('created_at', -1)]
+        )
+    
     def get_by_task_id(self, task_id: str) -> Optional[Dict]:
         """根据任务 ID 获取任务"""
         return self.collection.find_one(
@@ -121,3 +128,10 @@ class TaskRepository(BaseRepository):
             {'status': status},
             {'_id': 0}
         ).sort('created_at', -1).limit(limit))
+
+    def get_running_tasks(self) -> List[Dict]:
+        """获取所有运行中任务（精简投影）"""
+        return list(self.collection.find(
+            {'status': 'running'},
+            {'_id': 0, 'task_id': 1, 'name': 1, 'current_step': 1, 'current_stock_name': 1, 'created_at': 1}
+        ).sort('created_at', -1))

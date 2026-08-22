@@ -80,7 +80,7 @@ function ETFPage() {
     const key = 'etf-sync'
     pollingRef.current = setInterval(async () => {
       try {
-        const status = await taskApi.getTaskStatus(taskId)
+        const status = await taskApi.getStatus(taskId)
         if (status.status === 'failed') {
           notification.error({
             message: 'ETF同步失败',
@@ -232,9 +232,9 @@ function ETFPage() {
         : '-'
     },
     {
-      title: 'RPS20',
-      dataIndex: 'rps_20',
-      key: 'rps_20',
+      title: 'RPS50',
+      dataIndex: 'rps_50',
+      key: 'rps_50',
       width: 80,
       sorter: true,
       render: (v) => v != null
@@ -242,9 +242,9 @@ function ETFPage() {
         : '-'
     },
     {
-      title: 'RPS50',
-      dataIndex: 'rps_50',
-      key: 'rps_50',
+      title: 'RPS120',
+      dataIndex: 'rps_120',
+      key: 'rps_120',
       width: 80,
       sorter: true,
       render: (v) => v != null

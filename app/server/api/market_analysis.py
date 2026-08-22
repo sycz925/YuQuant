@@ -5,7 +5,7 @@ import logging
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, Query
 
-from app.data.db import get_db, get_collection
+from app.server.repositories import get_market_analysis_repo
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +47,6 @@ def _quantile_groups(values_with_chg: List[Dict], n_groups: int = 50) -> List[Di
     return result
 
 
-def _get_previous_trade_date(db, date: str) -> Optional[str]:
-    """获取指定日期之前的最近一个交易日"""
-    # 从stock_daily集合查询（数据量最大，覆盖最全）
-    result = db['stock_daily'].find(
-        {'trade_date': {'$lt': date}},
-        {'trade_date': 1, '_id': 0}
-    ).sort('trade_date', -1).limit(1)
-    result_list = list(result)
-    return result_list[0]['trade_date'] if result_list else None
-
-
 @router.get("")
 def get_market_analysis(
     date: Optional[str] = Query(None, description="交易日期 YYYYMMDD，默认最新交易日"),
@@ -71,47 +60,27 @@ def get_market_analysis(
     valid_rps_periods = [10, 20, 50, 120, 250]
     if rps_period not in valid_rps_periods:
         rps_period = 20  # 默认值
-    """
-    市场多维统计分析（含 RPS/成交额/股价分组 + 气泡图数据）
-    """
+
     try:
-        db = get_db()
+        repo = get_market_analysis_repo()
 
         # 1) 确定查询日期
         if not date:
-            latest_stock = db['stock_daily'].find_one(
-                {'close': {'$gt': 0}},
-                sort=[('trade_date', -1)],
-                projection={'trade_date': 1, '_id': 0}
-            )
-            latest_sector = db['sector_daily'].find_one(
-                {},
-                sort=[('trade_date', -1)],
-                projection={'trade_date': 1, '_id': 0}
-            )
-            candidates = [d['trade_date'] for d in (latest_stock, latest_sector) if d]
-            date = min(candidates) if candidates else None
+            date = repo.get_latest_trade_date()
             if not date:
                 raise HTTPException(status_code=404, detail="没有找到交易数据")
 
         # 2) 前一交易日
-        prev_date = _get_previous_trade_date(db, date)
+        prev_date = repo.get_previous_trade_date(date)
 
         # === 3) 个股分组统计（仅当有个股数据时）===
-        # 获取启用的股票代码
-        enabled_stock_codes = set(
-            doc['stock_code'] for doc in db['stock_basics'].find(
-                {'is_disable': {'$ne': True}},
-                {'_id': 0, 'stock_code': 1}
-            )
-        )
+        enabled_stock_codes = repo.get_enabled_stock_codes()
 
         rps_field = f'rps_{rps_period}'
-        today_stocks = {d['stock_code']: d for d in db['stock_daily'].find(
-            {'trade_date': date, 'close': {'$gt': 0}, 'amount': {'$gt': 0}, 'stock_code': {'$in': list(enabled_stock_codes)}},
-            {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
-             'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1}
-        )}
+        today_stocks = repo.get_stock_daily_map(date, enabled_stock_codes, {
+            'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
+            'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1, '_id': 0,
+        })
 
         has_stock_data = bool(today_stocks)
         stats_response = {
@@ -127,13 +96,7 @@ def get_market_analysis(
         if has_stock_data:
             # 直接使用预计算的chg_pct字段，无需查询前一日数据
             # 获取股票流通股本（用于计算流通市值）
-            liutong_map = {}
-            for doc in db['stock_basics'].find(
-                {'stock_code': {'$in': list(today_stocks.keys())}},
-                {'_id': 0, 'stock_code': 1, 'liutongguben': 1}
-            ):
-                if doc.get('liutongguben'):
-                    liutong_map[doc['stock_code']] = doc['liutongguben']
+            liutong_map = repo.get_liutong_map(today_stocks.keys())
 
             merged = []
             for code, row in today_stocks.items():
@@ -173,15 +136,12 @@ def get_market_analysis(
 
         # === 4) 气泡图 ===
         if mode == 'stock':
-            nodes = _bubble_stock_mode(db, date, prev_date, rps_period)
+            nodes = _bubble_stock_mode(repo, date, prev_date, rps_period)
         else:
-            nodes = _bubble_sector_mode(db, date, prev_date, rps_period)
+            nodes = _bubble_sector_mode(repo, date, prev_date, rps_period)
 
         # 附加信息：该交易日是否已收盘 + 最近一次数据更新时间
-        info_cursor = list(db['stock_daily'].find(
-            {'trade_date': date},
-            {'_id': 0, 'is_final': 1, 'update_time': 1, 'data_source': 1}
-        ).limit(50))
+        info_cursor = repo.get_trade_date_info(date)
         if info_cursor:
             # 多数一致就以多数为准
             final_vals = [doc.get('is_final') for doc in info_cursor if 'is_final' in doc]
@@ -230,39 +190,22 @@ def get_market_bubble(
     if rps_period not in valid_rps_periods:
         rps_period = 20
     try:
-        db = get_db()
+        repo = get_market_analysis_repo()
 
         # 1) 确定查询日期
         if not date:
-            latest_stock = db['stock_daily'].find_one(
-                {'close': {'$gt': 0}},
-                sort=[('trade_date', -1)],
-                projection={'trade_date': 1, '_id': 0}
-            )
-            latest_sector = db['sector_daily'].find_one(
-                {},
-                sort=[('trade_date', -1)],
-                projection={'trade_date': 1, '_id': 0}
-            )
-            # 选两者中较小的那个（同时有个股 + 板块数据）
-            candidates = [d['trade_date'] for d in (latest_stock, latest_sector) if d]
-            date = min(candidates) if candidates else None
+            date = repo.get_latest_trade_date()
             if not date:
                 raise HTTPException(status_code=404, detail="没有找到交易数据")
 
         # 2) 前一交易日（用于计算涨跌幅）
-        prev_result = db['stock_daily'].find_one(
-            {'trade_date': {'$lt': date}},
-            sort=[('trade_date', -1)],
-            projection={'trade_date': 1, '_id': 0}
-        )
-        prev_date = prev_result['trade_date'] if prev_result else None
+        prev_date = repo.get_previous_trade_date(date)
 
         # 3) 根据模式查询
         if mode == 'stock':
-            nodes = _bubble_stock_mode(db, date, prev_date, rps_period)
+            nodes = _bubble_stock_mode(repo, date, prev_date, rps_period)
         else:
-            nodes = _bubble_sector_mode(db, date, prev_date, rps_period)
+            nodes = _bubble_sector_mode(repo, date, prev_date, rps_period)
 
         if not nodes:
             raise HTTPException(status_code=404, detail=f"日期 {date} 没有找到可用的{'板块' if mode=='sector' else '个股'}数据")
@@ -284,37 +227,21 @@ def get_market_bubble(
         raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
-def _bubble_stock_mode(db, date, prev_date, rps_period=20) -> list:
+def _bubble_stock_mode(repo, date, prev_date, rps_period=20) -> list:
     """个股气泡：rps, close_pct, amount_pct, chg%, name, code"""
-    # 获取启用的股票代码
-    enabled_stock_codes = set(
-        doc['stock_code'] for doc in db['stock_basics'].find(
-            {'is_disable': {'$ne': True}},
-            {'_id': 0, 'stock_code': 1}
-        )
-    )
+    enabled_stock_codes = repo.get_enabled_stock_codes()
 
     rps_field = f'rps_{rps_period}'
     # 直接使用预计算的 close_pct, amount_pct, chg_pct 字段
-    today_cursor = db['stock_daily'].find(
-        {
-            'trade_date': date, 'close': {'$gt': 0}, 'amount': {'$gt': 0},
-            'stock_code': {'$in': list(enabled_stock_codes)}
-        },
-        {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, rps_field: 1,
-         'close_pct': 1, 'amount_pct': 1, 'chg_pct': 1}
-    )
-    today_data = {d['stock_code']: d for d in today_cursor}
+    today_data = repo.get_stock_daily_map(date, enabled_stock_codes, {
+        'stock_code': 1, 'close': 1, 'amount': 1, rps_field: 1,
+        'close_pct': 1, 'amount_pct': 1, 'chg_pct': 1, '_id': 0,
+    })
     if not today_data:
         return []
 
     # 股票名映射
-    stock_names = {}
-    for d in db['stock_basics'].find(
-        {'stock_code': {'$in': list(today_data.keys())}},
-        {'_id': 0, 'stock_code': 1, 'stock_name': 1}
-    ):
-        stock_names[d['stock_code']] = d['stock_name']
+    stock_names = repo.get_stock_names(today_data.keys())
 
     nodes = []
     for code, row in today_data.items():
@@ -330,27 +257,18 @@ def _bubble_stock_mode(db, date, prev_date, rps_period=20) -> list:
     return nodes
 
 
-def _bubble_sector_mode(db, date, prev_date, rps_period=20) -> list:
+def _bubble_sector_mode(repo, date, prev_date, rps_period=20) -> list:
     """板块气泡：RPS X 轴，板块涨跌幅 Y 轴，板块成交额做气泡大小"""
-    # 获取启用的板块代码
-    enabled_sector_codes = set(
-        doc['code'] for doc in db['sector_basics'].find(
-            {'is_disable': {'$ne': True}},
-            {'_id': 0, 'code': 1}
-        )
-    )
+    enabled_sector_codes = repo.get_enabled_sector_codes()
 
     # 1) 直接从 sector_daily 查询当日板块行情（使用预计算的chg_pct，只取启用的板块）
-    today_sectors = {d['stock_code']: d for d in db['sector_daily'].find(
-        {'trade_date': date, 'close': {'$gt': 0}, 'stock_code': {'$in': list(enabled_sector_codes)}},
-        {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
-         'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
-    )}
+    today_sectors = repo.get_sector_daily_map(date, enabled_sector_codes, {
+        'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
+        'rps_10': 1, 'rps_20': 1, 'rps_50': 1, '_id': 0,
+    })
 
     # 2) 获取板块名称映射
-    name_map = {s['code']: s.get('name', s['code'])
-                for s in db['sector_basics'].find(
-                    {}, {'_id': 0, 'code': 1, 'name': 1})}
+    name_map = repo.get_sector_name_map()
 
     # 3) 逐板块计算指标（使用预计算的chg_pct），只显示RPS>85的板块
     sector_metrics = []
@@ -416,54 +334,28 @@ def get_active_stock_pool(
     使用预计算的 is_active 字段直接查询
     """
     try:
-        db = get_db()
+        repo = get_market_analysis_repo()
 
         # 确定查询日期
         if not date:
-            latest = db['stock_daily'].find_one(
-                {'close': {'$gt': 0}},
-                sort=[('trade_date', -1)],
-                projection={'trade_date': 1, '_id': 0}
-            )
-            date = latest['trade_date'] if latest else None
+            date = repo.get_latest_stock_trade_date()
             if not date:
                 raise HTTPException(status_code=404, detail="没有找到交易数据")
 
         # 获取启用的股票代码
-        enabled_stock_codes = set(
-            doc['stock_code'] for doc in db['stock_basics'].find(
-                {'is_disable': {'$ne': True}},
-                {'_id': 0, 'stock_code': 1}
-            )
-        )
+        enabled_stock_codes = repo.get_enabled_stock_codes()
 
         # 直接使用预计算的 is_active 字段查询活跃股（只取启用的股票）
-        query = {
-            'trade_date': date,
-            'close': {'$gt': 0},
-            'amount': {'$gt': 0},
-            'is_active': True,
-            'stock_code': {'$in': list(enabled_stock_codes)}
-        }
-
-        # 查询活跃股数据
-        today_stocks = list(db['stock_daily'].find(
-            query,
-            {'_id': 0, 'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
-             'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1, 'rps_sum': 1}
-        ))
+        today_stocks = repo.get_active_stocks(date, enabled_stock_codes, {
+            'stock_code': 1, 'close': 1, 'amount': 1, 'chg_pct': 1,
+            'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1, 'rps_sum': 1, '_id': 0,
+        })
 
         if not today_stocks:
             return {'date': date, 'stocks': [], 'total': 0}
 
         # 股票名称
-        stock_codes = [d['stock_code'] for d in today_stocks]
-        stock_names = {}
-        for d in db['stock_basics'].find(
-            {'stock_code': {'$in': stock_codes}},
-            {'_id': 0, 'stock_code': 1, 'stock_name': 1}
-        ):
-            stock_names[d['stock_code']] = d['stock_name']
+        stock_names = repo.get_stock_names([d['stock_code'] for d in today_stocks])
 
         # 构建返回数据
         active_stocks = []

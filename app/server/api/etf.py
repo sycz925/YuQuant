@@ -8,7 +8,8 @@ from fastapi import APIRouter, HTTPException, Query
 import pandas as pd
 
 from app.data.manager import get_data_manager
-from app.data.db import get_db, get_collection, get_daily_data
+from app.data.db import get_daily_data
+from app.server.repositories import get_etf_repo, get_task_repo
 from app.server.models import (
     EtfBasic, EtfListItem, EtfListResponse, DailyDataResponse, DailyBar
 )
@@ -57,20 +58,14 @@ def get_etf_list(
             df = df[mask]
 
         # 获取每个ETF的最新日线数据
-        etf_coll = get_collection('etf')
+        etf_repo = get_etf_repo()
         items = []
 
         for _, row in df.iterrows():
             code = row["code"]
             name = row["name"]
 
-            latest = etf_coll.find_one(
-                {'stock_code': code, 'close': {'$gt': 0}},
-                sort=[('trade_date', -1)],
-                projection={'close': 1, 'chg_pct': 1, 'chg_5d': 1, 'chg_10d': 1,
-                            'chg_20d': 1, 'chg_50d': 1, 'chg_120d': 1,
-                            'rps_10': 1, 'rps_20': 1, 'rps_50': 1, '_id': 0}
-            )
+            latest = etf_repo.get_latest_quote(code)
 
             if latest:
                 item = EtfListItem(
@@ -84,8 +79,8 @@ def get_etf_list(
                     chg_50d=latest.get('chg_50d'),
                     chg_120d=latest.get('chg_120d'),
                     rps_10=latest.get('rps_10'),
-                    rps_20=latest.get('rps_20'),
                     rps_50=latest.get('rps_50'),
+                    rps_120=latest.get('rps_120'),
                 )
                 items.append(item)
             else:
@@ -96,7 +91,7 @@ def get_etf_list(
             rps_threshold = 87
             filtered = []
             for item in items:
-                rps_values = [v for v in (item.rps_10, item.rps_20, item.rps_50) if v is not None]
+                rps_values = [v for v in (item.rps_10, item.rps_50, item.rps_120) if v is not None]
                 red_count = sum(1 for v in rps_values if v > rps_threshold)
                 if rps_red == 'one' and red_count >= 1:
                     filtered.append(item)
@@ -107,7 +102,7 @@ def get_etf_list(
             items = filtered
 
         # 排序
-        if sort_by and sort_by in ('change_pct', 'chg_5d', 'chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'close', 'rps_10', 'rps_20', 'rps_50'):
+        if sort_by and sort_by in ('change_pct', 'chg_5d', 'chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'close', 'rps_10', 'rps_50', 'rps_120'):
             reverse = sort_order != 'asc'
             items.sort(key=lambda x: getattr(x, sort_by) or 0, reverse=reverse)
 
@@ -149,7 +144,7 @@ def _run_etf_sync(task_id: str):
     """后台执行ETF同步"""
     from app.data.task_manager import get_task_manager
     from app.data.manager import get_data_manager
-    from app.data.db import get_db
+    from app.server.repositories import get_task_repo
 
     tm = get_task_manager()
     dm = get_data_manager()
@@ -160,16 +155,10 @@ def _run_etf_sync(task_id: str):
         result = dm.sync_etf_daily()
         success = result.get('success', 0)
         fail = result.get('fail', 0)
-        db = get_db()
         from datetime import datetime as dt
-        db['sync_tasks'].update_one(
-            {'task_id': task_id},
-            {'$set': {
-                f'steps.0.completed_count': success + fail,
-                f'steps.0.message': f'成功{success} 失败{fail}',
-                'updated_at': dt.utcnow().isoformat()
-            }}
-        )
+        task_repo = get_task_repo()
+        task_repo.update_step_progress(task_id, 0, completed_count=success + fail, message=f'成功{success} 失败{fail}')
+        task_repo.update_task_progress(task_id, updated_at=dt.utcnow().isoformat())
         tm.complete_step(task_id, 0, f'日线: 成功{success} 失败{fail}')
 
         # 全部失败时终止任务

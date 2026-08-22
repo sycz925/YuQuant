@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException
 
 from app.data.manager import get_data_manager
 from app.data.task_manager import get_task_manager
-from app.data.db import get_db
 from app.server.models import SyncRequest, SyncResponse
 
 logger = logging.getLogger(__name__)

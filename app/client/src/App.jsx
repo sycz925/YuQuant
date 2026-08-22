@@ -19,6 +19,7 @@ import SectorDetail from './pages/SectorDetail'
 import ErrorBoundary from './components/ErrorBoundary'
 import { healthApi, oneClickUpdateApi, alertApi } from './api'
 import useOneClickUpdate from './hooks/useOneClickUpdate'
+import usePolling from './hooks/usePolling'
 
 function App() {
   const location = useLocation()
@@ -31,7 +32,7 @@ function App() {
   const [updateAllowed, setUpdateAllowed] = useState(true)
   const [syncTimeMessage, setSyncTimeMessage] = useState('')
 
-  const checkSyncTime = async () => {
+  const checkSyncTime = useCallback(async () => {
     try {
       const res = await oneClickUpdateApi.checkSyncTime()
       setUpdateAllowed(res.allowed)
@@ -40,21 +41,9 @@ function App() {
       setUpdateAllowed(false)
       setSyncTimeMessage('检查同步时间失败')
     }
-  }
-
-  useEffect(() => {
-    checkSyncTime()
-    const timer = setInterval(checkSyncTime, 60000)
-    return () => clearInterval(timer)
   }, [])
 
-  useEffect(() => {
-    checkHealth()
-    const timer = setInterval(checkHealth, 30000)
-    return () => clearInterval(timer)
-  }, [])
-
-  const checkHealth = async () => {
+  const checkHealth = useCallback(async () => {
     try {
       const res = await healthApi.check()
       setIsHealthy(true)
@@ -64,42 +53,50 @@ function App() {
     } catch (e) {
       setIsHealthy(false)
     }
-  }
+  }, [])
+
+  // 初始立即执行一次（usePolling 首次回调需等待 interval，故手动触发一次）
+  useEffect(() => {
+    checkSyncTime()
+    checkHealth()
+  }, [checkSyncTime, checkHealth])
+
+  // 定时轮询
+  usePolling(checkSyncTime, 60000)
+  usePolling(checkHealth, 30000)
 
   const { isRunning: oneClickRunning, start: handleOneClickUpdate } = useOneClickUpdate({
     onComplete: () => checkHealth()
   })
 
   // ---- ETF预警轮询 ----
-  const [lastAlertCheck, setLastAlertCheck] = useState(null)
   const unreadCountRef = useRef(0)
+  const lastAlertCheckRef = useRef(null)
 
-  useEffect(() => {
-    const checkAlerts = async () => {
-      try {
-        const params = {}
-        if (lastAlertCheck) params.since = lastAlertCheck
-        const res = await alertApi.getRecent(params)
-        const items = res || []
-        if (items.length > 0) {
-          unreadCountRef.current += items.length
-          const recent = items.slice(0, 3)
-          const desc = recent.map(r => r.reason).join('\n')
-          const more = items.length > 3 ? `\n...还有${items.length - 3}条` : ''
-          notification.warning({
-            message: `ETF下轨击穿预警 (${items.length}条)`,
-            description: desc + more,
-            duration: 8,
-            onClick: () => { navigate('/etf/alerts'); notification.destroy() },
-            style: { cursor: 'pointer' },
-          })
-        }
-        setLastAlertCheck(new Date().toISOString())
-      } catch (e) { /* 静默 */ }
-    }
-    const timer = setInterval(checkAlerts, 30000)
-    return () => clearInterval(timer)
-  }, [lastAlertCheck])
+  const checkAlerts = useCallback(async () => {
+    try {
+      const params = {}
+      if (lastAlertCheckRef.current) params.since = lastAlertCheckRef.current
+      const res = await alertApi.getRecent(params)
+      const items = res || []
+      if (items.length > 0) {
+        unreadCountRef.current += items.length
+        const recent = items.slice(0, 3)
+        const desc = recent.map(r => r.reason).join('\n')
+        const more = items.length > 3 ? `\n...还有${items.length - 3}条` : ''
+        notification.warning({
+          message: `ETF下轨击穿预警 (${items.length}条)`,
+          description: desc + more,
+          duration: 8,
+          onClick: () => { navigate('/etf/alerts'); notification.destroy() },
+          style: { cursor: 'pointer' },
+        })
+      }
+      lastAlertCheckRef.current = new Date().toISOString()
+    } catch (e) { /* 静默 */ }
+  }, [navigate])
+
+  usePolling(checkAlerts, 30000)
 
   return (
     <div className="min-h-screen bg-gray-50">

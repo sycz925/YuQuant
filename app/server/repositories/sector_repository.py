@@ -71,6 +71,40 @@ class SectorRepository(BaseRepository):
             {'_id': 0}
         ).sort('trade_date', -1).limit(limit))
     
+    def get_daily_bars(self, code: str, start_date: str, end_date: str,
+                       limit: int, projection: Dict) -> List[Dict]:
+        """获取板块日线数据（带自定义投影，不含 close 过滤）"""
+        query = {
+            'stock_code': code,
+            'trade_date': {'$gte': start_date, '$lte': end_date},
+        }
+        return list(self.daily.find(query, projection).sort('trade_date', -1).limit(limit))
+    
+    def get_all_names(self) -> set:
+        """获取所有板块名称集合"""
+        return {doc['name'] for doc in self.collection.find({}, {'_id': 0, 'name': 1})}
+    
+    def get_daily_docs(self, code: str) -> List[Dict]:
+        """获取板块日线（trade_date/close/vol，升序）"""
+        return list(self.daily.find(
+            {'stock_code': code},
+            {'_id': 0, 'trade_date': 1, 'close': 1, 'vol': 1}
+        ).sort('trade_date', 1))
+    
+    def update_daily(self, code: str, trade_date: str, fields: Dict) -> int:
+        """更新板块日线字段"""
+        return self.daily.update_one(
+            {'stock_code': code, 'trade_date': trade_date},
+            {'$set': fields}
+        )
+
+    def get_sector_daily_field(self, code: str, trade_date: str, fields: Dict) -> Optional[Dict]:
+        """获取板块日线指定字段"""
+        return self.daily.find_one(
+            {'stock_code': code, 'trade_date': trade_date},
+            fields
+        )
+    
     def update_disable_status(self, code: str, is_disable: bool) -> int:
         """更新禁用状态"""
         return self.update_one(

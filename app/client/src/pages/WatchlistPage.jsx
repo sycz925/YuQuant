@@ -128,8 +128,8 @@ function WatchlistPage() {
     { title: '50日涨幅', dataIndex: 'chg_50d', key: 'chg_50d', width: 100, sorter: true, render: renderChange },
     { title: '120日涨幅', dataIndex: 'chg_120d', key: 'chg_120d', width: 100, sorter: true, render: renderChange },
     { title: 'RPS10', dataIndex: 'rps_10', key: 'rps_10', width: 80, sorter: true, render: renderRps },
-    { title: 'RPS20', dataIndex: 'rps_20', key: 'rps_20', width: 80, sorter: true, render: renderRps },
     { title: 'RPS50', dataIndex: 'rps_50', key: 'rps_50', width: 80, sorter: true, render: renderRps },
+    { title: 'RPS120', dataIndex: 'rps_120', key: 'rps_120', width: 80, sorter: true, render: renderRps },
     { title: '操作', key: 'action', width: 80,
       render: (_, r) => (
         <Button size="small" danger type="link" onClick={() => handleDelete(r.code)}>删除</Button>

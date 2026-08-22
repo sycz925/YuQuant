@@ -164,17 +164,17 @@ function SectorPage() {
       render: renderRPS
     },
     {
-      title: 'RPS20',
-      dataIndex: 'rps_20',
-      key: 'rps_20',
+      title: 'RPS50',
+      dataIndex: 'rps_50',
+      key: 'rps_50',
       width: 80,
       sorter: true,
       render: renderRPS
     },
     {
-      title: 'RPS50',
-      dataIndex: 'rps_50',
-      key: 'rps_50',
+      title: 'RPS120',
+      dataIndex: 'rps_120',
+      key: 'rps_120',
       width: 80,
       sorter: true,
       render: renderRPS

@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from app.server.orchestrators.base import BaseOrchestrator
 from app.server.orchestrators.daily_recalc_orchestrator import DailyRecalcOrchestrator as _DailyRecalc
+from app.server.cache import refresh_trade_dates
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +37,16 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         return [{'key': k, 'name': n} for k, n in zip(self.STEP_KEYS, self.STEP_NAMES)]
     
     def _get_last_update_date(self) -> Optional[str]:
-        """查询 base_data_daily 中最后更新日期"""
+        """查询 base_data_daily 中最后一个"完整"更新日期（is_final=True）。
+
+        只认 is_final=True 的日期，避免把盘中/未收盘的最后一天误判为"已完整"，
+        从而跳过本应重新同步的不完整交易日。
+        """
         from app.data.db import get_db
         db = get_db()
         
         latest = db['base_data_daily'].find_one(
-            {},
+            {'is_final': True},
             sort=[('date', -1)],
             projection={'date': 1, '_id': 0}
         )
@@ -125,9 +130,14 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         last_date = self._get_last_update_date()
         logger.info(f"[一键更新] 最后更新日期: {last_date}")
         
-        # 计算日期范围
+        # 计算日期范围（最后一个完整交易日 +1 到真实交易日）
         dates = self._get_date_range(last_date, target)
         logger.info(f"[一键更新] 需要更新的日期: {dates} (共{len(dates)}天)")
+        
+        # 数据都完整时（无待同步交易日），仍需对最后一个交易日执行单日重算（RPS/PE/预计算）
+        if not dates and last_date:
+            dates = [last_date]
+            logger.info(f"[一键更新] 数据已完整，回退为对最后一个交易日 {last_date} 执行单日重算")
         
         # 查询各步骤的实际数据量
         step_totals = self._get_step_totals(dates)
@@ -149,9 +159,9 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         task_id = str(uuid.uuid4())
         self.task_repo.create_task(task_id, steps, name='一键更新')
         
-        # 使用线程池提交任务
+        # 使用线程池提交任务（走 _run_wrapper 确保循环外异常也能 fail_task，对齐其他编排器）
         from app.server.orchestrators.base import _executor
-        _executor.submit(self._run, task_id, dates)
+        _executor.submit(self._run_wrapper, task_id, dates)
         
         return task_id
     
@@ -195,6 +205,8 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             )
             logger.info(f"[一键更新] 步骤 {step_idx+1}/7: {step_name} 完成")
 
+        # 数据同步完成后刷新交易日缓存，避免 /health 的 latest_trade_date 停留在启动时的旧值
+        refresh_trade_dates()
         self.task_repo.complete_task(task_id, '全部完成')
         logger.info(f'[一键更新] 全部完成，共处理 {total_dates} 个交易日')
     

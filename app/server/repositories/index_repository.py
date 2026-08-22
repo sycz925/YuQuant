@@ -70,6 +70,13 @@ class IndexRepository(BaseRepository):
             {'code': code},
             {'$set': {'pe_ttm': pe_ttm}}
         )
+
+    def update_disable_status(self, code: str, is_disable: bool) -> int:
+        """更新禁用状态"""
+        return self.update_one(
+            {'code': code},
+            {'$set': {'is_disable': is_disable}}
+        )
     
     def aggregate_daily(self, pipeline: List[Dict]) -> List[Dict]:
         """聚合日线数据"""

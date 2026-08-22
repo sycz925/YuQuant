@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional
 from collections import defaultdict, OrderedDict
 from datetime import datetime as _dt, timedelta
 
-from app.data.db import get_db
 from app.data.holidays import is_workday
+from app.server.repositories import get_calendar_repo
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,11 @@ MONTHLY_SUMMARY_USER_TEMPLATE = """[各周AI总结数据]
 
 # ========== 快照服务 ==========
 
-def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, Any]]:
+# 默认大盘指数代码（平均股价指数）
+DEFAULT_INDEX_CODE = "880003"
+
+
+def generate_calendar_snapshot(trade_date: str, repo=None) -> Optional[Dict[str, Any]]:
     """
     生成单个交易日的日历快照数据
     返回格式：{
@@ -105,34 +109,28 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
         'tdx_status': str (如 '日红周蓝')
     }
     """
-    if db is None:
-        db = get_db()
-    
+    if repo is None:
+        repo = get_calendar_repo()
+
     try:
         # 从base_data_daily获取涨跌家数和成交额
-        base_doc = db['base_data_daily'].find_one(
-            {'date': trade_date},
-            {'_id': 0, 'up_count': 1, 'down_count': 1, 'total_amount': 1, 'is_final': 1}
-        )
-        
+        base_doc = repo.get_base_snapshot(trade_date)
+
         if not base_doc:
             return None
-        
+
         up_count = base_doc.get('up_count', 0) or 0
         down_count = base_doc.get('down_count', 0) or 0
         total_amount = base_doc.get('total_amount', 0) or 0
         total_amount_yi = int(total_amount / 100000000) if total_amount else 0
-        
+
         # 从market_daily获取最强板块
-        market_doc = db['market_daily'].find_one(
-            {'trade_date': trade_date},
-            {'_id': 0, 'new_high': 1, 'ai_analysis': 1, 'overview.indices': 1}
-        )
-        
+        market_doc = repo.get_market_snapshot(trade_date)
+
         top_sector = None
         top_sector_chg = 0
         tdx_status = ''
-        
+
         if market_doc:
             new_high = market_doc.get('new_high', {})
             clusters = new_high.get('clusters', [])
@@ -140,81 +138,286 @@ def generate_calendar_snapshot(trade_date: str, db=None) -> Optional[Dict[str, A
                 top_cluster = clusters[0]
                 top_sector = top_cluster.get('industry', None)
                 top_sector_chg = top_cluster.get('chg_pct') or top_cluster.get('chg') or 0
-                
+
                 # 如果还是0，尝试从sector_daily获取（优先880通达信代码）
                 if top_sector_chg == 0 and top_sector:
                     try:
-                        sector_doc = db['sector_basics'].find_one(
-                            {'name': top_sector, 'code': {'$regex': '^880'}}, {'_id': 0, 'code': 1}
-                        ) or db['sector_basics'].find_one({'name': top_sector}, {'_id': 0, 'code': 1})
+                        sector_doc = repo.get_sector_code(top_sector, tdx_first=True)
                         if sector_doc and sector_doc.get('code'):
-                            sec_data = db['sector_daily'].find_one(
-                                {'stock_code': sector_doc['code'], 'trade_date': trade_date},
-                                {'_id': 0, 'chg_pct': 1}
-                            )
+                            sec_data = repo.get_sector_chg_pct(sector_doc['code'], trade_date)
                             if sec_data and sec_data.get('chg_pct') is not None:
                                 top_sector_chg = sec_data['chg_pct']
                     except Exception:
                         pass
-            
+
             # 从overview.indices中获取平均股价的tdx_status
             indices = market_doc.get('overview', {}).get('indices', [])
             for idx in indices:
                 if idx.get('code') == '880003' and idx.get('tdx_status'):
                     tdx_status = idx['tdx_status']
                     break
-        
-        # 从index_daily获取大盘涨跌幅（使用平均股价指数 880003）
-        index_doc = db['index_daily'].find_one(
-            {'stock_code': '880003', 'trade_date': trade_date},
-            {'_id': 0, 'chg_pct': 1}
-        )
-        
-        market_change_pct = index_doc.get('chg_pct', 0) if index_doc else 0
-        
-        # 计算is_final比例
-        total_count = db['stock_daily'].count_documents({'trade_date': trade_date, 'close': {'$gt': 0}})
-        final_count = db['stock_daily'].count_documents({'trade_date': trade_date, 'close': {'$gt': 0}, 'is_final': True})
-        is_final = (final_count / total_count > 0.95) if total_count > 0 else False
-        
-        # 从AI分析中提取核心目标板块
-        core_target_sectors = []
-        if market_doc:
-            ai = market_doc.get('ai_analysis', {})
-            if ai and ai.get('allocation_and_focus_model'):
-                core_target_sectors = ai['allocation_and_focus_model'].get('core_target_sectors', [])
 
-        return {
+        # 从index_daily获取大盘涨跌幅（使用平均股价指数 880003）
+        index_doc = repo.get_index_chg_pct('880003', trade_date)
+
+        market_change_pct = index_doc.get('chg_pct', 0) if index_doc else 0
+
+        snapshot = {
             'up_count': up_count,
             'down_count': down_count,
             'total_amount': total_amount_yi,
             'market_change_pct': market_change_pct,
             'top_sector': top_sector,
             'top_sector_chg': top_sector_chg,
-            'is_final': is_final,
-            'core_target_sectors': core_target_sectors,
+            'is_final': base_doc.get('is_final', False),
             'tdx_status': tdx_status,
         }
-        
+
+        return snapshot
     except Exception as e:
         logger.error(f"生成日历快照失败 {trade_date}: {e}")
         return None
 
 
-def save_calendar_snapshot(trade_date: str, snapshot: Dict[str, Any], db=None):
+def save_calendar_snapshot(trade_date: str, snapshot: Dict[str, Any], repo=None):
     """保存日历快照到base_data_daily"""
-    if db is None:
-        db = get_db()
-    
+    if repo is None:
+        repo = get_calendar_repo()
+
     try:
-        db['base_data_daily'].update_one(
-            {'date': trade_date},
-            {'$set': {'calendar_snapshot': snapshot}},
-            upsert=True
-        )
+        repo.save_snapshot(trade_date, snapshot)
         logger.info(f"保存日历快照成功: {trade_date}")
     except Exception as e:
         logger.error(f"保存日历快照失败 {trade_date}: {e}")
+
+
+def generate_month_snapshots(year: int, month: int, repo=None) -> int:
+    """生成整月的日历快照，返回成功数量"""
+    if repo is None:
+        repo = get_calendar_repo()
+
+    import calendar as cal
+    days_in_month = cal.monthrange(year, month)[1]
+    success_count = 0
+
+    for day in range(1, days_in_month + 1):
+        date_str = f"{year}{month:02d}{day:02d}"
+        if not is_workday(date_str):
+            continue
+
+        if repo.has_snapshot(date_str):
+            success_count += 1
+            continue
+
+        snapshot = generate_calendar_snapshot(date_str, repo)
+        if snapshot:
+            save_calendar_snapshot(date_str, snapshot, repo)
+            success_count += 1
+
+    return success_count
+
+
+def clear_calendar_snapshots(year: int, month: int, repo=None) -> int:
+    """清理指定月份的日历快照，返回清除数量"""
+    if repo is None:
+        repo = get_calendar_repo()
+
+    import calendar as cal
+    days_in_month = cal.monthrange(year, month)[1]
+
+    # 构建该月所有日期
+    dates = []
+    for day in range(1, days_in_month + 1):
+        dates.append(f"{year}{month:02d}{day:02d}")
+
+    # 清除 calendar_snapshot 字段
+    result = repo.clear_snapshots(dates)
+
+    return result.modified_count
+
+
+def get_calendar_daily_summary(year: int, month: int,
+                               index_code: str = DEFAULT_INDEX_CODE,
+                               repo=None) -> Dict[str, Any]:
+    """
+    获取日历每日摘要数据
+    优先从快照读取，没有快照则实时计算
+    """
+    if repo is None:
+        repo = get_calendar_repo()
+
+    # 构建日期范围
+    month_str = f"{year}{month:02d}"
+    start_date = f"{month_str}01"
+    if month == 12:
+        end_date = f"{year + 1}0101"
+    else:
+        end_date = f"{year}{month + 1:02d}01"
+
+    # 优先从快照读取
+    snapshot_cursor = repo.get_snapshots_range(start_date, end_date)
+    snapshot_data = {}
+    for doc in snapshot_cursor:
+        snapshot_data[doc['date']] = doc.get('calendar_snapshot', {})
+
+    # 查询所有日期的AI分析数据（推荐仓位 + 风险）
+    ai_cursor = repo.get_ai_analysis_range(start_date, end_date)
+    ai_data = {}
+    for doc in ai_cursor:
+        ai = doc.get('ai_analysis')
+        if ai and ai.get('allocation_and_focus_model'):
+            model = ai['allocation_and_focus_model']
+            ai_data[doc['trade_date']] = {
+                'recommended_position': model.get('recommended_position_range', ''),
+                'market_risk_level': model.get('market_risk_level', ''),
+                'position_management_commentary': model.get('position_management_commentary', ''),
+                'core_target_sectors': model.get('core_target_sectors', []),
+            }
+
+    # 检查哪些日期没有快照
+    all_dates_in_month = set()
+    import calendar as cal
+    days_in_month = cal.monthrange(year, month)[1]
+    for day in range(1, days_in_month + 1):
+        date_str = f"{year}{month:02d}{day:02d}"
+        if is_workday(date_str):
+            all_dates_in_month.add(date_str)
+
+    missing_dates = all_dates_in_month - set(snapshot_data.keys())
+
+    # 对没有快照的日期实时计算
+    if missing_dates:
+        # 查询base_data_daily
+        base_cursor = repo.get_base_daily_bulk(list(missing_dates))
+        base_data = {doc['date']: doc for doc in base_cursor}
+
+        # 查询market_daily
+        market_cursor = repo.get_market_daily_bulk(list(missing_dates))
+        market_data = {doc['trade_date']: doc for doc in market_cursor}
+
+        # 查询index_daily
+        index_cursor = repo.get_index_daily_bulk(index_code, list(missing_dates))
+        index_data = {}
+        prev_close = None
+        for doc in index_cursor:
+            trade_date = doc['trade_date']
+            close = doc.get('close', 0)
+            if 'chg_pct' in doc and doc['chg_pct'] is not None:
+                market_change_pct = doc['chg_pct']
+            elif prev_close and prev_close > 0:
+                market_change_pct = round((close - prev_close) / prev_close * 100, 2)
+            else:
+                market_change_pct = 0
+            index_data[trade_date] = market_change_pct
+            prev_close = close
+
+        # 计算缺失日期的数据
+        for date_str in missing_dates:
+            base = base_data.get(date_str, {})
+            market = market_data.get(date_str, {})
+
+            top_sector = None
+            top_sector_chg = 0
+            new_high = market.get('new_high', {})
+            clusters = new_high.get('clusters', [])
+            if clusters:
+                top_cluster = clusters[0]
+                top_sector = top_cluster.get('industry', None)
+                top_sector_chg = top_cluster.get('chg_pct') or top_cluster.get('chg') or 0
+                if top_sector_chg == 0 and top_sector:
+                    try:
+                        sector_doc = repo.get_sector_code(top_sector)
+                        if sector_doc and sector_doc.get('code'):
+                            sec_data = repo.get_sector_chg_pct(sector_doc['code'], date_str)
+                            if sec_data and sec_data.get('chg_pct') is not None:
+                                top_sector_chg = sec_data['chg_pct']
+                    except Exception:
+                        pass
+
+            total_amount = base.get('total_amount', 0)
+            if total_amount:
+                total_amount = round(total_amount / 100000000, 0)
+
+            market_change_pct = index_data.get(date_str, 0)
+
+            # 计算is_final
+            total_count = repo.count_stock_daily(date_str)
+            final_count = repo.count_stock_daily(date_str, is_final=True)
+            is_final = (final_count / total_count > 0.95) if total_count > 0 else False
+
+            # 获取平均股价的tdx_status
+            tdx_status = ''
+            indices = market.get('overview', {}).get('indices', [])
+            for idx in indices:
+                if idx.get('code') == '880003' and idx.get('tdx_status'):
+                    tdx_status = idx['tdx_status']
+                    break
+
+            snapshot_data[date_str] = {
+                'up_count': base.get('up_count', 0),
+                'down_count': base.get('down_count', 0),
+                'total_amount': int(total_amount) if total_amount else 0,
+                'market_change_pct': market_change_pct,
+                'top_sector': top_sector,
+                'top_sector_chg': top_sector_chg,
+                'is_final': is_final,
+                'tdx_status': tdx_status,
+            }
+
+    # 构建结果
+    result = []
+    for day in range(1, days_in_month + 1):
+        date_str = f"{year}{month:02d}{day:02d}"
+        is_trading = is_workday(date_str)
+
+        if is_trading and date_str in snapshot_data:
+            snap = snapshot_data[date_str]
+            ai = ai_data.get(date_str, {})
+            result.append({
+                'date': date_str,
+                'day': day,
+                'is_trading_day': True,
+                'has_data': True,
+                'up_count': snap.get('up_count', 0),
+                'down_count': snap.get('down_count', 0),
+                'total_amount': snap.get('total_amount', 0),
+                'market_change_pct': snap.get('market_change_pct', 0),
+                'top_sector': snap.get('top_sector'),
+                'top_sector_chg': snap.get('top_sector_chg', 0),
+                'is_final': snap.get('is_final', False),
+                'tdx_status': snap.get('tdx_status', ''),
+                'recommended_position': ai.get('recommended_position', ''),
+                'market_risk_level': ai.get('market_risk_level', ''),
+                'position_management_commentary': ai.get('position_management_commentary', ''),
+                'core_target_sectors': ai.get('core_target_sectors', []),
+            })
+        else:
+            result.append({
+                'date': date_str,
+                'day': day,
+                'is_trading_day': False,
+                'has_data': False,
+                'up_count': 0,
+                'down_count': 0,
+                'total_amount': 0,
+                'market_change_pct': 0,
+                'top_sector': None,
+                'top_sector_chg': 0,
+                'is_final': False,
+                'tdx_status': '',
+                'recommended_position': '',
+                'market_risk_level': '',
+                'position_management_commentary': '',
+                'core_target_sectors': [],
+            })
+
+    return {
+        'success': True,
+        'data': result,
+        'year': year,
+        'month': month,
+        'index_code': index_code
+    }
 
 
 # ========== 周/月分组 ==========
@@ -300,12 +503,10 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
     if lps_docs is None:
         lps_docs = {}
 
-    db = get_db()
+    repo = get_calendar_repo()
     sector_name_to_code = {}
     code_to_name_direct = {}
-    for s in db['sector_basics'].find(
-        {'is_disable': {'$ne': True}}, {'_id': 0, 'code': 1, 'name': 1}
-    ):
+    for s in repo.list_enabled_sectors():
         sector_name_to_code[s['name']] = s['code']
         code_to_name_direct[s['code']] = s['name']
 
@@ -330,25 +531,14 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
     if len(week_days) >= 2:
         first_day = week_days[0]
         last_day = week_days[-1]
-        prev_doc = db['index_daily'].find_one(
-            {'trade_date': {'$lt': first_day}},
-            sort=[('trade_date', -1)],
-            projection={'trade_date': 1, '_id': 0}
-        )
-        prev_day = prev_doc['trade_date'] if prev_doc else first_day
-        prev_docs = list(db['index_daily'].find(
-            {'trade_date': prev_day},
-            {'_id': 0, 'stock_code': 1, 'close': 1}
-        ))
-        last_docs = list(db['index_daily'].find(
-            {'trade_date': last_day},
-            {'_id': 0, 'stock_code': 1, 'close': 1}
-        ))
+        prev_day = repo.get_prev_index_trade_date(first_day) or first_day
+        prev_docs = repo.get_index_close_by_date(prev_day)
+        last_docs = repo.get_index_close_by_date(last_day)
         first_map = {d['stock_code']: d.get('close', 0) for d in prev_docs}
         last_map = {d['stock_code']: d.get('close', 0) for d in last_docs}
 
         idx_names = {}
-        for b in db['index_basics'].find({'is_disable': {'$ne': True}}, {'_id': 0, 'code': 1, 'name': 1}):
+        for b in repo.list_enabled_indices():
             idx_names[b['code']] = b['name']
 
         idx_parts = []
@@ -364,7 +554,7 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
             index_line = f"【本周大盘指数涨跌幅({date_range})】"
 
             # 从 market_daily 获取最后一个交易日的指数状态（不实时计算）
-            market_doc = db['market_daily'].find_one({'trade_date': last_day}, {'_id': 0, 'overview.indices': 1})
+            market_doc = repo.get_index_status_by_date(last_day)
             status_map = {}
             if market_doc and market_doc.get('overview', {}).get('indices'):
                 for idx in market_doc['overview']['indices']:
@@ -382,10 +572,7 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
     if all_sector_names:
         codes = [sector_name_to_code[n] for n in all_sector_names if n in sector_name_to_code]
         if codes:
-            cursor = db['sector_daily'].find(
-                {'stock_code': {'$in': codes}, 'trade_date': {'$in': week_days}},
-                {'_id': 0, 'stock_code': 1, 'trade_date': 1, 'chg_pct': 1}
-            )
+            cursor = repo.get_sector_chg_bulk(codes, week_days)
             for doc in cursor:
                 name = code_to_name_direct.get(doc['stock_code'], doc['stock_code'])
                 sector_chg_map[(name, doc['trade_date'])] = doc.get('chg_pct', 0) or 0
@@ -395,10 +582,7 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
     for date_str in week_days:
         strong = {}
         for rps_key in ['rps_10', 'rps_20', 'rps_50']:
-            cursor = db['sector_daily'].find(
-                {'trade_date': date_str, rps_key: {'$gt': 85}},
-                {'_id': 0, 'stock_code': 1, rps_key: 1, 'chg_pct': 1}
-            )
+            cursor = repo.get_strong_sectors(date_str, rps_key)
             items = []
             for doc in cursor:
                 name = code_to_name_direct.get(doc['stock_code'], doc['stock_code'])
@@ -477,26 +661,20 @@ def _build_monthly_input_text(month_dates: list, ai_docs: dict,
     if overview_docs is None:
         overview_docs = {}
 
-    db = get_db()
+    repo = get_calendar_repo()
 
     # 获取月涨跌幅
     index_line = ''
     if len(month_dates) >= 2:
         first_day = month_dates[0]
         last_day = month_dates[-1]
-        first_docs = list(db['index_daily'].find(
-            {'trade_date': first_day},
-            {'_id': 0, 'stock_code': 1, 'close': 1}
-        ))
-        last_docs = list(db['index_daily'].find(
-            {'trade_date': last_day},
-            {'_id': 0, 'stock_code': 1, 'close': 1}
-        ))
+        first_docs = repo.get_index_close_by_date(first_day)
+        last_docs = repo.get_index_close_by_date(last_day)
         first_map = {d['stock_code']: d.get('close', 0) for d in first_docs}
         last_map = {d['stock_code']: d.get('close', 0) for d in last_docs}
 
         idx_names = {}
-        for b in db['index_basics'].find({'is_disable': {'$ne': True}}, {'_id': 0, 'code': 1, 'name': 1}):
+        for b in repo.list_enabled_indices():
             idx_names[b['code']] = b['name']
 
         idx_parts = []
@@ -520,9 +698,7 @@ def _build_monthly_input_text(month_dates: list, ai_docs: dict,
     sector_chg_map = {}
     sector_name_to_code = {}
     code_to_name_direct = {}
-    for s in db['sector_basics'].find(
-        {'is_disable': {'$ne': True}}, {'_id': 0, 'code': 1, 'name': 1}
-    ):
+    for s in repo.list_enabled_sectors():
         sector_name_to_code[s['name']] = s['code']
         code_to_name_direct[s['code']] = s['name']
 
@@ -544,10 +720,7 @@ def _build_monthly_input_text(month_dates: list, ai_docs: dict,
     if all_sector_names:
         codes = [sector_name_to_code[n] for n in all_sector_names if n in sector_name_to_code]
         if codes:
-            cursor = db['sector_daily'].find(
-                {'stock_code': {'$in': codes}, 'trade_date': {'$in': month_dates}},
-                {'_id': 0, 'stock_code': 1, 'trade_date': 1, 'chg_pct': 1}
-            )
+            cursor = repo.get_sector_chg_bulk(codes, month_dates)
             for doc in cursor:
                 name = code_to_name_direct.get(doc['stock_code'], doc['stock_code'])
                 sector_chg_map[(name, doc['trade_date'])] = doc.get('chg_pct', 0) or 0
@@ -634,10 +807,10 @@ def _run_fill_ai_task(task_id: str, year: int, month: int):
     tm = get_task_manager()
     
     try:
-        db = get_db()
-        
+        repo = get_calendar_repo()
+
         # 获取该月所有交易日
-        all_dates = sorted(db['stock_daily'].distinct('trade_date'))
+        all_dates = repo.get_stock_trade_dates()
         month_dates = [d for d in all_dates if d.startswith(f"{year}{month:02d}")]
         
         if not month_dates:
@@ -647,7 +820,7 @@ def _run_fill_ai_task(task_id: str, year: int, month: int):
         # 筛选缺少AI分析的日期
         missing_dates = []
         for date_str in month_dates:
-            doc = db['market_daily'].find_one({'trade_date': date_str}, {'_id': 0, 'ai_analysis': 1})
+            doc = repo.get_market_ai_analysis(date_str)
             if not doc or not doc.get('ai_analysis'):
                 missing_dates.append(date_str)
         
@@ -678,7 +851,7 @@ def _run_fill_ai_task(task_id: str, year: int, month: int):
                 precompute_market_daily(date_str)
                 
                 # 从 market_daily 读取数据
-                cached = db['market_daily'].find_one({'trade_date': date_str}, {'_id': 0})
+                cached = repo.get_market_full(date_str)
                 if not cached:
                     logger.warning(f"补全 {date_str}: 无 market_daily 数据")
                     fail_count += 1

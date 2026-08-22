@@ -205,7 +205,7 @@ function MarketSignals({ date }) {
             <div className="flex items-center space-x-1.5 md:space-x-2">
               <div className="w-1 h-3 md:h-4 bg-amber-500 rounded-full"></div>
               <h3 className="text-xs md:text-sm font-bold text-gray-700">新高强力板块</h3>
-              <Tooltip title="筛选规则：先筛选RPS10/RPS20/RPS50其中之一>90的板块，再在这些板块中取当日收盘价创历史新高的个股，按行业聚类统计数量，取Top5">
+              <Tooltip title="筛选规则：先筛选RPS10/RPS50/RPS120其中之一>90的板块，再在这些板块中取当日收盘价创历史新高的个股，按行业聚类统计数量，取Top5">
                 <span className="text-[10px] md:text-xs text-gray-400 cursor-help">({industry_clusters.length}个)</span>
               </Tooltip>
             </div>
@@ -477,7 +477,7 @@ function MarketSignals({ date }) {
           <div className="flex items-center space-x-1.5 md:space-x-2 mb-2 md:mb-4">
             <div className="w-1 h-3 md:h-4 bg-orange-500 rounded-full"></div>
             <h3 className="text-xs md:text-sm font-bold text-gray-700">异动活跃板块</h3>
-            <Tooltip title="筛选规则：板块内流通市值>200亿且涨幅>5%的个股≥10只 + 其中RPS10+20+50>250占比>30% + 板块RPS10+20+50≤250 + 板块当日涨幅>2%">
+            <Tooltip title="筛选规则：板块内流通市值>200亿且涨幅>5%的个股≥10只 + 其中RPS10+50+120>250占比>30% + 板块RPS10+50+120≤250 + 板块当日涨幅>2%">
               <span className="text-[10px] md:text-xs text-gray-400 cursor-help">({active_sectors.length}个)</span>
             </Tooltip>
           </div>

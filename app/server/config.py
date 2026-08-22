@@ -21,16 +21,6 @@ class Settings(BaseSettings):
         description="CORS 允许的来源"
     )
     
-    # TDX 服务器列表（通达信数据源）
-    TDX_SERVERS: List[tuple] = Field(
-        default=[
-            ("180.153.18.170", 7709),
-            ("180.153.18.171", 7709),
-            ("60.12.136.250", 7709),
-        ],
-        description="通达信服务器列表"
-    )
-    
     # API 密钥
     LEGULEGU_TOKEN: str = Field(default="", description="乐咕乐股 PE 数据 Token")
     DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API Key")
@@ -46,6 +36,7 @@ class Settings(BaseSettings):
     
     # 日志配置
     LOG_LEVEL: str = Field(default="INFO", description="日志级别")
+    DEBUG: bool = Field(default=False, description="调试模式（异常响应是否回传内部细节）")
     
     # Tushare Token（可选）
     TUSHARE_TOKEN: str = Field(default="", description="Tushare API Token")

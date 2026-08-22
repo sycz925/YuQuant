@@ -291,6 +291,12 @@ def get_index_tdx_status(code: str, trade_date: str = None) -> str:
     return f'日{daily_status}周{weekly_status}'
 
 
+def delete_alerts(code: str) -> int:
+    """删除指定代码的全部均线预警记录（配合移除关注列表），返回删除数"""
+    from app.data.db import get_db
+    return get_db()[ALERT_COLL].delete_many({'code': code}).deleted_count
+
+
 def get_alerts(start_date: Optional[str] = None, end_date: Optional[str] = None,
                page: int = 1, page_size: int = 50) -> Dict:
     """分页查询预警记录"""

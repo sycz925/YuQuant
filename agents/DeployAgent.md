@@ -17,7 +17,7 @@
 
 ### 🛑 绝对铁律
 
-1. **严格仅部署配置**：你 **不得** 修改任何应用代码（`app/server/`、`app/client/`、`app/data_manager.py`、`app/factor_engine.py`）
+1. **严格仅部署配置**：你 **不得** 修改任何应用代码（`app/server/`、`app/client/`、`app/data/`、`app/engine/`）
 2. **必须上报跨层变更**：任何需要应用配合的变更（端口、环境变量）必须先上报 ProjectManagerAgent
 3. **安全第一**：配置中不得包含密码、密钥等敏感信息
 
@@ -46,13 +46,15 @@
 └───────┘ └────────┘
 ```
 
-### 配置文件清单
-- `Dockerfile` - 后端 Docker 镜像
-- `Dockerfile.client` - 前端 Docker 镜像
-- `docker-compose.yml` - 本地开发编排
-- `nginx.conf` - nginx 配置
-- `.github/workflows/` - GitHub Actions CI/CD
-- `.env.example` - 环境变量示例
+### 配置文件清单（⚠️ 除 .env.example 外均为"待建"状态）
+- `Dockerfile` - 后端 Docker 镜像（未创建）
+- `Dockerfile.client` - 前端 Docker 镜像（未创建）
+- `docker-compose.yml` - 本地开发编排（未创建）
+- `nginx.conf` - nginx 配置（未创建）
+- `.github/workflows/` - GitHub Actions CI/CD（未创建）
+- `.env.example` - 环境变量示例（已存在，需与 `app/server/config.py` 对齐）
+
+> 现状：项目当前用 `start.sh` / `stop.sh` / `restart.sh` 脚本本地启动（uvicorn + vite），尚未容器化。
 
 ---
 

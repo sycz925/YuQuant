@@ -14,7 +14,9 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from app.server.factories import get_index_factory, get_stock_factory, get_sector_factory, get_market_aggregator
-from app.data.db import get_db
+from app.server.repositories import (
+    get_stock_repo, get_sector_repo, get_index_repo, get_task_repo, get_system_config_repo,
+)
 from app.server.services.factors_service import (
     _compare_tasks,
     _compare_lock,
@@ -202,26 +204,18 @@ def get_sector_daily_data(
 ):
     """获取板块日线数据"""
     try:
-        db = get_db()
-
         if not end_date:
             end_date = datetime.now().strftime("%Y%m%d")
         if not start_date:
             start_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
 
-        query = {
-            'stock_code': code,
-            'trade_date': {'$gte': start_date, '$lte': end_date}
+        projection = {
+            '_id': 0, 'trade_date': 1, 'open': 1, 'high': 1, 'low': 1, 'close': 1,
+            'vol': 1, 'amount': 1, 'change_pct': 1,
+            'vol_ma5': 1, 'vol_ma10': 1, 'vol_ma20': 1, 'vol_ma50': 1,
+            'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1,
         }
-        cursor = db['sector_daily'].find(
-            query,
-            {'_id': 0, 'trade_date': 1, 'open': 1, 'high': 1, 'low': 1, 'close': 1,
-             'vol': 1, 'amount': 1, 'change_pct': 1,
-             'vol_ma5': 1, 'vol_ma10': 1, 'vol_ma20': 1, 'vol_ma50': 1,
-             'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'rps_120': 1, 'rps_250': 1}
-        ).sort('trade_date', -1).limit(limit)
-
-        items = list(cursor)
+        items = get_sector_repo().get_daily_bars(code, start_date, end_date, limit, projection)
         if not items:
             raise HTTPException(status_code=404, detail=f"板块 {code} 暂无数据")
 
@@ -246,12 +240,10 @@ def get_sector_stocks(
 ):
     """获取板块成分股列表（含当日行情+RPS）"""
     try:
-        db = get_db()
+        sector_repo = get_sector_repo()
+        stock_repo = get_stock_repo()
 
-        sector_doc = db['sector_basics'].find_one(
-            {'code': code},
-            {'_id': 0, 'name': 1, 'stock_codes': 1, 'stock_count': 1}
-        )
+        sector_doc = sector_repo.get_by_code(code)
         if not sector_doc:
             raise HTTPException(status_code=404, detail="未找到该板块")
 
@@ -266,13 +258,8 @@ def get_sector_stocks(
             }
 
         # 获取最新交易日
-        latest = db['stock_daily'].find_one(
-            {'stock_code': {'$in': stock_codes[:1]},  # 用第一个代码探测
-             'close': {'$gt': 0}},
-            sort=[('trade_date', -1)],
-            projection={'trade_date': 1, '_id': 0}
-        )
-        if not latest:
+        trade_date = stock_repo.get_latest_trade_date(stock_codes)
+        if not trade_date:
             return {
                 'success': True,
                 'sector_name': sector_doc.get('name', code),
@@ -280,41 +267,28 @@ def get_sector_stocks(
                 'trade_date': None,
                 'stocks': [],
             }
-        trade_date = latest['trade_date']
 
         # 批量查成分股行情
-        cursor = db['stock_daily'].find(
-            {
-                'stock_code': {'$in': stock_codes},
-                'trade_date': trade_date,
-                'close': {'$gt': 0},
-            },
-            {
-                '_id': 0,
-                'stock_code': 1,
-                'close': 1,
-                'chg_pct': 1,
-                'chg_5d': 1,
-                'chg_10d': 1,
-                'chg_20d': 1,
-                'chg_50d': 1,
-                'chg_120d': 1,
-                'rps_10': 1,
-                'rps_20': 1,
-                'rps_50': 1,
-            }
-        )
+        quotes = stock_repo.get_daily_quotes(stock_codes, trade_date, {
+            '_id': 0,
+            'stock_code': 1,
+            'close': 1,
+            'chg_pct': 1,
+            'chg_5d': 1,
+            'chg_10d': 1,
+            'chg_20d': 1,
+            'chg_50d': 1,
+            'chg_120d': 1,
+            'rps_10': 1,
+            'rps_50': 1,
+            'rps_120': 1,
+        })
 
         # 查股票名称
-        basics = {}
-        for b in db['stock_basics'].find(
-            {'stock_code': {'$in': stock_codes}},
-            {'_id': 0, 'stock_code': 1, 'stock_name': 1}
-        ):
-            basics[b['stock_code']] = b.get('stock_name', '')
+        basics = stock_repo.get_stock_names(stock_codes)
 
         stocks = []
-        for doc in cursor:
+        for doc in quotes:
             doc['name'] = basics.get(doc['stock_code'], doc['stock_code'])
             doc['change_pct'] = doc.pop('chg_pct')
             stocks.append(doc)
@@ -327,7 +301,7 @@ def get_sector_stocks(
             rps_threshold = 87
             filtered = []
             for doc in stocks:
-                rps_values = [v for v in (doc.get('rps_10'), doc.get('rps_20'), doc.get('rps_50')) if v is not None]
+                rps_values = [v for v in (doc.get('rps_10'), doc.get('rps_50'), doc.get('rps_120')) if v is not None]
                 red_count = sum(1 for v in rps_values if v > rps_threshold)
                 if rps_red == 'one' and red_count >= 1:
                     filtered.append(doc)
@@ -358,7 +332,6 @@ def update_disable_status(
 ):
     """批量更新禁用状态（is_disable字段）"""
     try:
-        db = get_db()
         for item in items:
             code = item.get('code', '')
             category = item.get('category', '')
@@ -368,18 +341,13 @@ def update_disable_status(
                 continue
 
             if category == 'index':
-                collection = 'index_basics'
+                get_index_repo().update_disable_status(code, disabled)
             elif category == 'sector':
-                collection = 'sector_basics'
+                get_sector_repo().update_disable_status(code, disabled)
             elif category == 'stock':
-                collection = 'stock_basics'
+                get_stock_repo().update_disable_status(code, disabled)
             else:
                 continue
-
-            db[collection].update_one(
-                {'code' if category != 'stock' else 'stock_code': code},
-                {'$set': {'is_disable': disabled}}
-            )
 
         return {'success': True, 'message': f'已更新 {len(items)} 个条目'}
     except Exception as e:
@@ -391,7 +359,6 @@ def update_disable_status(
 def create_item(item: Dict[str, Any]):
     """创建新条目（指数/板块/股票）"""
     try:
-        db = get_db()
         code = item.get('code', '')
         name = item.get('name', '')
         category = item.get('category', '')
@@ -401,22 +368,24 @@ def create_item(item: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="缺少必要参数")
 
         if category == 'index':
-            collection = 'index_basics'
+            repo = get_index_repo()
+            key = {'code': code}
             doc = {'code': code, 'name': name, 'tdx_code': tdx_code or code, 'is_disable': False}
         elif category == 'sector':
-            collection = 'sector_basics'
+            repo = get_sector_repo()
+            key = {'code': code}
             doc = {'code': code, 'name': name, 'tdx_code': tdx_code or code, 'stock_codes': [], 'is_disable': False}
         elif category == 'stock':
-            collection = 'stock_basics'
+            repo = get_stock_repo()
+            key = {'stock_code': code}
             doc = {'stock_code': code, 'stock_name': name, 'is_disable': False}
         else:
             raise HTTPException(status_code=400, detail=f"未知类别: {category}")
 
-        existing = db[collection].find_one({'code' if category != 'stock' else 'stock_code': code})
-        if existing:
+        if repo.find_one(key):
             return {'success': False, 'message': f'{category} {code} 已存在'}
 
-        db[collection].insert_one(doc)
+        repo.insert_one(doc)
         return {'success': True, 'message': f'已创建 {category} {code}'}
     except HTTPException:
         raise
@@ -475,7 +444,7 @@ def start_compare_sectors():
 async def import_sector_codes_from_excel(file: UploadFile):
     """从 Excel/CSV 导入板块代码，匹配本地缺少的板块（带 pytdx 成分股校验）"""
     try:
-        db = get_db()
+        sector_repo = get_sector_repo()
         
         content = await file.read()
         filename = file.filename or ''
@@ -508,9 +477,7 @@ async def import_sector_codes_from_excel(file: UploadFile):
         if not code_col or not name_col:
             return {'success': False, 'message': f'未找到 code/name 列，当前列: {list(df.columns)}'}
         
-        local_names = set(
-            doc['name'] for doc in db['sector_basics'].find({}, {'_id': 0, 'name': 1})
-        )
+        local_names = sector_repo.get_all_names()
         
         import sys
         if '_vendor/pytdx' not in sys.path:
@@ -550,7 +517,7 @@ async def import_sector_codes_from_excel(file: UploadFile):
                 skipped_no_data += 1
                 continue
             
-            db['sector_basics'].insert_one({
+            sector_repo.insert_one({
                 'code': code,
                 'tdx_code': code,
                 'name': name,
@@ -579,7 +546,7 @@ async def import_sector_codes_from_excel(file: UploadFile):
                         try:
                             api.connect(host, port)
                             for sector_code in imported_codes:
-                                sector_doc = db['sector_basics'].find_one({'code': sector_code})
+                                sector_doc = sector_repo.get_by_code(sector_code)
                                 if not sector_doc:
                                     continue
                                 
@@ -607,11 +574,7 @@ async def import_sector_codes_from_excel(file: UploadFile):
                                 from app.data.db import bulk_upsert_daily_data
                                 bulk_upsert_daily_data(sector_code, records, 'tdx_concept', 'sector')
                                 
-                                cursor = db['sector_daily'].find(
-                                    {'stock_code': sector_code},
-                                    {'_id': 0, 'trade_date': 1, 'close': 1, 'vol': 1}
-                                ).sort('trade_date', 1)
-                                all_data = list(cursor)
+                                all_data = sector_repo.get_daily_docs(sector_code)
                                 
                                 if len(all_data) >= 5:
                                     closes = [d['close'] for d in all_data]
@@ -661,10 +624,7 @@ async def import_sector_codes_from_excel(file: UploadFile):
                                             update_fields['is_final'] = True
                                         
                                         if update_fields:
-                                            db['sector_daily'].update_one(
-                                                {'stock_code': sector_code, 'trade_date': date},
-                                                {'$set': update_fields}
-                                            )
+                                            sector_repo.update_daily(sector_code, date, update_fields)
                                 
                                 logger.info(f"[导入] 板块 {sector_doc['name']}({sector_code}) 日线同步完成，{len(data)} 条")
                             
@@ -711,9 +671,7 @@ def get_deepseek_time_limit():
     """获取 DeepSeek 时间窗口限制配置及当前可用状态"""
     try:
         from app.server.api.deepseek_analyst import is_deepseek_available
-        db = get_db()
-        config = db['system_config'].find_one({'key': 'deepseek_time_limit'})
-        enabled = config.get('value', True) if config else True
+        enabled = get_system_config_repo().get_config('deepseek_time_limit', True)
         available, msg = is_deepseek_available()
         return {'success': True, 'enabled': enabled, 'available': available, 'message': msg}
     except Exception as e:
@@ -726,12 +684,7 @@ def set_deepseek_time_limit(enabled: bool = Query(..., description="是否启用
     """设置 DeepSeek 时间窗口限制配置"""
     try:
         from app.server.api.deepseek_analyst import is_deepseek_available
-        db = get_db()
-        db['system_config'].update_one(
-            {'key': 'deepseek_time_limit'},
-            {'$set': {'key': 'deepseek_time_limit', 'value': enabled, 'update_time': __import__('datetime').datetime.now()}},
-            upsert=True
-        )
+        get_system_config_repo().set_config('deepseek_time_limit', enabled)
         available, msg = is_deepseek_available()
         return {'success': True, 'enabled': enabled, 'available': available, 'message': msg}
     except Exception as e:
@@ -745,8 +698,8 @@ def set_deepseek_time_limit(enabled: bool = Query(..., description="是否启用
 def import_stocks(stocks: List[Dict[str, Any]]):
     """导入新增的个股到 stock_basics，并自动同步日线数据和技术指标"""
     try:
-        db = get_db()
         from datetime import datetime as _dt
+        stock_repo = get_stock_repo()
 
         imported_codes = []
         skipped = 0
@@ -758,12 +711,11 @@ def import_stocks(stocks: List[Dict[str, Any]]):
             if not code or not name:
                 continue
 
-            existing = db['stock_basics'].find_one({'stock_code': code})
-            if existing:
+            if stock_repo.get_by_code(code):
                 skipped += 1
                 continue
 
-            db['stock_basics'].insert_one({
+            stock_repo.insert_one({
                 'stock_code': code,
                 'stock_name': name,
                 'market': market,
@@ -843,8 +795,8 @@ def import_stocks(stocks: List[Dict[str, Any]]):
 def import_sectors(sectors: List[Dict[str, Any]]):
     """导入或更新板块：新增板块插入 sector_basics，已存在板块同步远程最新成分股"""
     try:
-        db = get_db()
         from datetime import datetime as _dt
+        sector_repo = get_sector_repo()
 
         imported_codes = []
         updated_codes = []
@@ -857,11 +809,11 @@ def import_sectors(sectors: List[Dict[str, Any]]):
             if not code or not name:
                 continue
 
-            existing = db['sector_basics'].find_one({'code': code})
+            existing = sector_repo.get_by_code(code)
             if existing:
                 old_codes = existing.get('stock_codes', [])
                 if set(old_codes) != set(stock_codes):
-                    db['sector_basics'].update_one(
+                    sector_repo.update_one(
                         {'code': code},
                         {'$set': {
                             'stock_codes': stock_codes,
@@ -874,7 +826,7 @@ def import_sectors(sectors: List[Dict[str, Any]]):
                     skipped += 1
                 continue
 
-            db['sector_basics'].insert_one({
+            sector_repo.insert_one({
                 'code': code,
                 'tdx_code': code,
                 'name': name,
@@ -903,8 +855,7 @@ def import_sectors(sectors: List[Dict[str, Any]]):
 def clear_sync_tasks():
     """清除所有同步任务状态"""
     try:
-        db = get_db()
-        db['sync_tasks'].delete_many({})
+        get_task_repo().clear_all()
         return {'success': True, 'message': '已清除所有同步任务'}
     except Exception as e:
         logger.error(f"清除同步任务失败: {e}")

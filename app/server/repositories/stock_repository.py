@@ -25,6 +25,23 @@ class StockRepository(BaseRepository):
                 {'_id': 0, 'stock_code': 1}
             )
         ]
+
+    def get_disabled_codes(self) -> set:
+        """获取所有禁用股票的代码集合"""
+        return {
+            doc['stock_code'] for doc in self.collection.find(
+                {'is_disable': True},
+                {'_id': 0, 'stock_code': 1}
+            )
+        }
+
+    def get_all_codes(self) -> set:
+        """获取所有股票代码集合"""
+        return {
+            doc.get('stock_code', '') for doc in self.collection.find(
+                {}, {'_id': 0, 'stock_code': 1}
+            )
+        }
     
     def get_enabled_list(self) -> List[Dict]:
         """获取所有启用的股票列表"""
@@ -63,6 +80,42 @@ class StockRepository(BaseRepository):
             query,
             {'_id': 0}
         ).sort('trade_date', -1).limit(limit))
+    
+    def get_latest_trade_date(self, codes: Optional[List[str]] = None) -> Optional[str]:
+        """获取最新交易日（可按 codes 探测）"""
+        query = {'close': {'$gt': 0}}
+        if codes:
+            query['stock_code'] = {'$in': list(codes[:1])}
+        latest = self.daily.find_one(
+            query, sort=[('trade_date', -1)], projection={'trade_date': 1, '_id': 0})
+        return latest['trade_date'] if latest else None
+    
+    def get_daily_quotes(self, codes: List[str], trade_date: str, projection: Dict) -> List[Dict]:
+        """获取指定交易日的成分股行情"""
+        return list(self.daily.find(
+            {'stock_code': {'$in': list(codes)}, 'trade_date': trade_date, 'close': {'$gt': 0}},
+            projection
+        ))
+    
+    def get_stock_names(self, codes: List[str]) -> Dict[str, str]:
+        """获取股票名映射 {stock_code: stock_name}"""
+        return {
+            b['stock_code']: b.get('stock_name', '') for b in self.collection.find(
+                {'stock_code': {'$in': list(codes)}},
+                {'_id': 0, 'stock_code': 1, 'stock_name': 1})
+        }
+
+    def get_liutong_map(self) -> Dict[str, Dict]:
+        """获取流通股本映射 {stock_code: {liutongguben, name}}"""
+        result = {}
+        for b in self.collection.find(
+            {'liutongguben': {'$gt': 0}},
+            {'_id': 0, 'stock_code': 1, 'liutongguben': 1, 'stock_name': 1}):
+            result[b['stock_code']] = {
+                'liutongguben': b.get('liutongguben', 0),
+                'name': b.get('stock_name', ''),
+            }
+        return result
     
     def count_documents(self, query: Optional[Dict] = None) -> int:
         """计数（覆盖基类，使用 stock_basics）"""

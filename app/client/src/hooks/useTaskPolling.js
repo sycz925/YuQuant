@@ -39,7 +39,7 @@ export function useTaskPolling(taskId, options = {}) {
     if (!taskId) return
 
     try {
-      const taskStatus = await taskApi.getTaskStatus(taskId)
+      const taskStatus = await taskApi.getStatus(taskId)
       setStatus(taskStatus)
 
       // 调用进度回调
@@ -85,7 +85,7 @@ export function useTaskPolling(taskId, options = {}) {
     setIsPolling(false)
   }, [])
 
-  // 自动启动
+  // 自动启动（taskId/start 变化时 cleanup 会 stop 旧定时器并重新 start，无需第二个 effect）
   useEffect(() => {
     if (taskId && autoStart) {
       start()
@@ -93,14 +93,6 @@ export function useTaskPolling(taskId, options = {}) {
 
     return () => stop()
   }, [taskId, autoStart, start, stop])
-
-  // taskId 变化时重新开始
-  useEffect(() => {
-    if (taskId && autoStart && isPolling) {
-      stop()
-      start()
-    }
-  }, [taskId])
 
   return {
     status,

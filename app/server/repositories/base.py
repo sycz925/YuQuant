@@ -66,9 +66,17 @@ class BaseRepository:
         return result.inserted_ids
     
     def update_one(self, query: Dict, update: Dict, upsert: bool = False) -> int:
-        """更新单条记录"""
+        """更新单条记录。
+
+        注意：返回 modified_count；当 upsert=True 且命中插入（而非更新）时 modified_count 为 0，
+        需判断是否发生插入时应改用 update_one_result() 读取 upserted_id。
+        """
         result = self.collection.update_one(query, update, upsert=upsert)
         return result.modified_count
+
+    def update_one_result(self, query: Dict, update: Dict, upsert: bool = False):
+        """更新单条记录并返回完整 UpdateResult（含 matched_count/modified_count/upserted_id）。"""
+        return self.collection.update_one(query, update, upsert=upsert)
     
     def update_many(self, query: Dict, update: Dict, upsert: bool = False) -> int:
         """更新多条记录"""

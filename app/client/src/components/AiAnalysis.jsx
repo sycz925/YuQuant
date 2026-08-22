@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Spin, Tag, Modal, Button, message } from 'antd'
 import { CameraOutlined } from '@ant-design/icons'
 import { toPng } from 'html-to-image'
-import { marketReviewApi, factorApi } from '../api'
+import { marketReviewApi, factorApi, taskApi } from '../api'
 import TacticalAllocationCard from './TacticalAllocationCard'
 
 // 风险等级颜色映射
@@ -136,7 +136,7 @@ function AiAnalysis({ date }) {
     if (pollingRef.current) clearInterval(pollingRef.current)
     pollingRef.current = setInterval(async () => {
       try {
-        const task = await marketReviewApi.getAiAnalysisTask(taskId)
+        const task = await taskApi.getStatus(taskId)
         if (task?.current_stock_name) {
           setTaskMessage(task.current_stock_name)
         }

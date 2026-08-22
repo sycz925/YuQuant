@@ -8,7 +8,7 @@ import pandas as pd
 from pypinyin import lazy_pinyin, Style
 
 from app.data.manager import get_data_manager
-from app.data.db import get_db
+from app.server.repositories import get_stock_repo
 from app.server.models import (
     StockBasic, StockListResponse, DailyDataResponse, DailyBar
 )
@@ -92,13 +92,10 @@ def get_stock_list(
             )
             df = df[mask].drop(columns=["_pinyin"], errors="ignore")
 
+        # 一次查询禁用股票代码（filter_mode 与 exclude_sync 共用）
+        disabled_codes = get_stock_repo().get_disabled_codes()
+
         if filter_mode in ('enabled', 'disabled'):
-            db = get_db()
-            # 从stock_basics的exclude字段获取禁用的股票
-            disabled_cursor = db['stock_basics'].find(
-                {'is_disable': True}, {'_id': 0, 'stock_code': 1}
-            )
-            disabled_codes = {d['stock_code'] for d in disabled_cursor}
             if filter_mode == 'disabled':
                 df = df[df['stock_code'].isin(disabled_codes)]
             else:
@@ -109,13 +106,6 @@ def get_stock_list(
         if page is not None:
             start = (page - 1) * page_size
             df = df.iloc[start:start + page_size]
-
-        # 获取禁用的股票代码
-        db = get_db()
-        disabled_cursor = db['stock_basics'].find(
-            {'is_disable': True}, {'_id': 0, 'stock_code': 1}
-        )
-        disabled_codes = {d['stock_code'] for d in disabled_cursor}
 
         stocks = []
         for _, row in df.iterrows():
@@ -147,12 +137,8 @@ def scan_new_stocks():
             sys.path.insert(0, '_vendor/pytdx')
         from pytdx.hq import TdxHq_API
 
-        db = get_db()
-
         # 获取已有股票代码
-        existing_codes = set()
-        for doc in db['stock_basics'].find({}, {'_id': 0, 'stock_code': 1}):
-            existing_codes.add(doc.get('stock_code', ''))
+        existing_codes = get_stock_repo().get_all_codes()
 
         # 从TDX扫描所有股票
         new_stocks = []

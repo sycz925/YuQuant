@@ -12,14 +12,8 @@ router = APIRouter(prefix="/api/settings-tasks", tags=["设置任务"])
 
 def _check_running_tasks(task_type: str):
     """检查是否有正在运行的同类任务"""
-    from app.data.db import get_db
-    db = get_db()
-
-    running_task = db['sync_tasks'].find_one(
-        {'status': 'running', 'current_stock_name': {'$regex': task_type}},
-        sort=[('created_at', -1)]
-    )
-    return running_task
+    from app.server.repositories import get_task_repo
+    return get_task_repo().find_running_by_stock_name(task_type)
 
 
 @router.post("/sync-indices")

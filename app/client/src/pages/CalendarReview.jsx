@@ -344,7 +344,7 @@ function CalendarReview({ latestTradeDate }) {
       }
       const poll = async () => {
         try {
-          const task = await taskApi.getTaskStatus(taskId)
+          const task = await taskApi.getStatus(taskId)
           if (task?.status === 'completed') {
             // 任务完成，读取缓存
             const cached = await calendarApi.getMonthlyCached(y, m)
@@ -488,7 +488,7 @@ function CalendarReview({ latestTradeDate }) {
       }
       const poll = async () => {
         try {
-          const task = await taskApi.getTaskStatus(taskId)
+          const task = await taskApi.getStatus(taskId)
           if (task?.status === 'completed') {
             // 任务完成，读取缓存
             const cached = await calendarApi.getWeeklyCached(y, m, weeklyMeta.week_index)
@@ -673,7 +673,7 @@ function CalendarReview({ latestTradeDate }) {
   useEffect(() => {
     const savedTaskId = sessionStorage.getItem(RECALC_TASK_KEY)
     if (savedTaskId) {
-      calendarApi.getTaskStatus(savedTaskId).then(res => {
+      taskApi.getStatus(savedTaskId).then(res => {
         if (res && res.status === 'running') {
           // 任务仍在跑，恢复轮询
           setMonthlyRecalcRunning(true)

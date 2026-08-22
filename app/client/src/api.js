@@ -69,10 +69,6 @@ export const factorApi = {
     api.get(`/factors/sectors/${code}/daily`, { params: { start_date: startDate, end_date: endDate, limit } }),
   getSectorStocks: (code, params = {}) =>
     api.get(`/factors/sectors/${code}/stocks`, { params }),
-  importSectorCodes: (formData) =>
-    api.post('/factors/sectors/import-codes', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    }),
   calculateRPS: (params = {}) =>
     api.post('/settings-tasks/calculate-rps', {}, { params }),
   clearTasks: () =>
@@ -87,8 +83,6 @@ export const factorApi = {
     api.post('/factors/disable', items),
   createItem: (item) =>
     api.post('/factors/create', item),
-  getStockList: (params = {}) =>
-    api.get('/stocks', { params }),
   compareStocksStart: () =>
     api.post('/factors/compare-stocks'),
   compareSectorsStart: () =>
@@ -114,7 +108,6 @@ export const syncApi = {
   syncBasics: () => api.post('/sync/basics'),
   syncDaily: (data) => api.post('/sync/daily', data),
   syncAllDaily: (data) => api.post('/settings-tasks/sync-daily', {}, { params: data }),
-  getTaskStatus: (taskId) => api.get(`/calendar/task/${taskId}`),
   cancelTask: (taskId) => api.delete(`/sync/task/${taskId}`),
   patchIsFinal: () => api.post('/sync/patch_is_final')
 }
@@ -138,7 +131,6 @@ export const marketReviewApi = {
   getBaseData: (params = {}) => api.get('/market-review/base-data', { params }),
   getAiAnalysis: (date) => api.get('/market-review/ai-analysis', { params: { date } }),
   generateAiAnalysis: (date) => api.post('/market-review/ai-analysis/generate', null, { params: { date } }),
-  getAiAnalysisTask: (taskId) => api.get(`/calendar/task/${taskId}`),
   getAiInputData: (date) => api.get('/market-review/ai-analysis/input-data', { params: { date } }),
   getGroupStats: (date) => api.get('/market-review/group-stats', { params: { date } }),
   getSectorDetail: (sectorCode) => api.get('/market-review/sector-detail', { params: { sector_code: sectorCode } }),
@@ -164,8 +156,6 @@ export const calendarApi = {
   getRunningTasks: () => api.get('/calendar/running-tasks'),
   // AI分析补全
   fillAiAnalysis: (year, month) => api.post('/calendar/fill-ai-analysis', null, { params: { year, month } }),
-  // 通用任务查询
-  getTaskStatus: (taskId) => api.get(`/calendar/task/${taskId}`),
 }
 
 export const searchApi = {
@@ -180,9 +170,9 @@ export const oneClickUpdateApi = {
 
 // 任务状态查询统一使用 taskApi
 
-// 通用任务查询
+// 通用任务查询（/calendar/task/:id 全项目唯一入口，勿在其他命名空间重复声明）
 export const taskApi = {
-  getTaskStatus: (taskId) => api.get(`/calendar/task/${taskId}`)
+  getStatus: (taskId) => api.get(`/calendar/task/${taskId}`)
 }
 
 export const etfApi = {

@@ -6,7 +6,7 @@ import { toPng } from 'html-to-image'
 import dayjs from 'dayjs'
 import MarketMonitor from './MarketMonitor'
 import MarketAnalysis from './MarketAnalysis'
-import { calendarApi, marketReviewApi, oneClickUpdateApi } from '../api'
+import { calendarApi, marketReviewApi, oneClickUpdateApi, taskApi } from '../api'
 import { useTaskPolling } from '../hooks/useTaskPolling'
 
 const TABS = [
@@ -81,7 +81,7 @@ function ReviewDetail({ latestTradeDate }) {
   useEffect(() => {
     const savedTaskId = sessionStorage.getItem(RECALC_TASK_KEY)
     if (savedTaskId) {
-      calendarApi.getTaskStatus(savedTaskId).then(res => {
+      taskApi.getStatus(savedTaskId).then(res => {
         if (res && res.status === 'running') {
           // 任务仍在跑，恢复轮询
           recalcNotifyKey.current = `recalc-${res.name || currentDate}`

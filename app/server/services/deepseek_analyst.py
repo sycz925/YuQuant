@@ -129,45 +129,16 @@ class DeepSeekAnalyst:
             logger.info(f"[DeepSeek] 请求报文长度: {len(user_message)} 字符")
             logger.info(f"[DeepSeek] 请求报文前500字: {user_message[:500]}")
 
-            kwargs = {
-                'model': self.model,
-                'response_format': {'type': 'json_object'},
-                'messages': [
-                    {'role': 'system', 'content': SYSTEM_PROMPT},
-                    {'role': 'user', 'content': user_message},
-                ],
-                'max_tokens': 4096,
-                'timeout': 120,
-            }
-
-            if self.enable_thinking:
-                kwargs['reasoning_effort'] = 'high'
-                kwargs['extra_body'] = {'thinking': {'type': 'enabled'}}
-            else:
-                kwargs['temperature'] = self.temperature
-
             logger.info(f"[DeepSeek] 调用 API, model={self.model}, enable_thinking={self.enable_thinking}")
-            response = client.chat.completions.create(**kwargs)
-            content = response.choices[0].message.content
+            content = self._chat_complete(client, user_message)
             logger.info(f"[DeepSeek] 响应长度: {len(content) if content else 0} 字符")
             logger.info(f"[DeepSeek] 响应前500字: {content[:500] if content else 'None'}")
 
             if not content:
-                logger.warning("[DeepSeek] 返回空 content，重试一次")
-                response = client.chat.completions.create(**kwargs)
-                content = response.choices[0].message.content
-                logger.info(f"[DeepSeek] 重试响应长度: {len(content) if content else 0}")
+                logger.warning("[DeepSeek] content 为空（推理耗尽 token 预算），返回降级数据")
+                return self._fallback()
 
-            try:
-                result = json.loads(content)
-            except json.JSONDecodeError as e:
-                logger.warning(f"[DeepSeek] JSON 解析失败: {e}")
-                logger.warning(f"[DeepSeek] 原始响应: {content}")
-                logger.warning("[DeepSeek] 重试一次...")
-                response = client.chat.completions.create(**kwargs)
-                content = response.choices[0].message.content
-                logger.info(f"[DeepSeek] 重试响应前500字: {content[:500] if content else 'None'}")
-                result = json.loads(content)
+            result = json.loads(content)
 
             required_keys = ['market_phase_diagnosis', 'industry_cluster_evaluation', 'execution_strategy_advice']
             for key in required_keys:
@@ -180,6 +151,67 @@ class DeepSeekAnalyst:
         except Exception as e:
             logger.error(f"[DeepSeek] API 调用失败: {e}")
             return self._fallback()
+
+    def _build_kwargs(self, user_message: str, use_thinking: bool, max_tokens: int = 8192) -> Dict[str, Any]:
+        """构建 chat.completions 请求参数。
+
+        thinking 模式下推理（reasoning_content）会先消耗 token 预算，max_tokens 须放大
+        给 content 预留空间；关闭 thinking 时只能用 temperature（思考模式不支持
+        temperature/top_p 等采样参数，设置不报错但不生效）。
+        """
+        kwargs: Dict[str, Any] = {
+            'model': self.model,
+            'response_format': {'type': 'json_object'},
+            'messages': [
+                {'role': 'system', 'content': SYSTEM_PROMPT},
+                {'role': 'user', 'content': user_message},
+            ],
+            'max_tokens': max_tokens,
+            'timeout': 300,
+        }
+        if use_thinking:
+            kwargs['reasoning_effort'] = 'high'
+            kwargs['extra_body'] = {'thinking': {'type': 'enabled'}}
+        else:
+            kwargs['temperature'] = self.temperature
+            kwargs['extra_body'] = {'thinking': {'type': 'disabled'}}
+        return kwargs
+
+    def _chat_complete(self, client, user_message: str) -> Optional[str]:
+        """先 thinking 模式生成；content 为空或 JSON 解析失败时，显式关闭 thinking 重试。
+
+        背景：thinking 模式默认开启，推理会先吃 token 预算，max_tokens 不够时 content
+        会被截断为空或半截 JSON。重试若仍开启 thinking，预算一样被吃光，必然再次失败。
+        因此兜底必须显式 extra_body={'thinking': {'type': 'disabled'}} 再发一次。
+        """
+        # 第一次：thinking high（保留深度思考质量）
+        content = None
+        try:
+            content = client.chat.completions.create(**self._build_kwargs(user_message, True)).choices[0].message.content
+        except Exception as e:
+            logger.warning(f"[DeepSeek] thinking 调用失败: {e}")
+
+        if content:
+            try:
+                json.loads(content)
+                return content
+            except json.JSONDecodeError as e:
+                logger.warning(f"[DeepSeek] thinking JSON 解析失败: {e}")
+
+        # 降级：关闭 thinking 重试
+        logger.warning("[DeepSeek] content 为空或 JSON 不完整，显式关闭 thinking 重试")
+        try:
+            content = client.chat.completions.create(**self._build_kwargs(user_message, False)).choices[0].message.content
+            if content:
+                json.loads(content)  # 校验成功才返回
+                return content
+        except json.JSONDecodeError as e:
+            logger.warning(f"[DeepSeek] 关闭 thinking 后 JSON 仍解析失败: {e}")
+        except Exception as e:
+            logger.error(f"[DeepSeek] 关闭 thinking 重试失败: {e}")
+            return None
+
+        return None
 
     def _build_user_message(self, market_data: Dict[str, Any]) -> str:
         """构建发送给 DeepSeek 的用户消息"""
@@ -265,10 +297,17 @@ class DeepSeekAnalyst:
                     )
                     prev_ai = (prev_doc or {}).get('ai_analysis') or {}
                     prev_diagnosis = prev_ai.get('market_phase_diagnosis') or ''
+                    prev_cluster = prev_ai.get('industry_cluster_evaluation') or ''
+                    prev_parts = []
                     if prev_diagnosis and prev_ai.get('source') != 'failed':
+                        prev_parts.append(prev_diagnosis)
+                    if prev_cluster and prev_ai.get('source') != 'failed':
+                        prev_parts.append(prev_cluster)
+                    if prev_parts:
                         msg_parts.append("")
-                        msg_parts.append(f"【上个交易日市场阶段诊断】（{prev_dates[0]}）")
-                        msg_parts.append(prev_diagnosis)
+                        msg_parts.append(f"【上个交易日诊断】（{prev_dates[0]}）")
+                        raw = "\n".join(prev_parts)
+                        msg_parts.append(raw.replace('**', ''))
             except Exception as e:
                 logger.warning(f"[DeepSeek] 获取上个交易日阶段诊断失败: {e}")
 

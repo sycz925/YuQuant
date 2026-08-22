@@ -1,8 +1,8 @@
 /**
  * usePolling - 通用轮询 Hook
- * 支持页面隐藏暂停、指数退避、自动清理
+ * 支持页面隐藏暂停、重试上限、自动清理
  */
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 
 /**
  * 轮询 Hook
@@ -11,22 +11,22 @@ import { useEffect, useRef, useCallback } from 'react'
  * @param {boolean} enabled - 是否启用轮询
  * @param {Object} options - 配置选项
  * @param {boolean} options.pauseOnHidden - 页面隐藏时暂停（默认 true）
- * @param {number} options.maxRetries - 最大重试次数（默认 3）
- * @param {number} options.backoffMultiplier - 退避倍数（默认 2）
+ * @param {number} options.maxRetries - 连续失败最大重试次数（默认 3）
  */
 export function usePolling(callback, interval, enabled = true, options = {}) {
   const {
     pauseOnHidden = true,
-    maxRetries = 3,
-    backoffMultiplier = 2
+    maxRetries = 3
   } = options
 
+  // isPaused 需响应式（供外部消费），isPausedRef 供定时器回调内判断（避免 isPaused 变化重建定时器）
+  const [isPaused, setIsPaused] = useState(false)
+  const isPausedRef = useRef(false)
   const callbackRef = useRef(callback)
   const intervalRef = useRef(null)
   const retryCountRef = useRef(0)
-  const isPausedRef = useRef(false)
 
-  // 更新 callback ref
+  // 更新 callback ref，保证定时器始终调用最新回调
   useEffect(() => {
     callbackRef.current = callback
   }, [callback])
@@ -36,11 +36,8 @@ export function usePolling(callback, interval, enabled = true, options = {}) {
     if (!pauseOnHidden) return
 
     const handleVisibilityChange = () => {
-      if (document.hidden) {
-        isPausedRef.current = true
-      } else {
-        isPausedRef.current = false
-      }
+      isPausedRef.current = document.hidden
+      setIsPaused(document.hidden)
     }
 
     document.addEventListener('visibilitychange', handleVisibilityChange)
@@ -49,31 +46,6 @@ export function usePolling(callback, interval, enabled = true, options = {}) {
     }
   }, [pauseOnHidden])
 
-  // 执行轮询
-  const poll = useCallback(async () => {
-    if (isPausedRef.current) return
-
-    try {
-      await callbackRef.current()
-      retryCountRef.current = 0
-    } catch (error) {
-      console.error('[usePolling] 轮询失败:', error)
-      retryCountRef.current++
-
-      if (retryCountRef.current >= maxRetries) {
-        console.error('[usePolling] 达到最大重试次数，停止轮询')
-        stop()
-      }
-    }
-  }, [maxRetries])
-
-  // 启动轮询
-  const start = useCallback(() => {
-    if (intervalRef.current) return
-
-    intervalRef.current = setInterval(poll, interval)
-  }, [interval, poll])
-
   // 停止轮询
   const stop = useCallback(() => {
     if (intervalRef.current) {
@@ -81,6 +53,27 @@ export function usePolling(callback, interval, enabled = true, options = {}) {
       intervalRef.current = null
     }
   }, [])
+
+  // 执行一次轮询
+  const poll = useCallback(async () => {
+    try {
+      await callbackRef.current()
+      retryCountRef.current = 0
+    } catch (error) {
+      retryCountRef.current++
+      if (retryCountRef.current >= maxRetries) {
+        stop()
+      }
+    }
+  }, [maxRetries, stop])
+
+  // 启动轮询（定时器回调内读 isPausedRef，isPaused 变化不重建定时器）
+  const start = useCallback(() => {
+    if (intervalRef.current) return
+    intervalRef.current = setInterval(() => {
+      if (!isPausedRef.current) poll()
+    }, interval)
+  }, [interval, poll])
 
   // 重置重试计数
   const resetRetries = useCallback(() => {
@@ -102,7 +95,7 @@ export function usePolling(callback, interval, enabled = true, options = {}) {
     start,
     stop,
     resetRetries,
-    isPaused: isPausedRef.current
+    isPaused
   }
 }
 

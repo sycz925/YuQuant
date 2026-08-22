@@ -10,7 +10,7 @@ from datetime import datetime as _dt, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.data.db import get_db
+from app.server.repositories import get_market_review_repo, get_sector_repo, get_stock_repo
 from app.data.task_manager import get_task_manager
 from app.server.services.market_data import (
     get_latest_trade_date,
@@ -40,7 +40,7 @@ def get_base_data(
 ):
     """统一基础数据接口：从 base_data_daily 读取，支持周期聚合"""
     try:
-        db = get_db()
+        repo = get_market_review_repo()
 
         # 根据周期决定数据量
         period_days = {'day': 120, 'week': 365, 'month': 365 * 3, 'quarter': 365 * 5, 'year': 365 * 10}
@@ -60,18 +60,16 @@ def get_base_data(
             raise HTTPException(status_code=400, detail=f"未知type: {type}")
 
         # 读取数据
-        cursor = db['base_data_daily'].find(filter_q, fields).sort('date', -1).limit(days)
-        data = list(cursor)
+        data = repo.get_base_data_list(filter_q, fields, days)
         data.reverse()
 
         # 检查是否需要补充最新日期（base_data_daily 比 stock_daily 滞后）
-        latest_stock = db['stock_daily'].find_one(sort=[('trade_date', -1)], projection={'_id': 0, 'trade_date': 1})
+        latest_stock_date = repo.get_latest_stock_date()
         latest_base = data[-1]['date'] if data else ''
-        if latest_stock and latest_stock['trade_date'] > latest_base:
+        if latest_stock_date and latest_stock_date > latest_base:
             # 补充缺失日期的实时计算并落库
             from pymongo import UpdateOne
-            missing_dates = [d for d in sorted(db['stock_daily'].distinct('trade_date'), reverse=True)
-                           if d > latest_base][:5]
+            missing_dates = [d for d in repo.get_stock_trade_dates() if d > latest_base][:5]
             bulk_ops = []
             for md in missing_dates:
                 row = _compute_realtime(type, md)
@@ -79,7 +77,7 @@ def get_base_data(
                     data.append(row)
                     bulk_ops.append(UpdateOne({'date': md}, {'$set': row}, upsert=True))
             if bulk_ops:
-                db['base_data_daily'].bulk_write(bulk_ops, ordered=False)
+                repo.bulk_write_base(bulk_ops)
                 logger.info(f"[base-data] 盘中补充{len(bulk_ops)}天数据到base_data_daily")
             data.sort(key=lambda x: x['date'])
 
@@ -90,11 +88,7 @@ def get_base_data(
         # 叠加指数数据
         if index_code and data:
             idx_dates = [d['date'] for d in data]
-            idx_cursor = db['index_daily'].find(
-                {'stock_code': index_code, 'trade_date': {'$in': idx_dates}},
-                {'_id': 0, 'trade_date': 1, 'close': 1}
-            ).sort('trade_date', 1)
-            idx_map = {d['trade_date']: d['close'] for d in idx_cursor}
+            idx_map = repo.get_index_daily(index_code, idx_dates)
             if idx_map:
                 vals = list(idx_map.values())
                 min_v, max_v = min(vals), max(vals)
@@ -118,18 +112,17 @@ def get_base_data(
 def get_market_overview_endpoint(date: Optional[str] = Query(None)):
     """主要大盘指数涨跌幅"""
     try:
-        db = get_db()
+        repo = get_market_review_repo()
         
         # 确定日期
         if not date:
-            latest_doc = db['base_data_daily'].find_one(sort=[('date', -1)], projection={'_id': 0, 'date': 1})
-            date = latest_doc['date'] if latest_doc else get_latest_trade_date(db)
+            date = repo.get_latest_base_date() or get_latest_trade_date()
         
         if not date:
             raise HTTPException(status_code=404, detail="无交易数据")
         
         # 检查market_daily中是否有该日期的数据
-        cached = db['market_daily'].find_one({'trade_date': date}, {'_id': 0, 'overview': 1})
+        cached = repo.get_cached(date, 'overview')
         if not cached or not cached.get('overview'):
             raise HTTPException(status_code=404, detail=f"日期 {date} 无市场概览数据，请先执行一键更新")
         
@@ -165,12 +158,12 @@ def get_market_signals_endpoint(date: Optional[str] = Query(None)):
 def get_new_high_blocks_endpoint(date: Optional[str] = Query(None)):
     """新高强力板块"""
     try:
-        db = get_db()
+        repo = get_market_review_repo()
         if not date:
-            date = get_latest_trade_date(db)
+            date = get_latest_trade_date()
 
         # 优先从 market_daily 缓存读取
-        cached = db['market_daily'].find_one({'trade_date': date}, {'_id': 0, 'new_high': 1})
+        cached = repo.get_cached(date, 'new_high')
         if cached and cached.get('new_high'):
             nh = cached['new_high']
             return {
@@ -196,10 +189,10 @@ def get_new_high_blocks_endpoint(date: Optional[str] = Query(None)):
 def get_low_position_sectors(date: Optional[str] = Query(None)):
     """低位潜力板块（只读 market_daily）"""
     try:
-        db = get_db()
+        repo = get_market_review_repo()
         if not date:
-            date = get_latest_trade_date(db)
-        cached = db['market_daily'].find_one({'trade_date': date}, {'_id': 0, 'low_position_sectors': 1})
+            date = get_latest_trade_date()
+        cached = repo.get_cached(date, 'low_position_sectors')
         if cached and cached.get('low_position_sectors'):
             return {
                 'success': True,
@@ -216,10 +209,10 @@ def get_low_position_sectors(date: Optional[str] = Query(None)):
 def get_active_sectors(date: Optional[str] = Query(None)):
     """异动活跃板块（只读 market_daily）"""
     try:
-        db = get_db()
+        repo = get_market_review_repo()
         if not date:
-            date = get_latest_trade_date(db)
-        cached = db['market_daily'].find_one({'trade_date': date}, {'_id': 0, 'active_sectors': 1})
+            date = get_latest_trade_date()
+        cached = repo.get_cached(date, 'active_sectors')
         if cached and cached.get('active_sectors'):
             return {
                 'success': True,
@@ -236,13 +229,13 @@ def get_active_sectors(date: Optional[str] = Query(None)):
 def get_group_stats(date: Optional[str] = Query(None, description="交易日期 YYYYMMDD")):
     """获取分组统计数据（从 market_daily 缓存读取）"""
     try:
-        db = get_db()
+        repo = get_market_review_repo()
         if not date:
-            date = get_latest_trade_date(db)
+            date = get_latest_trade_date()
         if not date:
             raise HTTPException(status_code=404, detail="无交易数据")
 
-        cached = db['market_daily'].find_one({'trade_date': date}, {'_id': 0, 'group_stats': 1})
+        cached = repo.get_cached(date, 'group_stats')
         if cached and cached.get('group_stats'):
             return {
                 'success': True,
@@ -272,15 +265,14 @@ def get_ai_analysis(date: Optional[str] = Query(None, description="交易日期 
     无缓存：返回 need_generate
     """
     try:
-        db = get_db()
+        repo = get_market_review_repo()
 
         # 优先从 base_data_daily 确定日期
         if not date:
-            latest_doc = db['base_data_daily'].find_one(sort=[('date', -1)], projection={'_id': 0, 'date': 1})
-            date = latest_doc['date'] if latest_doc else get_latest_trade_date(db)
+            date = repo.get_latest_base_date() or get_latest_trade_date()
         
         # 从 market_daily 读取 AI 缓存
-        cached = db['market_daily'].find_one({'trade_date': date}, {'_id': 0})
+        cached = repo.get_cached(date)
         existing_ai = cached.get('ai_analysis') if cached else None
         is_final = cached.get('is_final', False) if cached else False
 
@@ -334,22 +326,21 @@ def get_ai_analysis(date: Optional[str] = Query(None, description="交易日期 
 def generate_ai_analysis(date: Optional[str] = Query(None, description="交易日期 YYYYMMDD")):
     """启动 AI 分析后台任务"""
     try:
-        db = get_db()
+        repo = get_market_review_repo()
         tm = get_task_manager()
 
         # 优先从 base_data_daily 读取指标（快）
         if not date:
-            latest_doc = db['base_data_daily'].find_one(sort=[('date', -1)], projection={'_id': 0, 'date': 1})
-            date = latest_doc['date'] if latest_doc else get_latest_trade_date(db)
+            date = repo.get_latest_base_date() or get_latest_trade_date()
         
-        base_data = db['base_data_daily'].find_one({'date': date}, {'_id': 0})
+        base_data = repo.get_base_data(date)
         if not base_data:
             raise HTTPException(status_code=404, detail=f"无 {date} 的基础数据，请先同步数据")
 
         trade_date = date
 
         # 检查是否已有缓存
-        cached = db['market_daily'].find_one({'trade_date': trade_date}, {'_id': 0})
+        cached = repo.get_cached(trade_date)
         existing_ai = cached.get('ai_analysis') if cached else None
 
         def _is_after_market(gen_time_str):
@@ -391,10 +382,7 @@ def generate_ai_analysis(date: Optional[str] = Query(None, description="交易�
                     pass
 
         if existing_ai and existing_ai.get('source') == 'failed':
-            db['market_daily'].update_one(
-                {'trade_date': trade_date},
-                {'$unset': {'ai_analysis': ''}}
-            )
+            repo.unset_cached_field(trade_date, 'ai_analysis')
 
         # 创建后台任务
         task_id = tm.create_task(name='AI 综合研判')
@@ -408,7 +396,7 @@ def generate_ai_analysis(date: Optional[str] = Query(None, description="交易�
 
                 # 2. 从 market_daily 读取完整数据
                 tm.update_task_progress(task_id, current_stock_name="读取预计算数据...")
-                cached = db['market_daily'].find_one({'trade_date': trade_date}, {'_id': 0})
+                cached = repo.get_cached(trade_date)
                 if not cached:
                     tm.fail_task(task_id, "预计算失败，无 market_daily 数据")
                     return
@@ -436,16 +424,11 @@ def generate_ai_analysis(date: Optional[str] = Query(None, description="交易�
             except Exception as e:
                 logger.error(f"AI分析任务失败: {e}")
                 try:
-                    db['market_daily'].update_one(
-                        {'trade_date': trade_date},
-                        {'$set': {
-                            'ai_analysis': {
-                                'source': 'failed',
-                                'error': str(e)[:500],
-                                'generated_at': _dt.now().isoformat(),
-                            }
-                        }}
-                    )
+                    repo.set_cached_field(trade_date, 'ai_analysis', {
+                        'source': 'failed',
+                        'error': str(e)[:500],
+                        'generated_at': _dt.now().isoformat(),
+                    })
                 except Exception:
                     pass
                 try:
@@ -474,9 +457,9 @@ def generate_ai_analysis(date: Optional[str] = Query(None, description="交易�
 def get_ai_input_data(date: str = Query(..., description="交易日期 YYYYMMDD")):
     """获取传给DeepSeek的输入数据（从缓存读取）"""
     try:
-        db = get_db()
+        repo = get_market_review_repo()
 
-        cached = db['market_daily'].find_one({'trade_date': date}, {'_id': 0})
+        cached = repo.get_cached(date)
         if not cached:
             raise HTTPException(status_code=404, detail=f"日期 {date} 无预计算数据")
 
@@ -509,22 +492,23 @@ def get_ai_input_data(date: str = Query(..., description="交易日期 YYYYMMDD"
 def get_sector_detail(sector_code: str = Query(..., description="板块代码")):
     """获取板块详情：先锋、中军、后排（懒加载：查询时检查并计算）"""
     try:
-        db = get_db()
+        sector_repo = get_sector_repo()
+        stock_repo = get_stock_repo()
+        repo = get_market_review_repo()
         
-        sector_doc = db['sector_basics'].find_one({'code': sector_code}, {'_id': 0, 'name': 1, 'stock_codes': 1})
+        sector_doc = sector_repo.get_by_code(sector_code)
         if not sector_doc:
             raise HTTPException(status_code=404, detail="未找到该板块")
         
         sector_name = sector_doc.get('name', sector_code)
         stock_codes = sector_doc.get('stock_codes', [])
         
-        latest_stock = db['stock_daily'].find_one(sort=[('trade_date', -1)])
-        if not latest_stock:
+        trade_date = repo.get_latest_stock_date()
+        if not trade_date:
             raise HTTPException(status_code=404, detail="无数据")
-        trade_date = latest_stock['trade_date']
         
-        sector_daily_doc = db['sector_daily'].find_one(
-            {'stock_code': sector_code, 'trade_date': trade_date},
+        sector_daily_doc = sector_repo.get_sector_daily_field(
+            sector_code, trade_date,
             {'_id': 0, 'pioneer': 1, 'main_force': 1, 'followers': 1}
         )
         
@@ -548,14 +532,10 @@ def get_sector_detail(sector_code: str = Query(..., description="板块代码"))
                 'followers': [],
             }
         
-        liutong_map = {}
-        for b in db['stock_basics'].find({'liutongguben': {'$gt': 0}}, {'_id': 0, 'stock_code': 1, 'liutongguben': 1, 'stock_name': 1}):
-            liutong_map[b['stock_code']] = {'liutongguben': b.get('liutongguben', 0), 'name': b.get('stock_name', '')}
+        liutong_map = stock_repo.get_liutong_map()
         
-        stocks = list(db['stock_daily'].find(
-            {'stock_code': {'$in': stock_codes}, 'trade_date': trade_date, 'close': {'$gt': 0}},
-            {'_id': 0, 'stock_code': 1, 'close': 1, 'chg_50d': 1, 'chg_pct': 1}
-        ))
+        stocks = stock_repo.get_daily_quotes(stock_codes, trade_date,
+            {'_id': 0, 'stock_code': 1, 'close': 1, 'chg_50d': 1, 'chg_pct': 1})
         
         if not stocks:
             return {
@@ -586,16 +566,11 @@ def get_sector_detail(sector_code: str = Query(..., description="板块代码"))
         by_mv_asc_chg = sorted(by_mv_asc, key=lambda x: -(x.get('chg_pct', 0) or 0))[:2]
         followers = [f"{s['name']}({s.get('chg_pct', 0) or 0:+.1f}%)" for s in by_mv_asc_chg]
         
-        from pymongo import UpdateOne
-        db['sector_daily'].update_one(
-            {'stock_code': sector_code, 'trade_date': trade_date},
-            {'$set': {
-                'pioneer': pioneer,
-                'main_force': main_force,
-                'followers': followers,
-            }},
-            upsert=True
-        )
+        sector_repo.update_daily(sector_code, trade_date, {
+            'pioneer': pioneer,
+            'main_force': main_force,
+            'followers': followers,
+        })
         
         return {
             'success': True,
@@ -622,9 +597,9 @@ def calc_ma_breadth_history(period: str = 'day', index_code: str = None) -> Dict
     """
     from datetime import date as _date
     import calendar
-    db = get_db()
+    repo = get_market_review_repo()
 
-    all_dates = sorted(db['stock_daily'].distinct('trade_date'), reverse=True)
+    all_dates = repo.get_stock_trade_dates()
     if not all_dates:
         return {'success': False, 'message': '无交易数据'}
 
@@ -645,7 +620,7 @@ def calc_ma_breadth_history(period: str = 'day', index_code: str = None) -> Dict
         }},
         {'$sort': {'_id': 1}}
     ]
-    results = list(db['stock_daily'].aggregate(pipeline))
+    results = repo.aggregate_stock_daily(pipeline)
 
     daily_data = {}
     for r in results:
@@ -682,11 +657,7 @@ def calc_ma_breadth_history(period: str = 'day', index_code: str = None) -> Dict
         idx_start = start_date
         idx_end = all_dates[0]
 
-        idx_cursor = db['index_daily'].find(
-            {'stock_code': index_code, 'trade_date': {'$gte': idx_start, '$lte': idx_end}},
-            {'_id': 0, 'trade_date': 1, 'close': 1}
-        ).sort('trade_date', 1)
-        idx_raw = {d['trade_date']: d['close'] for d in idx_cursor}
+        idx_raw = repo.get_index_daily_range(index_code, idx_start, idx_end)
 
         if idx_raw:
             vals = list(idx_raw.values())

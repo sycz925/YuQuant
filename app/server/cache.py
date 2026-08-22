@@ -1,8 +1,11 @@
 """
 全局内存缓存 - 避免频繁查询数据库
 """
+import logging
 import threading
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # 全局缓存
 _cache = {
@@ -37,9 +40,9 @@ def init_trade_dates():
         with _lock:
             _cache['trade_dates'] = dates
             _cache['latest_trade_date'] = latest
-        print(f"[缓存] 初始化交易日: {len(dates)} 天, 最新: {latest}")
+        logger.info(f"[缓存] 初始化交易日: {len(dates)} 天, 最新: {latest}")
     except Exception as e:
-        print(f"[缓存] 初始化交易日失败: {e}")
+        logger.error(f"[缓存] 初始化交易日失败: {e}")
 
 
 def get_latest_trade_date() -> str:

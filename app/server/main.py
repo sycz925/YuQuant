@@ -12,6 +12,7 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -115,17 +116,32 @@ app.add_middleware(
 )
 
 
+# 参数校验异常处理器
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """参数校验失败 - 返回 422 与可读的字段错误（不泄露内部信息）"""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "code": 422,
+            "message": "参数校验失败",
+            "detail": exc.errors(),
+        }
+    )
+
+
 # 全局异常处理器
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """全局异常处理 - 统一错误响应格式"""
-    logger.error(f"未处理的异常: {exc}", exc_info=True)
+    """全局异常处理 - 统一错误响应格式（生产环境不泄露内部细节）"""
+    logger.error("未处理的异常", exc_info=True)
+    detail = str(exc) if settings.DEBUG else "服务器内部错误"
     return JSONResponse(
         status_code=500,
         content={
             "code": 500,
             "message": "服务器内部错误",
-            "detail": str(exc)
+            "detail": detail,
         }
     )
 

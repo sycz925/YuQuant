@@ -37,46 +37,47 @@
 #### 后端
 - **Web 框架**：FastAPI
 - **API 文档**：Swagger (OpenAPI)
-- **数据获取**：AkShare
-- **数据存储**：SQLite + HDF5
+- **数据获取**：PyTdX → AkShare → BaoStock → yfinance（另 Tushare / TQCenter / Tencent）
+- **数据存储**：MongoDB（pymongo）
 - **数据处理**：NumPy + Pandas
-- **验证**：Pydantic
+- **验证**：Pydantic v2（pydantic-settings）
 
 #### 前端
 - **框架**：React 18
 - **构建**：Vite
-- **路由**：React Router
-- **样式**：Tailwind CSS
-- **图表**：Recharts
+- **路由**：React Router v6
+- **样式**：Tailwind CSS + antd 6
+- **图表**：echarts + recharts + lightweight-charts（审计建议收敛到 1~2 套，见 docs/refactor-audit.md）
 - **HTTP**：Axios
+- **服务端状态**：@tanstack/react-query（已引入，未全量使用）
 
 ### 核心模块接口
 
-#### 后端数据模块
+#### 后端数据模块（`app/data/manager.py`，单例 `get_data_manager()`）
 ```python
-# app/data_manager.py
 class DataManager:
-    def __init__(self, db_path: str, hdf5_path: str)
-    def sync_stock_basics(self) -> None
-    def sync_daily_data(self, stock_codes: List[str], start_date: str, end_date: str) -> Tuple[int, int, bool]
-    def get_stock_universe(self, trade_date: str) -> List[str]
-    def get_daily_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame
-    def get_adj_close(self, stock_code: str, trade_date: str) -> float
-
-# app/factor_engine.py
-class FactorEngine:
-    def __init__(self, data_manager: DataManager)
-    def calculate_cr5_percent(self, trade_date: str) -> float
-    def get_all_cr5_history(self, start_date: str, end_date: str) -> pd.Series
+    def sync_stock_basics(self) -> int
+    def sync_index_basics(self) -> int
+    def sync_etf_basics(self) -> int
+    def sync_daily_data(self, stock_codes: List[str], end_date: str = None, ...) -> dict
+    def sync_sector_indices(self, task_id=None, progress_callback=None, ...) -> dict
+    def calculate_rps(self, target: str = 'all', max_dates: Optional[int] = None) -> dict
+    def calculate_all_derived_fields(self, target: str = 'all', trade_date: str = None, backfill: bool = False) -> dict
+    def get_stock_list(self) -> pd.DataFrame
+    def get_stock_daily_data(self, stock_code: str, start_date=None, end_date=None) -> pd.DataFrame
 ```
 
-#### 后端 API 契约
+#### 后端 API 契约（`app/server/api/`，统一前缀 `/api`）
 ```python
-# app/server/api/
-- /api/stocks (GET) - 获取股票列表
-- /api/stocks/{code}/daily (GET) - 获取日线数据
-- /api/factors/cr5 (GET) - 获取 CR5 因子
-- /api/sync/daily (POST) - 同步数据
+- /api/stocks (GET)                  - 获取股票列表
+- /api/stocks/{code}/daily (GET)     - 获取日线数据
+- /api/factors/cr5 (GET)             - 获取 CR5 因子
+- /api/market_analysis (GET)         - 市场分析
+- /api/market-review/* (GET)         - 市场复盘
+- /api/calendar/* (GET/POST)         - 日历 / 周月总结
+- /api/etf (GET)  /  /api/watchlist (GET)  - ETF 与关注列表
+- /api/sync/daily (POST)             - 数据同步
+- /health (GET)                      - 健康检查
 ```
 
 ---

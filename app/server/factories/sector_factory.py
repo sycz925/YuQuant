@@ -53,7 +53,7 @@ class SectorFactory:
                 {'trade_date': latest_date},
                 {'_id': 0, 'stock_code': 1, 'close': 1, 'chg_pct': 1,
                  'chg_5d': 1, 'chg_10d': 1, 'chg_20d': 1, 'chg_50d': 1, 'chg_120d': 1,
-                 'rps_10': 1, 'rps_20': 1, 'rps_50': 1},
+                 'rps_10': 1, 'rps_50': 1, 'rps_120': 1},
             )
             daily_map = {d['stock_code']: d for d in daily_cursor}
             for item in items:
@@ -66,8 +66,8 @@ class SectorFactory:
                 item['chg_50d'] = daily.get('chg_50d')
                 item['chg_120d'] = daily.get('chg_120d')
                 item['rps_10'] = daily.get('rps_10')
-                item['rps_20'] = daily.get('rps_20')
                 item['rps_50'] = daily.get('rps_50')
+                item['rps_120'] = daily.get('rps_120')
                 item['exclude_sync'] = item.get('is_disable', False)
         
         # 关键词搜索
@@ -89,7 +89,7 @@ class SectorFactory:
         # 排序
         if sort_by and sort_by in ('code', 'name', 'close', 'change_pct',
                                    'chg_5d', 'chg_10d', 'chg_20d', 'chg_50d', 'chg_120d',
-                                   'rps_10', 'rps_20', 'rps_50'):
+                                    'rps_10', 'rps_50', 'rps_120'):
             reverse = sort_order == 'desc'
             items.sort(key=lambda i: (i.get(sort_by) if i.get(sort_by) is not None else (float('-inf') if reverse else float('inf'))), reverse=reverse)
 
@@ -98,7 +98,7 @@ class SectorFactory:
             rps_threshold = 87
             filtered = []
             for item in items:
-                rps_values = [v for v in (item.get('rps_10'), item.get('rps_20'), item.get('rps_50')) if v is not None]
+                rps_values = [v for v in (item.get('rps_10'), item.get('rps_50'), item.get('rps_120')) if v is not None]
                 red_count = sum(1 for v in rps_values if v > rps_threshold)
                 if rps_red == 'one' and red_count >= 1:
                     filtered.append(item)

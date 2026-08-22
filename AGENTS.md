@@ -28,8 +28,8 @@
 | **ProjectManagerAgent** | **全局生命周期编排**：业务分解、动态里程碑规划、子代理调度、双轨资产收敛审计 | `autoproject` | `AGENTS.md`、`README.md`、`docs/plans/` | **只有 PM 代理可以触发跨层变更**：所有跨层修改必须通过 PM 代理，且在执行前必须输出影响仪表盘 |
 | **ArchitectAgent** | **系统架构拓扑**：技术栈基线、数据建模（Schema）、解耦接口契约设计（不生成业务逻辑代码） | `autoproject`、`VibeSec-Skill` | `docs/architecture/`、`docs/database/`、`docs/api/` | **不修改代码**：ArchitectAgent 不得触碰 `app/` 下的任何实现代码；仅设计文档 |
 | **FeatureAgent** | **单体业务实现**：端到端全栈代码逻辑（仅在单模块小项目模式下启用） | `autoproject`、`ui-ux-pro-max`、`VibeSec-Skill` | `app/`（统一代码根） | **DISABLED IN MULTI-MODULE MODE** - 在多模块模式下自动禁用 |
-| **FrontendAgent** | **客户端展示层**：UI/UX 交互、状态管理、现代前端工程、React前端开发 | `autoproject`、`ui-ux-pro-max` | `app/client/` | **严格仅前端**：FrontendAgent 不得修改任何后端代码（`app/server/`、`app/core/`）、数据库架构或 NGINX/Docker 基础设施配置。必须向 PM 代理上报任何跨层变更 |
-| **BackendAgent** | **服务器端领域层**：FastAPI后端、高并发业务逻辑、持久化、数据同步 | `autoproject`、`VibeSec-Skill` | `app/server/` | **严格仅后端**：BackendAgent 不得触碰任何前端 UI 代码（`app/client/`）、CSS/HTML/JS 或展示层逻辑。必须向 PM 代理上报任何跨层变更 |
+| **FrontendAgent** | **客户端展示层**：UI/UX 交互、状态管理、现代前端工程、React前端开发 | `autoproject`、`ui-ux-pro-max` | `app/client/` | **严格仅前端**：FrontendAgent 不得修改任何后端代码（`app/server/`、`app/data/`、`app/engine/`）、数据库架构或 NGINX/Docker 基础设施配置。必须向 PM 代理上报任何跨层变更 |
+| **BackendAgent** | **服务器端领域层**：FastAPI后端、高并发业务逻辑、持久化、数据同步、因子引擎 | `autoproject`、`VibeSec-Skill` | `app/server/`、`app/data/`、`app/engine/` | **严格仅后端**：BackendAgent 不得触碰任何前端 UI 代码（`app/client/`）、CSS/HTML/JS 或展示层逻辑。必须向 PM 代理上报任何跨层变更 |
 | **DeployAgent** | **基础设施（Infra）**：多阶段容器化（Docker）、多容器全栈编排、CI/CD GitOps 流水线、自动化运维脚本 | `autoproject` | `Dockerfile`、`docker-compose.yml`、`.github/workflows/`、`nginx.conf` | **严格仅 Infra**：DeployAgent 不得修改 `app/` 下的任何应用代码；仅基础设施与部署配置。必须向 PM 代理上报任何跨层变更 |
 
 ## 3. 动态调度与仲裁路由规则
@@ -49,12 +49,12 @@
 
 ## 4. 里程碑流水线执行约束
 
-在执行 `docs/plans/YYYY-MM-DD-development-plan.md` 时，以下强制链适用：
+在执行 `docs/plans/YYYY-MM-DD-<slug>.md`（如 `docs/plans/2026-08-08-watchlist-alert-design.md`）时，以下强制链适用：
 1. **前置检查**：读取当前里程碑的 `[负责代理]` 和 `[可用技能]`。
 2. **执行**：激活挂载技能进行本地化领域编码。禁止跨里程碑、非原子交付。
 3. **后置检查**：验证交付物和测试基线。在请求用户授权解锁下一个里程碑前，更新双轨资产。
 
-<!-- Context-Archived: 2026-07-24 全面文档同步审计：README/docs/architecture/database/api 根据实际代码重写覆盖，修正数据源优先级(PyTdX→AkShare→BaoStock→yfinance)，补充Factory+Orchestrator架构描述，更新MongoDB集合名与实际一致 -->
+<!-- Context-Archived: 2026-08 代码审计与代理配置对齐：修正代理文件过时技术栈(SQLite/HDF5→MongoDB、移除 sentiment_engine、data_manager.py→data/manager.py)，重写第6节日期查询结论(定宽零填充下字典序=日期序)，新增第7节架构分层契约；审计产出 docs/refactor-audit.md -->
 
 ## 5. 临时脚本与日志目录约定
 
@@ -63,57 +63,58 @@
 - 根目录下 `logs/`：服务运行日志输出目录，已加入 `.gitignore`。
 - 一次性脚本用完即归档至 `tmp/`，禁止散落在根目录或 `scripts/` 下。
 
-## 6. MongoDB 查询注意事项（重要）
+## 6. MongoDB 日期范围查询规范（重要）
 
-> **已发生两次同类问题，必须严格遵守**
+> 此前版本将 `trade_date` 的 `$lte/$gte` 查询标记为"字典序陷阱"，经 2026-08 代码审计复核后**更正结论**，请以本节为准。
 
-### 问题背景
-`trade_date` 字段存储为字符串格式 `YYYYMMDD`（如 `"20260724"`）。使用 `$lte/$gte/$lt/$gt` 比较操作符时，MongoDB 执行的是**字典序比较**，而非日期比较。
+### 正确结论
+`trade_date` 以**定宽 8 位零填充字符串** `YYYYMMDD` 存储（写入侧统一 `strftime('%Y%m%d')`）。对于定宽零填充字符串，**字典序与日期序完全一致**，因此 `$lte/$gte/$lt/$gt` 比较是**安全且推荐**的，无需"先 distinct 再 Python 过滤"的降级写法（那反而是 O(N) 反模式）。
 
-### 为什么会出问题
-1. **字典序 vs 日期序**：`"20260710" < "20260709"` 在字典序下为 `False`，但日期上应该是 `True`
-2. **查询返回空结果**：直接查 `trade_date: "20260710"` 能找到数据，但 `$lte: "20260710"` 可能返回 0 条
-3. **隐蔽性高**：代码不会报错，只是静默返回错误结果
+### 真正需要防范的风险
+1. **非零填充**：如 `"202679"` vs `"2026109"`，一旦混入非定宽日期，字典序就会错乱。
+2. **格式混用**：`"2026-07-24"`、`"2026/07/24"`、`"20260724"` 混存。
+3. **写入侧未规范化**：任何新写入路径都必须保证日期为 `YYYYMMDD` 零填充。
 
-### 正确做法
+### 正确做法（收口到单一 helper，已落地 `app/data/db.py`）
 ```python
-# ❌ 错误示例（可能返回空结果）
-db['index_daily'].find({
-    'stock_code': '880003',
-    'trade_date': {'$lte': '20260710'}
-})
+# app/data/db.py —— 统一日期范围查询构建，一处保证零填充
+def _norm_date(d: str) -> str:
+    """接受 YYYYMMDD / YYYY-MM-DD / YYYY/MM/DD，输出零填充 YYYYMMDD。"""
+    s = str(d).strip()
+    for fmt in ('%Y%m%d', '%Y-%m-%d', '%Y/%m/%d'):
+        try:
+            return datetime.strptime(s, fmt).strftime('%Y%m%d')
+        except ValueError:
+            continue
+    raise ValueError(f"无法识别的日期格式: {d!r}")
 
-# ✅ 正确示例（先用 $lte 查询，再验证结果）
-query = {'stock_code': '880003', 'trade_date': {'$lte': '20260710'}}
-count = db['index_daily'].count_documents(query)
-if count == 0:
-    # 降级方案：先查所有日期，再过滤
-    all_dates = db['index_daily'].distinct('trade_date', {'stock_code': '880003'})
-    valid_dates = [d for d in all_dates if d <= '20260710']
-    # 然后用 $in 查询
-    docs = list(db['index_daily'].find({
-        'stock_code': '880003',
-        'trade_date': {'$in': valid_dates}
-    }))
+def build_date_range_query(start=None, end=None) -> dict:
+    q = {}
+    if start or end:
+        q['trade_date'] = {}
+        if start: q['trade_date']['$gte'] = _norm_date(start)
+        if end:   q['trade_date']['$lte'] = _norm_date(end)
+    return q
 ```
 
-### 调试清单
-当 `$lte/$gte` 查询返回空结果时：
-1. 用 `count_documents()` 验证查询是否有结果
-2. 用 `distinct('trade_date')` 检查实际存在的日期
-3. 用 Python 过滤验证字典序比较是否正确
-4. 检查索引是否正常：`list(db['collection'].list_indexes())`
+### 审计结论（2026-08 复核）
+- 现有代码中 `trade_date` 均零填充，`$lte/$gte` 使用安全，无空结果隐患。
+- 优化方向：把散落在 `app/server/services/`、`app/data/db.py`、`app/engine/` 等处的日期范围查询统一收口到 `build_date_range_query()`（见 `docs/refactor-audit.md` P2），并为核心查询补单测。
 
-### 已知风险点
-| 文件 | 行号 | 查询模式 | 状态 |
-|------|------|----------|------|
-| `app/engine/watchlist_alert.py` | 254 | `$lte` on trade_date | ⚠️ 需验证 |
-| `app/server/services/market_data.py` | 多处 | `$gte/$lte` on trade_date | ⚠️ 需验证 |
-| `app/server/services/market_sectors.py` | 多处 | `$gte/$lte` on trade_date | ⚠️ 需验证 |
-| `app/data/db.py` | 多处 | `$gte/$lte` on trade_date | ⚠️ 需验证 |
+## 7. 架构分层契约（重构铁律，2026-08 起强制）
 
-### 预防措施
-1. **写入时验证**：确保 `trade_date` 格式始终为 `YYYYMMDD`
-2. **查询后验证**：重要查询后用 `count_documents()` 或 `len(list(...))` 验证结果数量
-3. **单元测试**：为涉及日期范围查询的功能编写测试用例
-4. **代码审查**：新代码使用 `$lte/$gte` 操作符时必须仔细审查
+> 背景：审计发现 API 层 146 处直连 `db['xxx']`，架空了已建的 repositories/factories/orchestrators 分层。详见 `docs/refactor-audit.md`。
+
+| 分层 | 职责 | 是否允许访问 `get_db()` |
+| :--- | :--- | :--- |
+| **api/** | 薄路由：参数解析、调用 Service、组装响应 | ❌ 禁止直连集合 |
+| **services/** | 业务编排：领域逻辑、缓存读写、跨 Repository 编排 | ❌ 通过 Repository |
+| **repositories/** | 数据访问：**唯一允许访问 `get_db()`/`collection` 的层** | ✅ 唯一白名单 |
+| **factories/** | 计算工厂：CR5/板块/指数等派生指标计算，纯函数优先 | ❌ 通过 Repository |
+| **orchestrators/** | 任务编排：一键更新/月度重算等多步任务流程 | ❌ 通过 Service/Repository |
+| **data/** | 数据源与持久化：`manager.py`(DataManager)、`sources/`、`db.py`(底层 CRUD + 日期 helper) | ✅ 底层封装 |
+| **engine/** | 因子引擎：`factor_engine.py`、`rps_calculator.py`、`watchlist_alert.py`、`ene_alert.py` | 通过 `data/db.py` 封装 |
+
+**强制规则**：
+1. 新增/修改路由时，禁止 `from app.data.db import get_db` 后直连集合，必须经 Repository。
+2. 新增/修改 API 契约、数据 Schema 属于**跨层变更**，必须先报 PM 输出影响仪表盘并等待确认。

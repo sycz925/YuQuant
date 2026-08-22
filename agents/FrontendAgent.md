@@ -17,7 +17,7 @@
 
 ### 🛑 绝对铁律
 
-1. **严格仅前端**：你 **不得** 修改任何后端代码（`app/server/`、`app/data_manager.py`、`app/factor_engine.py`、`app/sentiment_engine.py`、数据库 Schema、Docker、nginx）
+1. **严格仅前端**：你 **不得** 修改任何后端代码（`app/server/`、`app/data/`、`app/engine/`、数据库 Schema、Docker、nginx）
 2. **必须上报跨层变更**：任何需要后端配合的变更（新 API、数据格式变更）必须先上报 ProjectManagerAgent
 3. **文档语言一致性**：所有生成的文档必须使用中文
 
@@ -39,21 +39,21 @@
 - **构建工具**：Vite
 - **路由**：React Router v6
 - **样式**：Tailwind CSS
-- **图表**：Recharts
-- **HTTP 客户端**：Axios
+- **图表**：echarts + recharts + lightweight-charts（审计建议收敛到 1~2 套）
+- **HTTP 客户端**：Axios（封装于 `app/client/src/api.js`）
+- **服务端状态**：@tanstack/react-query（优先 useQuery，勿手写 setInterval 轮询）
 
 ### 目录结构
 ```
 app/client/
 ├── public/
 ├── src/
-│   ├── components/       - 通用组件
-│   ├── pages/            - 页面组件
-│   │   ├── MarketMonitor.jsx
-│   │   └── StockAnalysis.jsx
-│   ├── api.js            - API 封装
-│   ├── App.jsx           - 应用入口
-│   ├── main.jsx
+│   ├── components/       - 通用组件（含 calendar/、settings/ 子目录）
+│   ├── pages/            - 页面组件（CalendarReview/ETFPage/SectorPage/WatchlistPage 等 14+ 页面）
+│   ├── hooks/            - 自定义 Hooks（usePolling/useTaskPolling/useOneClickUpdate/useScreenshot）
+│   ├── api.js            - API 封装（axios 实例 + 各域 API 命名空间）
+│   ├── App.jsx           - 应用入口（路由 + 全局轮询）
+│   ├── main.jsx          - 入口（React Query Provider）
 │   └── index.css
 ├── package.json
 ├── vite.config.js
@@ -62,8 +62,11 @@ app/client/
 ```
 
 ### 核心页面
-1. **MarketMonitor** - 市场监控（CR5 拥挤度）
-2. **StockAnalysis** - 个股技术分析（K线图、均线）
+1. **CalendarReview** - 日历复盘（默认首页 `/`）
+2. **MarketMonitor** - 市场监控（CR5 拥挤度）
+3. **StockAnalysis** - 个股技术分析（K线图、均线）
+4. **ETFPage / WatchlistPage / SectorPage** - 板块 / ETF / 关注列表
+5. 其余路由见 `App.jsx` 的 `<Routes>` 表
 
 ---
 

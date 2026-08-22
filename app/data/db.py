@@ -9,8 +9,12 @@ from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
 import pandas as pd
 
+import logging
+
 # 加载环境变量
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # 全局数据库连接实例
 _db_instance = None
@@ -47,6 +51,35 @@ def get_collection(data_type: str):
 def get_all_daily_collections():
     """返回所有日线集合"""
     return [get_db()[name] for name in COLLECTION_MAP.values()]
+
+
+# ==================== 日期范围查询工具 ====================
+
+def _norm_date(d: str) -> str:
+    """规范化日期为 YYYYMMDD 零填充字符串。
+
+    接受 YYYYMMDD / YYYY-MM-DD / YYYY/MM/DD；非法格式抛 ValueError。
+    零填充保证字典序 == 日期序，使 $gte/$lte 比较安全。
+    """
+    s = str(d).strip()
+    for fmt in ('%Y%m%d', '%Y-%m-%d', '%Y/%m/%d'):
+        try:
+            return datetime.strptime(s, fmt).strftime('%Y%m%d')
+        except ValueError:
+            continue
+    raise ValueError(f"无法识别的日期格式: {d!r}")
+
+
+def build_date_range_query(start: Optional[str] = None, end: Optional[str] = None) -> Dict[str, Any]:
+    """构建 trade_date 范围查询（YYYYMMDD 零填充，$gte/$lte 安全）。"""
+    q: Dict[str, Any] = {}
+    if start or end:
+        q['trade_date'] = {}
+        if start:
+            q['trade_date']['$gte'] = _norm_date(start)
+        if end:
+            q['trade_date']['$lte'] = _norm_date(end)
+    return q
 
 
 def _create_indexes(db):
@@ -108,22 +141,28 @@ def upsert_stock_basics(stock_code: str, stock_name: str, market: str, **kwargs)
             upsert=True
         )
     except Exception as e:
-        print(f"更新股票基础信息失败 {stock_code}: {e}")
+        logger.error(f"更新股票基础信息失败 {stock_code}: {e}")
 
 
 def bulk_upsert_stock_basics(docs: List[Dict[str, Any]]):
-    """批量更新或插入股票基础信息"""
+    """批量更新或插入股票基础信息（bulk_write 高性能版本）"""
+    if not docs:
+        return
+    from pymongo import UpdateOne
     db = get_db()
+    update_time = datetime.utcnow()
+    operations = []
     for doc in docs:
-        doc['update_time'] = datetime.utcnow()
-        try:
-            db['stock_basics'].update_one(
-                {'stock_code': doc['stock_code']},
-                {'$set': doc},
-                upsert=True
-            )
-        except Exception as e:
-            print(f"批量更新股票基础信息失败 {doc['stock_code']}: {e}")
+        doc['update_time'] = update_time
+        operations.append(UpdateOne(
+            {'stock_code': doc['stock_code']},
+            {'$set': doc},
+            upsert=True
+        ))
+    try:
+        db['stock_basics'].bulk_write(operations, ordered=False)
+    except Exception as e:
+        logger.error(f"批量更新股票基础信息失败: {e}")
 
 
 def get_stock_basics(stock_code: Optional[str] = None) -> pd.DataFrame:
@@ -170,7 +209,7 @@ def set_xdxr_fingerprint(stock_code: str, fingerprint: Optional[str]) -> None:
             upsert=True
         )
     except Exception as e:
-        print(f"记录xdxr指纹失败 {stock_code}: {e}")
+        logger.error(f"记录xdxr指纹失败 {stock_code}: {e}")
 
 
 def upsert_daily_data(stock_code: str, trade_date: str, data: Dict[str, Any], data_source: str = 'unknown', data_type: str = 'stock'):
@@ -191,7 +230,7 @@ def upsert_daily_data(stock_code: str, trade_date: str, data: Dict[str, Any], da
             upsert=True
         )
     except Exception as e:
-        print(f"更新日线数据失败 {stock_code} {trade_date}: {e}")
+        logger.error(f"更新日线数据失败 {stock_code} {trade_date}: {e}")
 
 
 def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_source: str = 'unknown', data_type: str = 'stock'):
@@ -340,7 +379,7 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
         try:
             coll.bulk_write(operations, ordered=False)
         except Exception as e:
-            print(f"批量更新日线数据失败 {stock_code}: {e}")
+            logger.error(f"批量更新日线数据失败 {stock_code}: {e}")
 
 
 def get_daily_data(stock_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None, data_type: str = 'stock') -> pd.DataFrame:
@@ -380,21 +419,18 @@ def has_daily_data(stock_code: str, start_date: Optional[str] = None, end_date: 
     return count > 0
 
 
-def get_stock_sync_start_date(stock_code: str) -> Optional[str]:
-    """获取单只股票的同步起始日期
+def _get_sync_start_date(data_type: str, code: str) -> Optional[str]:
+    """查询某类型标的最新同步起始日（stock/sector 通用）。
 
     逻辑：
-    1. 查询该股票最新数据日期
+    1. 查询该标的最新数据日期
     2. 如果没有数据 → 返回 None（需要全量同步）
     3. 如果最新数据 is_final=True（收盘数据）→ 返回下一天
     4. 如果最新数据 is_final=False（盘中数据）→ 返回那天本身（需要重新同步）
     """
-    from datetime import datetime as dt, timedelta
-
-    # 查询该股票最新数据
-    coll = get_collection('stock')
+    coll = get_collection(data_type)
     latest = coll.find_one(
-        {'stock_code': stock_code},
+        {'stock_code': code},
         sort=[('trade_date', -1)],
         projection={'trade_date': 1, 'is_final': 1, '_id': 0}
     )
@@ -408,7 +444,7 @@ def get_stock_sync_start_date(stock_code: str) -> Optional[str]:
     if is_final:
         # 已收盘数据，从下一天开始同步
         try:
-            dt_obj = dt.strptime(latest_date, '%Y%m%d')
+            dt_obj = datetime.strptime(latest_date, '%Y%m%d')
             next_day = dt_obj + timedelta(days=1)
             return next_day.strftime('%Y%m%d')
         except Exception:
@@ -416,44 +452,16 @@ def get_stock_sync_start_date(stock_code: str) -> Optional[str]:
     else:
         # 盘中数据，需要从那天重新同步
         return latest_date
+
+
+def get_stock_sync_start_date(stock_code: str) -> Optional[str]:
+    """获取单只股票的同步起始日期"""
+    return _get_sync_start_date('stock', stock_code)
 
 
 def get_sector_sync_start_date(sector_code: str) -> Optional[str]:
-    """获取单个板块的同步起始日期
-
-    逻辑：
-    1. 查询该板块最新数据日期
-    2. 如果没有数据 → 返回 None（需要全量同步）
-    3. 如果最新数据 is_final=True（收盘数据）→ 返回下一天
-    4. 如果最新数据 is_final=False（盘中数据）→ 返回那天本身（需要重新同步）
-    """
-    from datetime import datetime as dt, timedelta
-
-    # 查询该板块最新数据
-    coll = get_collection('sector')
-    latest = coll.find_one(
-        {'stock_code': sector_code},
-        sort=[('trade_date', -1)],
-        projection={'trade_date': 1, 'is_final': 1, '_id': 0}
-    )
-
-    if not latest:
-        return None  # 没有数据，需要全量同步
-
-    latest_date = latest['trade_date']
-    is_final = latest.get('is_final', False)  # 旧数据默认为已收盘
-
-    if is_final:
-        # 已收盘数据，从下一天开始同步
-        try:
-            dt_obj = dt.strptime(latest_date, '%Y%m%d')
-            next_day = dt_obj + timedelta(days=1)
-            return next_day.strftime('%Y%m%d')
-        except Exception:
-            return None
-    else:
-        # 盘中数据，需要从那天重新同步
-        return latest_date
+    """获取单个板块的同步起始日期"""
+    return _get_sync_start_date('sector', sector_code)
 
 
 def bulk_patch_is_final() -> Dict[str, int]:
@@ -539,22 +547,28 @@ def upsert_etf_basics(code: str, name: str):
             upsert=True
         )
     except Exception as e:
-        print(f"更新ETF基础信息失败 {code}: {e}")
+        logger.error(f"更新ETF基础信息失败 {code}: {e}")
 
 
 def bulk_upsert_etf_basics(docs: List[Dict[str, Any]]):
-    """批量更新或插入ETF基础信息"""
+    """批量更新或插入ETF基础信息（bulk_write 高性能版本）"""
+    if not docs:
+        return
+    from pymongo import UpdateOne
     db = get_db()
+    update_time = datetime.utcnow()
+    operations = []
     for doc in docs:
-        doc['update_time'] = datetime.utcnow()
-        try:
-            db['etf_basics'].update_one(
-                {'code': doc['code']},
-                {'$set': doc},
-                upsert=True
-            )
-        except Exception as e:
-            print(f"批量更新ETF基础信息失败 {doc['code']}: {e}")
+        doc['update_time'] = update_time
+        operations.append(UpdateOne(
+            {'code': doc['code']},
+            {'$set': doc},
+            upsert=True
+        ))
+    try:
+        db['etf_basics'].bulk_write(operations, ordered=False)
+    except Exception as e:
+        logger.error(f"批量更新ETF基础信息失败: {e}")
 
 
 def get_etf_basics(code: Optional[str] = None) -> pd.DataFrame:

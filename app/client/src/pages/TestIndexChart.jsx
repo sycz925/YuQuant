@@ -42,10 +42,6 @@ const TestIndexChart = () => {
         
         const indexList = res.index_data?.[selectedIndex] || []
         
-        console.log('=== 调试信息 ===')
-        console.log('CR5数据:', cr5List.length, '条')
-        console.log('指数数据:', indexList.length, '条')
-        
         // 创建日期映射
         const indexMap = {}
         indexList.forEach(item => {
@@ -60,10 +56,6 @@ const TestIndexChart = () => {
           normal: item.value < 50 ? item.value : 50,
           crowded: item.value >= 50 ? item.value : 50,
         }))
-        
-        console.log('合并后数据:', mergedData.length, '条')
-        console.log('前3条数据:', mergedData.slice(0, 3))
-        console.log('有指数值的数量:', mergedData.filter(d => d.shValue != null).length)
         
         setData(mergedData)
       } catch (e) {

@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class StockBasic(BaseModel):
@@ -79,8 +79,7 @@ class SyncRequest(BaseModel):
     max_workers: Optional[int] = Field(4, alias="maxWorkers", description="最大线程数（默认4）")
     min_days: Optional[int] = Field(None, alias="minDays", description="最小上市天数（可选，过滤不满足条件的股票）")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SyncResponse(BaseModel):
@@ -110,8 +109,8 @@ class EtfListItem(BaseModel):
     chg_50d: Optional[float] = Field(None, description="50日涨幅%")
     chg_120d: Optional[float] = Field(None, description="120日涨幅%")
     rps_10: Optional[int] = Field(None, description="RPS 10日")
-    rps_20: Optional[int] = Field(None, description="RPS 20日")
     rps_50: Optional[int] = Field(None, description="RPS 50日")
+    rps_120: Optional[int] = Field(None, description="RPS 120日")
 
 
 class EtfListResponse(BaseModel):
@@ -138,8 +137,8 @@ class WatchlistItem(BaseModel):
     chg_50d: Optional[float] = Field(None, description="50日涨幅%")
     chg_120d: Optional[float] = Field(None, description="120日涨幅%")
     rps_10: Optional[int] = Field(None, description="RPS 10日")
-    rps_20: Optional[int] = Field(None, description="RPS 20日")
     rps_50: Optional[int] = Field(None, description="RPS 50日")
+    rps_120: Optional[int] = Field(None, description="RPS 120日")
     tdx_status: Optional[str] = Field(None, description="通达信MA7状态: red/green/blue")
 
 

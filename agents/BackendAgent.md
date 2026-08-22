@@ -39,25 +39,29 @@
 - **ASGI 服务器**：Uvicorn
 - **验证**：Pydantic v2
 - **数据处理**：NumPy、Pandas
-- **数据存储**：SQLite、HDF5
-- **数据源**：AkShare
+- **数据存储**：MongoDB（pymongo）
+- **数据源**：PyTdX → AkShare → BaoStock → yfinance（另 Tushare / TQCenter / Tencent）
 
 ### 目录结构
 ```
 app/
-├── data_manager.py      - 数据管理（已存在，复用）
-├── factor_engine.py     - 因子引擎（已存在，复用）
-├── sentiment_engine.py  - 舆情引擎（已存在，复用）
-│
+├── data/
+│   ├── manager.py       - DataManager（数据管理单例，get_data_manager()）
+│   ├── db.py            - MongoDB 底层 CRUD + 日期查询 helper
+│   └── sources/         - 数据源（pytdx/akshare/baostock/yfinance/tushare/tqcenter/tencent_mv）
+├── engine/
+│   ├── factor_engine.py - 因子引擎
+│   ├── rps_calculator.py
+│   ├── watchlist_alert.py
+│   └── ene_alert.py
 └── server/
-    ├── __init__.py
     ├── main.py          - FastAPI 应用入口
     ├── models.py        - Pydantic 模型
-    └── api/
-        ├── __init__.py
-        ├── stocks.py    - 股票 API
-        ├── factors.py   - 因子 API
-        └── sync.py      - 数据同步 API
+    ├── api/             - 路由（薄层，禁止直连 db）
+    ├── services/        - 业务编排
+    ├── repositories/    - 数据访问（唯一允许 get_db 的层）
+    ├── factories/       - 计算工厂
+    └── orchestrators/   - 任务编排
 ```
 
 ### 核心 API 端点
@@ -73,19 +77,8 @@ app/
 ## 开发规范
 
 ### 1. API 响应格式
-```python
-# 成功响应
-{
-    "success": true,
-    "data": {...}
-}
-
-# 错误响应
-{
-    "success": false,
-    "error": "错误信息"
-}
-```
+> 现状：列表接口返回 `{total, data}`；健康检查返回 `{status, timestamp, version, latest_trade_date}`；全局异常处理器返回 `{code, message, detail}`（见 `app/server/main.py`）。
+> 重构方向：按 `docs/refactor-audit.md` 统一为 `{code, message, data}` 三件套 + 统一分页结构 `{total, data}`，禁止在 `detail` 中回传内部异常堆栈。
 
 ### 2. 类型注解
 - 所有函数必须有类型注解
@@ -112,7 +105,10 @@ logger.error("错误信息", exc_info=True)
 你负责修改和创建以下文件：
 - `app/server/main.py` - FastAPI 入口
 - `app/server/models.py` - Pydantic 模型
-- `app/server/api/*.py` - API 路由
-- `app/data_manager.py`（仅在必要时，谨慎修改）
-- `app/factor_engine.py`（仅在必要时，谨慎修改）
-- `app/sentiment_engine.py`（仅在必要时，谨慎修改）
+- `app/server/api/*.py` - API 路由（薄层，经 Repository 访问数据）
+- `app/server/services/*.py` - 业务编排
+- `app/server/repositories/*.py` - 数据访问层
+- `app/server/factories/*.py`、`app/server/orchestrators/*.py`
+- `app/data/*.py`、`app/engine/*.py`（仅在必要时，谨慎修改）
+
+> **铁律**：路由层禁止 `from app.data.db import get_db` 后直连集合，必须经 Repository（见 AGENTS.md 第 7 节架构分层契约）。

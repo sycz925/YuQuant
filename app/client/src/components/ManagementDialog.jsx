@@ -59,7 +59,7 @@ export default function ManagementDialog({ open, onClose, category, title }) {
       } else if (category === 'sector') {
         res = await factorApi.getSectors({ page, page_size: size, keyword, filter_mode: filter, min_stock_count: 5 })
       } else if (category === 'stock') {
-        res = await factorApi.getStockList({ page, page_size: size, keyword, filter_mode: filter })
+        res = await stockApi.getStockList({ page, page_size: size, keyword, filter_mode: filter })
       }
       setData(res?.items || res?.data || [])
       setTotal(res?.total || 0)

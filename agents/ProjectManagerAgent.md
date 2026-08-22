@@ -42,16 +42,18 @@
 ### 核心模块
 
 #### 后端部分
-- `data_manager.py` - 数据管理器
-- `factor_engine.py` - 因子引擎
-- `sentiment_engine.py` - 舆情分析引擎
-- `server/main.py` - FastAPI 入口
-- `server/api/` - API 路由模块
+- `app/data/manager.py` - 数据管理器（DataManager 单例，`get_data_manager()`）
+- `app/data/sources/` - 数据源（PyTdX → AkShare → BaoStock → yfinance，另 Tushare/TQCenter/Tencent）
+- `app/engine/` - 因子引擎（factor_engine / rps_calculator / watchlist_alert / ene_alert）
+- `app/server/` - FastAPI（main.py + api/services/repositories/factories/orchestrators 五层）
+- **数据存储**：MongoDB（pymongo）
 
 #### 前端部分
-- `client/src/` - React 应用源代码
-- `client/src/pages/` - 页面组件
-- `client/src/components/` - 通用组件
+- `app/client/src/` - React 应用源代码
+- `app/client/src/pages/` - 页面组件（14+ 页面）
+- `app/client/src/components/` - 通用组件
+- `app/client/src/hooks/` - 自定义 Hooks
+- `app/client/src/api.js` - API 封装
 
 ### 关键约束
 - **数据安全**：严格防幸存者偏差、防未来函数
