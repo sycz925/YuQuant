@@ -198,7 +198,7 @@ export const watchlistApi = {
 export const restrictedReleaseApi = {
   getSummary: (year) => api.get('/restricted-release/summary', { params: { year } }),
   getDetail: (year, month) => api.get('/restricted-release/detail', { params: { year, month } }),
-  sync: (year) => api.post('/restricted-release/sync', { year }),
+  sync: (year) => api.post('/restricted-release/sync', null, { params: { year } }),
 }
 
 export default api
