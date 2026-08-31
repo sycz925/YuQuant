@@ -16,6 +16,7 @@ from app.server.repositories.market_analysis_repository import MarketAnalysisRep
 from app.server.repositories.system_config_repository import SystemConfigRepository
 from app.server.repositories.market_review_repository import MarketReviewRepository
 from app.server.repositories.calendar_repository import CalendarRepository
+from app.server.repositories.restricted_release_repository import RestrictedReleaseRepository
 
 # 单例实例
 _stock_repo: StockRepository = None
@@ -32,6 +33,7 @@ _market_analysis_repo: MarketAnalysisRepository = None
 _system_config_repo: SystemConfigRepository = None
 _market_review_repo: MarketReviewRepository = None
 _calendar_repo: CalendarRepository = None
+_restricted_release_repo: RestrictedReleaseRepository = None
 
 
 def get_stock_repo() -> StockRepository:
@@ -146,6 +148,14 @@ def get_calendar_repo() -> CalendarRepository:
     return _calendar_repo
 
 
+def get_restricted_release_repo() -> RestrictedReleaseRepository:
+    """获取限售股解禁数据仓库单例"""
+    global _restricted_release_repo
+    if _restricted_release_repo is None:
+        _restricted_release_repo = RestrictedReleaseRepository()
+    return _restricted_release_repo
+
+
 __all__ = [
     'BaseRepository',
     'StockRepository',
@@ -162,6 +172,7 @@ __all__ = [
     'SystemConfigRepository',
     'MarketReviewRepository',
     'CalendarRepository',
+    'RestrictedReleaseRepository',
     'get_stock_repo',
     'get_index_repo',
     'get_sector_repo',
@@ -176,4 +187,5 @@ __all__ = [
     'get_system_config_repo',
     'get_market_review_repo',
     'get_calendar_repo',
+    'get_restricted_release_repo',
 ]
