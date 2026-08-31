@@ -22,6 +22,7 @@ from app.server.api import stocks, factors, sync, market_analysis, market_review
 from app.server.api import one_click_update_v2 as one_click_update
 from app.server.api import settings_tasks
 from app.server.api import watchlist
+from app.server.api.restricted_release import router as restricted_release_router
 from app.server.cache import init_trade_dates, get_latest_trade_date
 
 # 配置日志 - 输出到 logs/ 目录
@@ -160,6 +161,7 @@ app.include_router(settings_tasks.router)
 app.include_router(etf.router)
 app.include_router(alert.router)
 app.include_router(watchlist.router)
+app.include_router(restricted_release_router)
 
 
 @app.get("/health", response_model=HealthResponse)
