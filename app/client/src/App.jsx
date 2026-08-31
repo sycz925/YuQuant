@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import { Button, Tag, Tooltip, notification } from 'antd'
-import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined, FundOutlined, AlertOutlined, StarOutlined, AppstoreOutlined } from '@ant-design/icons'
+import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined, FundOutlined, AlertOutlined, StarOutlined, AppstoreOutlined, CalendarOutlined } from '@ant-design/icons'
 import CalendarReview from './pages/CalendarReview'
 import ReviewDetail from './pages/ReviewDetail'
 import StockAnalysis from './pages/StockAnalysis'
@@ -16,6 +16,7 @@ import SectorPage from './pages/SectorPage'
 import WatchlistPage from './pages/WatchlistPage'
 import WatchlistAlertPage from './pages/WatchlistAlertPage'
 import SectorDetail from './pages/SectorDetail'
+import RestrictedRelease from './pages/RestrictedRelease'
 import ErrorBoundary from './components/ErrorBoundary'
 import { healthApi, oneClickUpdateApi, alertApi } from './api'
 import useOneClickUpdate from './hooks/useOneClickUpdate'
@@ -122,6 +123,10 @@ function App() {
                 <StarOutlined />
                 <span>关注</span>
               </Link>
+              <Link to="/restricted-release" className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs sm:text-sm text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1">
+                <CalendarOutlined />
+                <span>解禁</span>
+              </Link>
             </div>
 
             {/* 右侧：搜索 + 设置 + 一键更新 + 状态 */}
@@ -198,6 +203,7 @@ function App() {
             <Route path="/watchlist" element={<WatchlistPage />} />
             <Route path="/watchlist/alerts" element={<WatchlistAlertPage />} />
             <Route path="/sector/:code" element={<SectorDetail />} />
+            <Route path="/restricted-release" element={<RestrictedRelease />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </ErrorBoundary>

@@ -195,4 +195,10 @@ export const watchlistApi = {
   getAlerts: (params = {}) => api.get('/watchlist/alerts', { params }),
 }
 
+export const restrictedReleaseApi = {
+  getSummary: (year) => api.get('/restricted-release/summary', { params: { year } }),
+  getDetail: (year, month) => api.get('/restricted-release/detail', { params: { year, month } }),
+  sync: (year) => api.post('/restricted-release/sync', { year }),
+}
+
 export default api
