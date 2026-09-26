@@ -121,11 +121,7 @@ def get_market_overview_endpoint(date: Optional[str] = Query(None)):
         if not date:
             raise HTTPException(status_code=404, detail="无交易数据")
         
-        # 检查market_daily中是否有该日期的数据
-        cached = repo.get_cached(date, 'overview')
-        if not cached or not cached.get('overview'):
-            raise HTTPException(status_code=404, detail=f"日期 {date} 无市场概览数据，请先执行一键更新")
-        
+        # 直接从 index_daily 实时计算，不依赖 market_daily 缓存
         result = generate_market_overview(latest_date=date)
         if not result.get('success'):
             raise HTTPException(status_code=404, detail=result.get('message', '无数据'))
@@ -547,12 +543,28 @@ def get_sector_detail(sector_code: str = Query(..., description="板块代码"))
                 'followers': [],
             }
         
+        # 构建股票名称缓存（liutong_map 可能缺少无流通股本的股票）
+        stock_name_map = {}
         for s in stocks:
             lt = liutong_map.get(s['stock_code'], {})
-            liutong = lt.get('liutongguben', 0)
-            close = s.get('close', 0)
-            s['name'] = lt.get('name', s['stock_code'])
-            s['_float_mv'] = liutong * close / 1e8 if liutong and close else 0
+            s['name'] = lt.get('name', '')
+            s['_float_mv'] = 0
+            if lt:
+                liutong = lt.get('liutongguben', 0)
+                close = s.get('close', 0)
+                s['_float_mv'] = liutong * close / 1e8 if liutong and close else 0
+        
+        # 对无名称的股票，从 stock_basics 补充
+        missing_codes = [s['stock_code'] for s in stocks if not s.get('name')]
+        if missing_codes:
+            basics = list(stock_repo.collection.find(
+                {'stock_code': {'$in': missing_codes}},
+                {'_id': 0, 'stock_code': 1, 'stock_name': 1}
+            ))
+            basics_map = {b['stock_code']: b.get('stock_name', '') for b in basics}
+            for s in stocks:
+                if not s.get('name'):
+                    s['name'] = basics_map.get(s['stock_code'], s['stock_code'])
         
         by_chg50 = sorted(stocks, key=lambda x: -(x.get('chg_50d', 0) or 0))[:3]
         pioneer = [f"{s['name']}(50日{s.get('chg_50d', 0) or 0:+.1f}%, 今日{s.get('chg_pct', 0) or 0:+.1f}%)" for s in by_chg50]

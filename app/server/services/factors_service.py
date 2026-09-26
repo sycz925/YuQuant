@@ -373,6 +373,100 @@ def _run_sync_pe(task_id: str, token: str, is_external: bool = False):
         raise
 
 
+# ========== 历史 PE_TTM 同步（akshare） ==========
+
+# akshare 函数 → (index_code, akshare_symbol) 映射
+_PE_AKSHARE_MAP = {
+    '000001': ('stock_market_pe_lg', '上证'),
+    '399106': ('stock_market_pe_lg', '深证'),
+    '399006': ('stock_market_pe_lg', '创业板'),
+    '000688': ('stock_market_pe_lg', '科创版'),
+    '000300': ('stock_index_pe_lg', '沪深300'),
+    '000016': ('stock_index_pe_lg', '上证50'),
+    '000905': ('stock_index_pe_lg', '中证500'),
+    '000852': ('stock_index_pe_lg', '中证1000'),
+}
+
+
+def sync_pe_historical(task_id: str = None, is_external: bool = False):
+    """用 akshare 同步历史 PE_TTM 到 index_pe_daily 集合（月频数据）"""
+    import akshare as ak
+    from datetime import datetime as _dt
+    from app.data.task_manager import get_task_manager
+
+    db = get_db()
+    tm = get_task_manager() if task_id else None
+
+    db['index_pe_daily'].drop()
+    db['index_pe_daily'].create_index([('code', 1), ('date', 1)], unique=True)
+
+    total = len(_PE_AKSHARE_MAP)
+    success = 0
+
+    for i, (code, (func_name, symbol)) in enumerate(_PE_AKSHARE_MAP.items()):
+        if task_id and tm and tm.is_cancelled(task_id):
+            return
+        if tm:
+            tm.update_task_progress(
+                task_id,
+                current_stock_name=f"同步 {symbol} PE历史...",
+                total_count=total, completed_count=i,
+            )
+        try:
+            fn = getattr(ak, func_name)
+            df = fn(symbol=symbol)
+            if df is None or df.empty:
+                continue
+
+            if func_name == 'stock_market_pe_lg':
+                date_col = '日期'
+                pe_col = '平均市盈率' if '平均市盈率' in df.columns else '市盈率'
+            else:
+                date_col, pe_col = '日期', '滚动市盈率'
+
+            docs = []
+            for _, row in df.iterrows():
+                date_str = str(row[date_col]).replace('-', '')[:8]
+                pe_val = row[pe_col]
+                if pe_val and not (isinstance(pe_val, float) and pe_val != pe_val):
+                    docs.append({
+                        'code': code,
+                        'date': date_str,
+                        'pe_ttm': round(float(pe_val), 2),
+                    })
+            if docs:
+                db['index_pe_daily'].insert_many(docs, ordered=False)
+                success += 1
+        except Exception as e:
+            logger.warning(f"[PE历史] {symbol}({code}) 同步失败: {e}")
+
+    if tm:
+        tm.update_task_progress(
+            task_id,
+            current_stock_name=f"PE历史同步完成 ({success}/{total})",
+            total_count=total, completed_count=total,
+        )
+    if task_id and not is_external:
+        tm.complete_task(task_id, f"PE历史同步完成，{success}/{total}个指数")
+    logger.info(f"[PE历史] 同步完成: {success}/{total}")
+
+
+def get_pe_ttm_by_date(code: str, date: str) -> Optional[float]:
+    """按日期查 PE_TTM，找不到则回退到最近月份的数据"""
+    db = get_db()
+    # 精确匹配
+    doc = db['index_pe_daily'].find_one({'code': code, 'date': date}, {'_id': 0, 'pe_ttm': 1})
+    if doc:
+        return doc['pe_ttm']
+    # 回退：取 <= date 的最近一条
+    doc = db['index_pe_daily'].find_one(
+        {'code': code, 'date': {'$lte': date}},
+        sort=[('date', -1)],
+        projection={'_id': 0, 'pe_ttm': 1},
+    )
+    return doc['pe_ttm'] if doc else None
+
+
 # ========== 对比任务 ==========
 
 def _run_compare_stocks_task(task_id):

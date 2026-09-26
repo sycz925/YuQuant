@@ -322,7 +322,7 @@ class DeepSeekAnalyst:
         if clusters:
             msg_parts.append("")
             msg_parts.append("【新高强力板块】")
-            msg_parts.append("筛选条件：RPS10+RPS20+RPS50三者之和>250的板块中取当日收盘价>历史最高*0.9的个股（接近新高），按行业聚类统计数量，取Top5")
+            msg_parts.append("筛选条件：优先取RPS10=RPS20=RPS50=100的板块（必须入列），不足5个时从RPS和>250且收盘价>50日最高*0.9的板块中按RPS和降序补齐，取收盘价>历史最高*0.9的个股（接近新高），按行业聚类统计数量，取Top5")
             for c in clusters:
                 chg = c.get('chg_pct', 0) or c.get('chg', 0)
                 rps_info = ""

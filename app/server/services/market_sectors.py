@@ -20,8 +20,9 @@ def analyze_new_high_blocks(latest_date: Optional[str] = None) -> Dict[str, Any]
     新高强力板块分析与板块效应聚类
 
     筛选规则：
-    1. 板块筛选：RPS10+RPS20+RPS50 > 250（三者之和）
-    2. 个股筛选：当日收盘价 >= 历史最高收盘价 * 0.9（接近新高）
+    1. 优先取 RPS10=RPS20=RPS50=100 的板块（必须入列，不限近新高个股）
+    2. 不足5个时，从 RPS10+RPS20+RPS50>250 且当日收盘价>50日最高*0.9 的板块中按 RPS 和降序补齐5个（需有近新高个股）
+    3. 个股筛选：当日收盘价 >= 历史最高收盘价 * 0.9（接近新高）
 
     返回: 接近新高股池 + 行业聚类Top5（先锋/中军/后排）
     """
@@ -88,38 +89,81 @@ def analyze_new_high_blocks(latest_date: Optional[str] = None) -> Dict[str, Any]
             'trade_date': latest_date,
             'stock_code': {'$in': list(enabled_sector_codes)},
         },
-        {'_id': 0, 'stock_code': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1}
+        {'_id': 0, 'stock_code': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'close': 1}
     )
-    strong_sector_rps = {}
+    all_sector_rps = {}
     for doc in sector_rps_cursor:
         rps_10 = doc.get('rps_10', 0) or 0
         rps_20 = doc.get('rps_20', 0) or 0
         rps_50 = doc.get('rps_50', 0) or 0
         rps_sum = rps_10 + rps_20 + rps_50
-        if rps_sum > 250:
-            strong_sector_rps[doc['stock_code']] = {
-                'rps_10': rps_10,
-                'rps_20': rps_20,
-                'rps_50': rps_50,
-                'rps_sum': rps_sum,
-            }
+        is_all_100 = rps_10 == 100 and rps_20 == 100 and rps_50 == 100
+        all_sector_rps[doc['stock_code']] = {
+            'rps_10': rps_10, 'rps_20': rps_20, 'rps_50': rps_50,
+            'rps_sum': rps_sum, 'is_all_100': is_all_100,
+            'close': doc.get('close', 0) or 0,
+        }
+
+    all_100_sectors = {code for code, v in all_sector_rps.items() if v['is_all_100']}
+    rps_sum_gt250_sectors = {code for code, v in all_sector_rps.items() if v['rps_sum'] > 250}
+
+    try:
+        date_obj_50 = _dt.strptime(latest_date, '%Y%m%d')
+        start_50 = (date_obj_50 - timedelta(days=70)).strftime('%Y%m%d')
+    except Exception:
+        start_50 = latest_date
+    max_close_50_cursor = db['sector_daily'].aggregate([
+        {'$match': {'stock_code': {'$in': list(rps_sum_gt250_sectors)}, 'trade_date': {'$gte': start_50}, 'close': {'$gt': 0}}},
+        {'$group': {'_id': '$stock_code', 'max_close_50': {'$max': '$close'}}}
+    ])
+    max_close_50 = {d['_id']: d['max_close_50'] for d in max_close_50_cursor}
+
+    eligible_gt250 = set()
+    for code in rps_sum_gt250_sectors:
+        cur_close = all_sector_rps[code]['close']
+        hist50 = max_close_50.get(code, 0)
+        if hist50 > 0 and cur_close >= hist50 * 0.9:
+            eligible_gt250.add(code)
 
     sector_info_map = {}
     for doc in enabled_sector_docs:
         sector_info_map[doc['code']] = doc
 
-    sector_new_high = {}
+    today_sector_stocks = {}
     for s in new_high_stocks:
         code = s['code']
-        for sector_code in strong_sector_rps:
-            sector_info = sector_info_map.get(sector_code, {})
-            stock_codes_in_sector = set(sector_info.get('stock_codes', []))
-            if code in stock_codes_in_sector:
-                if sector_code not in sector_new_high:
-                    sector_new_high[sector_code] = []
-                sector_new_high[sector_code].append(s)
+        for sector_code in all_sector_rps:
+            info = sector_info_map.get(sector_code, {})
+            if code in set(info.get('stock_codes', [])):
+                today_sector_stocks.setdefault(sector_code, []).append(s)
 
-    sorted_sectors = sorted(sector_new_high.items(), key=lambda x: -len(x[1]))[:5]
+    all_100_result = {}
+    for code in all_100_sectors:
+        stocks = today_sector_stocks.get(code, [])
+        if not stocks:
+            info = sector_info_map.get(code, {})
+            stocks = [{'code': c, 'close': 0} for c in info.get('stock_codes', []) if c in today_map]
+        all_100_result[code] = stocks
+
+    sorted_all_100 = sorted(all_100_result.items(), key=lambda x: -len(x[1]))[:5]
+    sorted_sectors = list(sorted_all_100)
+
+    if len(sorted_sectors) < 5:
+        gt250_candidates = {}
+        for code in eligible_gt250 - all_100_sectors:
+            stocks = today_sector_stocks.get(code, [])
+            if stocks:
+                gt250_candidates[code] = stocks
+        sorted_gt250 = sorted(
+            gt250_candidates.items(),
+            key=lambda x: -all_sector_rps[x[0]]['rps_sum']
+        )
+        for item in sorted_gt250:
+            if len(sorted_sectors) >= 5:
+                break
+            sorted_sectors.append(item)
+
+    strong_sector_rps = {code: all_sector_rps[code] for code, _ in sorted_sectors}
 
     if total_new_high_count == 0 or not sorted_sectors:
         return {

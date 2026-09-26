@@ -143,11 +143,10 @@ def scan_new_stocks():
         # 从TDX扫描所有股票
         new_stocks = []
         api = TdxHq_API()
-        servers = [
-            ('180.153.18.170', 7709),
-            ('119.147.212.81', 7709),
-            ('60.12.136.250', 7709),
-        ]
+        
+        # 从配置文件加载服务器列表
+        from app.data.sources.pytdx_source import TDX_SERVERS
+        servers = TDX_SERVERS
 
         for host, port in servers:
             try:

@@ -17,6 +17,7 @@ from app.server.repositories import (
 from app.server.services.calendar_service import (
     _get_month_weeks,
     _build_weekly_input_text,
+    _build_sector_momentum_bubble,
     _run_fill_ai_task,
     generate_month_snapshots,
     clear_calendar_snapshots,
@@ -522,7 +523,7 @@ def get_monthly_summary(
             date_range = f"{dates[0][:4]}-{dates[0][4:6]}-{dates[0][6:]}" if dates else ''
             date_range_end = f"{dates[-1][:4]}-{dates[-1][4:6]}-{dates[-1][6:]}" if dates else ''
             weekly_parts.append(f"【第{wk}周 ({date_range} ~ {date_range_end})】")
-            weekly_parts.append(doc.get('summary', ''))
+            weekly_parts.append(doc.get('summary', '').replace('**', ''))
             weekly_parts.append("")
 
         weekly_summaries = '\n'.join(weekly_parts)
@@ -604,6 +605,14 @@ def get_monthly_summary(
                 if index_line:
                     full_input = index_line + '\n\n'
                 full_input += weekly_summaries
+                
+                # 添加板块四维动量气泡图（使用最后一个交易日的数据，包含20日涨幅）
+                if month_dates:
+                    last_day = month_dates[-1]
+                    bubble_text = _build_sector_momentum_bubble(last_day, include_chg_20d=True)
+                    if bubble_text:
+                        full_input += '\n\n' + bubble_text
+                
                 user_message = MONTHLY_SUMMARY_USER_TEMPLATE.format(weekly_summaries=full_input)
 
                 content = _call_summary_llm(
@@ -687,7 +696,7 @@ def get_monthly_input_data(
             date_range = f"{dates[0][:4]}-{dates[0][4:6]}-{dates[0][6:]}" if dates else ''
             date_range_end = f"{dates[-1][:4]}-{dates[-1][4:6]}-{dates[-1][6:]}" if dates else ''
             weekly_parts.append(f"【第{wk}周 ({date_range} ~ {date_range_end})】")
-            weekly_parts.append(doc.get('summary', ''))
+            weekly_parts.append(doc.get('summary', '').replace('**', ''))
             weekly_parts.append("")
 
         weekly_summaries = '\n'.join(weekly_parts)
@@ -731,6 +740,15 @@ def get_monthly_input_data(
         if index_line:
             full_input = index_line + '\n\n'
         full_input += weekly_summaries
+        
+        # 添加板块四维动量气泡图（使用最后一个交易日的数据，包含20日涨幅）
+        # 注意：month_dates 是降序排列的，所以第一个元素是最后一个交易日
+        if month_dates:
+            last_day = month_dates[0]
+            bubble_text = _build_sector_momentum_bubble(last_day, include_chg_20d=True)
+            if bubble_text:
+                full_input += '\n\n' + bubble_text
+        
         full_message = MONTHLY_SUMMARY_USER_TEMPLATE.format(weekly_summaries=full_input)
 
         return {

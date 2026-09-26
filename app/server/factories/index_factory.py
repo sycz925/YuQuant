@@ -364,7 +364,7 @@ class IndexFactory:
     def sync_pe(self, target_date: Optional[str] = None,
                 progress_callback: Callable = None) -> SyncResult:
         """
-        同步指数 PE（legulegu.com 数据源）
+        同步指数 PE（legulegu.com 数据源 + akshare 历史数据）
         :param target_date: 指定日期，None 同步最新
         """
         callback = ProgressCallback(progress_callback)
@@ -373,17 +373,16 @@ class IndexFactory:
             from app.server.config import get_settings
             settings = get_settings()
             
-            if not settings.LEGULEGU_TOKEN:
-                return SyncResult(success=True, message='未配置PE Token，跳过', skipped=True)
-            
-            callback.update(0, 1, '开始同步PE数据...')
-            
-            # 调用 factors.py 的 PE 同步逻辑
-            from app.server.services.factors_service import _run_sync_pe
-            
-            import uuid
-            temp_task_id = str(uuid.uuid4())
-            _run_sync_pe(temp_task_id, settings.LEGULEGU_TOKEN, is_external=True)
+            if settings.LEGULEGU_TOKEN:
+                callback.update(0, 1, '开始同步PE数据...')
+                from app.server.services.factors_service import _run_sync_pe
+                import uuid
+                temp_task_id = str(uuid.uuid4())
+                _run_sync_pe(temp_task_id, settings.LEGULEGU_TOKEN, is_external=True)
+
+            callback.update(0, 1, '同步历史PE_TTM...')
+            from app.server.services.factors_service import sync_pe_historical
+            sync_pe_historical()
             
             callback.complete('PE同步完成')
             return SyncResult(success=True, message='PE同步完成')

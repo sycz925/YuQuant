@@ -1,5 +1,6 @@
 """
-ENE 轨道线预警引擎
+ENE 轨道线预警引擎（仅击穿ENE下轨）
+
 ENE(10,11,9):
   - MA10 = 10日收盘价均线
   - UPPER = MA10 * 1.11
@@ -25,28 +26,7 @@ ENE_N = 10
 ENE_P1 = 11
 ENE_P2 = 9
 XDXR_THRESHOLD = 0.15  # 开盘价/昨收偏离 >15% 视为除权
-MA_CROSS_N = 10        # 5日上穿10日判定所需最少数据点（前一日MA10窗口）
-RPS_THRESHOLD = 87     # RPS红阈值（与 /etf 一致）
 REASON_ENE = '击穿ENE下轨'
-REASON_CROSS = '5日均线上穿10日均线'
-
-
-def _rps_red_count(doc: Dict) -> int:
-    """RPS 两线红：rps_10/20/50 中 >87 的数量"""
-    rps_values = [doc.get('rps_10'), doc.get('rps_20'), doc.get('rps_50')]
-    return sum(1 for v in rps_values if v is not None and v > RPS_THRESHOLD)
-
-
-def _is_ma5_cross_ma10(closes: np.ndarray, i: int) -> bool:
-    """5日均线上穿10日均线：
-    ma5 > ma10 且 前一日 ma5 <= 前一日 ma10 且 当日 ma5 > 前一日 ma5"""
-    if i < MA_CROSS_N:
-        return False
-    ma5_cur = float(np.mean(closes[i - 4:i + 1]))
-    ma5_prev = float(np.mean(closes[i - 5:i]))
-    ma10_cur = float(np.mean(closes[i - 9:i + 1]))
-    ma10_prev = float(np.mean(closes[i - 10:i]))
-    return ma5_cur > ma10_cur and ma5_prev <= ma10_prev and ma5_cur > ma5_prev
 
 
 def _now_bj() -> datetime:
@@ -199,7 +179,7 @@ def backfill_alerts() -> int:
 
 
 def check_latest(max_dates: int = 5) -> int:
-    """检查所有ETF最近N个交易日（击穿ENE下轨 + 5日上穿10日），返回新增预警数"""
+    """检查所有ETF最近N个交易日（击穿ENE下轨），返回新增预警数"""
     from app.data.db import get_db, get_collection
     db = get_db()
     etf_coll = get_collection('etf')
@@ -214,9 +194,8 @@ def check_latest(max_dates: int = 5) -> int:
         try:
             raw_docs = list(etf_coll.find(
                 {'stock_code': code, 'close': {'$gt': 0}},
-                {'_id': 0, 'trade_date': 1, 'close': 1, 'open': 1, 'close_raw': 1, 'amount': 1,
-                 'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'chg_pct': 1}
-            ).sort('trade_date', -1).limit(MA_CROSS_N + max_dates + 10))
+                {'_id': 0, 'trade_date': 1, 'close': 1, 'open': 1, 'close_raw': 1, 'amount': 1, 'chg_pct': 1}
+            ).sort('trade_date', -1).limit(ENE_N + max_dates + 5))
             if len(raw_docs) < ENE_N:
                 continue
             raw_docs.reverse()
@@ -227,7 +206,7 @@ def check_latest(max_dates: int = 5) -> int:
 
             for offset in range(max_dates):
                 i = n - 1 - offset
-                if i < MA_CROSS_N:
+                if i < ENE_N - 1:
                     break
                 if newest_xdxr_idx > i - ENE_N:
                     continue
@@ -235,7 +214,7 @@ def check_latest(max_dates: int = 5) -> int:
                 close = round(float(closes[i]), 4)
                 doc = raw_docs[i]
 
-                # 规则1：击穿ENE下轨
+                # 击穿ENE下轨
                 ma10 = round(float(np.mean(closes[i - ENE_N + 1:i + 1])), 4)
                 lower = round(ma10 * (1 - ENE_P2 / 100), 4)
                 if close < lower:
@@ -262,93 +241,12 @@ def check_latest(max_dates: int = 5) -> int:
                                         f'close(adj)={close} < lower={lower}')
                         except DuplicateKeyError:
                             pass
-
-                # 规则2：5日均线上穿10日均线（需 RPS 两线红）
-                if _is_ma5_cross_ma10(closes, i) and _rps_red_count(doc) >= 2:
-                    existing = alert_coll.find_one({'code': code, 'trade_date': trade_date, 'reason': REASON_CROSS})
-                    if not existing:
-                        try:
-                            alert_coll.insert_one({
-                                'code': code,
-                                'name': name,
-                                'trade_date': trade_date,
-                                'close': close,
-                                'close_raw': doc['close'],
-                                'chg_pct': doc.get('chg_pct'),
-                                'reason': REASON_CROSS,
-                                'created_at': _now_bj(),
-                            })
-                            new_count += 1
-                            logger.info(f'[上穿预警] {code} {trade_date} 5日上穿10日 '
-                                        f'ma5={np.mean(closes[i-4:i+1]):.4f} ma10={ma10:.4f} '
-                                        f'rps_red={_rps_red_count(doc)}')
-                        except DuplicateKeyError:
-                            pass
         except Exception as e:
             logger.error(f'[ENE预警] 检查{code}失败: {e}')
 
     if new_count:
         logger.info(f'[ENE预警] 本轮新增{new_count}条预警')
     return new_count
-
-
-def backfill_cross_alerts(max_dates: int = 10) -> int:
-    """回刷所有ETF最近N个交易日的5日上穿10日预警（RPS两线红），返回新增数"""
-    from app.data.db import get_db, get_collection
-    db = get_db()
-    etf_coll = get_collection('etf')
-    alert_coll = db[ALERT_COLL]
-    basics_coll = db['etf_basics']
-
-    codes = etf_coll.distinct('stock_code')
-    name_map = {d['code']: d['name'] for d in basics_coll.find({}, {'code': 1, 'name': 1})}
-
-    total_new = 0
-    for code in codes:
-        try:
-            raw_docs = list(etf_coll.find(
-                {'stock_code': code, 'close': {'$gt': 0}},
-                {'_id': 0, 'trade_date': 1, 'close': 1, 'open': 1, 'close_raw': 1,
-                 'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 'chg_pct': 1}
-            ).sort('trade_date', -1).limit(MA_CROSS_N + max_dates + 10))
-            if len(raw_docs) < MA_CROSS_N:
-                continue
-            raw_docs.reverse()
-            closes, newest_xdxr_idx = _forward_adjust_closes(raw_docs)
-            n = len(raw_docs)
-            name = name_map.get(code, code)
-            start = max(MA_CROSS_N, n - max_dates)
-
-            for i in range(start, n):
-                if newest_xdxr_idx > i - ENE_N:
-                    continue
-                if not _is_ma5_cross_ma10(closes, i) or _rps_red_count(raw_docs[i]) < 2:
-                    continue
-                trade_date = raw_docs[i]['trade_date']
-                existing = alert_coll.find_one({'code': code, 'trade_date': trade_date, 'reason': REASON_CROSS})
-                if existing:
-                    continue
-                try:
-                    alert_coll.insert_one({
-                        'code': code,
-                        'name': name,
-                        'trade_date': trade_date,
-                        'close': round(float(closes[i]), 4),
-                        'close_raw': raw_docs[i]['close'],
-                        'chg_pct': raw_docs[i].get('chg_pct'),
-                        'reason': REASON_CROSS,
-                        'created_at': _trade_date_close_time(trade_date),
-                    })
-                    total_new += 1
-                    logger.info(f'[上穿回刷] {code} {trade_date} 5日上穿10日 (RPS两线红)')
-                except DuplicateKeyError:
-                    pass
-        except Exception as e:
-            logger.error(f'[上穿回刷] 处理{code}失败: {e}')
-
-    if total_new:
-        logger.info(f'[上穿回刷] 完成，总新增{total_new}条预警')
-    return total_new
 
 
 def get_recent_alerts(since: Optional[datetime] = None, limit: int = 20) -> list:

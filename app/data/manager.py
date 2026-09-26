@@ -372,7 +372,9 @@ class DataManager:
                             df_data, src = source_obj.get_daily_data(code, date, date)
                         if df_data is not None and not df_data.empty:
                             records = df_data.to_dict('records')
-                            records = self._forward_adjust_records(records)
+                            # 前复权由数据源完成：
+                            # - PyTdX: get_stock_daily 内置 xdxr 前复权
+                            # - AkShare: get_etf_daily(adjust="qfq") 已前复权
                             bulk_upsert_daily_data(code, records, src, 'etf')
                             return True
                     except Exception as e:
@@ -516,9 +518,10 @@ class DataManager:
         logger.info(f"{stock_code} 除权基准变化，全量重拉 {len(records)} 条 ({start_date}~{end_date})")
         return True
 
-    def _sync_single_stock(self, stock_code: str, stock_name: str, start_date: str, end_date: str) -> Dict:
+    def _sync_single_stock(self, stock_code: str, stock_name: str, start_date: str, end_date: str, force: bool = False) -> Dict:
         """同步单只股票数据（线程池内调用，不更新任务状态）
         数据源瀑布：PyTdX → AkShare → BaoStock → yfinance
+        :param force: True 时跳过 latest_date >= end_date 检查，强制同步指定日期
         """
         result = {
             'stock_code': stock_code,
@@ -546,8 +549,8 @@ class DataManager:
         if latest:
             latest_date = latest['trade_date']
 
-            # 最新数据 >= 目标日期 → 已有数据，跳过
-            if latest_date >= end_date:
+            # 最新数据 >= 目标日期 → 已有数据，跳过（force=True 时不跳过，强制同步指定日期）
+            if latest_date >= end_date and not force:
                 t = self._time_minutes()
                 if t >= AFTER_MARKET_START:
                     if latest.get('is_final'):
@@ -721,8 +724,10 @@ class DataManager:
 
     def sync_daily_data(self, stock_codes: List[str], end_date: str = None,
                         task_id: Optional[str] = None, max_workers: int = 16, is_external: bool = False,
-                        progress_callback: Callable = None) -> dict:
-        """同步个股日线数据 — 逐天回溯模式"""
+                        progress_callback: Callable = None, single_date: bool = False) -> dict:
+        """同步个股日线数据 — 逐天回溯模式
+        :param single_date: True 时只同步 end_date 这一天，不往回走
+        """
         from .task_manager import get_task_manager
 
         tm = get_task_manager() if task_id else None
@@ -762,7 +767,8 @@ class DataManager:
                 for stock_code in stock_codes:
                     stock_name = stock_name_map.get(stock_code, stock_code)
                     future = executor.submit(
-                        self._sync_single_stock, stock_code, stock_name, day, day
+                        self._sync_single_stock, stock_code, stock_name, day, day,
+                        force=single_date
                     )
                     future_map[future] = (stock_code, stock_name)
 
@@ -822,12 +828,21 @@ class DataManager:
                             completed_count=day_processed)
 
         # 循环调用 _find_sync_boundary，直到返回 None
-        day = today
-        while True:
-            result = self._find_sync_boundary('stock', day, expected, sync_fn=sync_day)
-            if result is None:
-                break
-            day = result
+        if single_date and end_date:
+            target = end_date or today
+            count = self._count_final_records('stock', target)
+            threshold = int(expected * 0.95)
+            if count >= threshold:
+                logger.info(f"[一键更新] 个股 {target} 数据已完整 ({count}>= {threshold})，跳过")
+            else:
+                sync_day(target)
+        else:
+            day = today
+            while True:
+                result = self._find_sync_boundary('stock', day, expected, sync_fn=sync_day)
+                if result is None:
+                    break
+                day = result
 
         if days_synced == 0:
             logger.info("✓ 个股数据已完整，无需同步")
@@ -868,8 +883,10 @@ class DataManager:
         except Exception as e:
             logger.error(f"更新sector is_final失败: {e}")
 
-    def sync_sector_indices(self, task_id=None, progress_callback=None, enabled_codes=None, is_external=False) -> dict:
-        """同步板块指数日线 — 边找边界边同步"""
+    def sync_sector_indices(self, task_id=None, progress_callback=None, enabled_codes=None, is_external=False, single_date=False, target_date=None) -> dict:
+        """同步板块指数日线 — 边找边界边同步
+        :param single_date: True 时只同步 target_date 这一天，不往回走
+        """
         from .db import get_db, get_collection
         from .task_manager import get_task_manager
 
@@ -1018,17 +1035,25 @@ class DataManager:
             logger.info(f"  {day} 写入 {day_written} 条")
 
         # 循环调用 _find_sync_boundary
-        day = today
-        while True:
-            result = self._find_sync_boundary('sector', day, total_sectors, sync_fn=sync_day)
-            if result is None:
-                break
-            day = result
+        if single_date and target_date:
+            count = self._count_final_records('sector', target_date)
+            threshold = int(total_sectors * 0.95)
+            if count >= threshold:
+                logger.info(f"[一键更新] 板块 {target_date} 数据已完整 ({count}>= {threshold})，跳过")
+            else:
+                sync_day(target_date)
+        else:
+            day = today
+            while True:
+                result = self._find_sync_boundary('sector', day, total_sectors, sync_fn=sync_day)
+                if result is None:
+                    break
+                day = result
 
         # 盘后强制重刷前一个交易日，修正盘中同步的暂态值
         if self._time_minutes() >= AFTER_MARKET_START:
             prev_day = (datetime.strptime(today, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-            prev_count = _count_final_records('sector', prev_day)
+            prev_count = self._count_final_records('sector', prev_day)
             if prev_count > 0:
                 logger.info(f"盘后重刷前一个交易日 {prev_day}，覆盖盘中暂态值...")
                 sector_coll.update_many(

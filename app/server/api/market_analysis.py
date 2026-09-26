@@ -118,21 +118,21 @@ def get_market_analysis(
             logger.info(f"交易日 {date}: 共 {len(merged)} 只股票参与统计，RPS周期: {rps_period}")
 
             if merged:
-                # RPS 分组（使用动态周期，按等分位分组）
+                # RPS 分组（使用动态周期，按等分位分组，20个区间：0-5,5-10,...,95-100）
                 rps_data = [{'chg_pct': d['chg_pct'], 'sort_val': d['rps']} for d in merged if d.get('rps') is not None and d.get('rps') > 0]
-                stats_response['rps_stats'] = _quantile_groups(rps_data, n_groups=50)
+                stats_response['rps_stats'] = _quantile_groups(rps_data, n_groups=20)
 
-                # 成交额分组
+                # 成交额分组（20个区间）
                 amount_data = [{'chg_pct': d['chg_pct'], 'sort_val': d['amount']} for d in merged]
-                stats_response['amount_stats'] = _quantile_groups(amount_data, n_groups=50)
+                stats_response['amount_stats'] = _quantile_groups(amount_data, n_groups=20)
 
-                # 股价分组
+                # 股价分组（20个区间）
                 price_data = [{'chg_pct': d['chg_pct'], 'sort_val': d['close']} for d in merged]
-                stats_response['price_stats'] = _quantile_groups(price_data, n_groups=50)
+                stats_response['price_stats'] = _quantile_groups(price_data, n_groups=20)
 
-                # 流通市值分组
+                # 流通市值分组（20个区间）
                 mv_data = [{'chg_pct': d['chg_pct'], 'sort_val': d['float_mv']} for d in merged if d.get('float_mv', 0) > 0]
-                stats_response['float_mv_stats'] = _quantile_groups(mv_data, n_groups=50)
+                stats_response['float_mv_stats'] = _quantile_groups(mv_data, n_groups=20)
 
         # === 4) 气泡图 ===
         if mode == 'stock':

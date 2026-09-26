@@ -205,7 +205,7 @@ function MarketSignals({ date }) {
             <div className="flex items-center space-x-1.5 md:space-x-2">
               <div className="w-1 h-3 md:h-4 bg-amber-500 rounded-full"></div>
               <h3 className="text-xs md:text-sm font-bold text-gray-700">新高强力板块</h3>
-              <Tooltip title="筛选规则：先筛选RPS10/RPS50/RPS120其中之一>90的板块，再在这些板块中取当日收盘价创历史新高的个股，按行业聚类统计数量，取Top5">
+              <Tooltip title="筛选规则：优先取RPS10=RPS20=RPS50=100的板块（必须入列），不足5个时从RPS和>250且收盘价>50日最高*0.9的板块中按RPS和降序补齐，取收盘价创历史新高的个股，按行业聚类取Top5">
                 <span className="text-[10px] md:text-xs text-gray-400 cursor-help">({industry_clusters.length}个)</span>
               </Tooltip>
             </div>

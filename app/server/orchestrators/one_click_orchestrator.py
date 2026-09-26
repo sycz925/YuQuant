@@ -166,49 +166,105 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         return task_id
     
     def _run(self, task_id: str, dates: List[str]) -> None:
-        """后台执行流程"""
+        """后台执行流程
+        Phase 1: 逐步骤同步所有日期的原始数据 (sync_index → sync_stocks → sync_sectors)
+        Phase 2: 逐日重算 (rps_stock → rps_sector → sync_pe → precompute)
+        """
         from app.data.task_manager import get_task_manager
         tm = get_task_manager()
 
         total_dates = len(dates)
         logger.info(f"[一键更新] 开始执行，共 {total_dates} 个交易日")
 
-        for step_idx, step_key in enumerate(self.STEP_KEYS):
-            # 检查任务是否已取消
+        # ========== Phase 1: 同步原始数据（步骤0-2） ==========
+        SYNC_KEYS = ['sync_index', 'sync_stocks', 'sync_sectors']
+        SYNC_NAMES = ['同步指数', '同步个股', '同步板块']
+
+        for step_idx, (step_key, step_name) in enumerate(zip(SYNC_KEYS, SYNC_NAMES)):
             if tm.is_cancelled(task_id):
                 logger.info(f'任务 {task_id} 已取消，停止执行')
                 return
 
-            step_name = self.STEP_NAMES[step_idx]
-            logger.info(f"[一键更新] 步骤 {step_idx+1}/7: {step_name}")
-
-            # 重置步骤进度（只更新 current_step 和 status）
+            logger.info(f"[一键更新] Phase1 步骤 {step_idx+1}/3: {step_name}")
             self.task_repo.update_step_progress(task_id, step_idx, status='running', completed_count=0)
             self.task_repo.update_task_progress(task_id, current_step=step_idx)
 
             try:
                 self.execute_step(step_key, task_id, dates, step_idx)
             except Exception as e:
-                logger.error(f'[一键更新] 步骤 {step_name} 失败: {e}', exc_info=True)
-                self.task_repo.update_step_progress(
-                    task_id, step_idx,
-                    status='failed',
-                    message=str(e)[:200]
-                )
+                logger.error(f'[一键更新] {step_name} 失败: {e}', exc_info=True)
+                self.task_repo.update_step_progress(task_id, step_idx, status='failed', message=str(e)[:200])
                 self.task_repo.fail_task(task_id, f'步骤失败: {str(e)[:200]}')
                 return
 
-            self.task_repo.update_step_progress(
-                task_id, step_idx,
-                status='completed',
-                message=f'{step_name}完成'
-            )
-            logger.info(f"[一键更新] 步骤 {step_idx+1}/7: {step_name} 完成")
+            self.task_repo.update_step_progress(task_id, step_idx, status='completed', message=f'{step_name}完成')
+            logger.info(f"[一键更新] Phase1 步骤 {step_idx+1}/3: {step_name} 完成")
 
-        # 数据同步完成后刷新交易日缓存，避免 /health 的 latest_trade_date 停留在启动时的旧值
+        # ========== Phase 2: 逐日重算（步骤3-6） ==========
+        RECALC_KEYS = ['rps_stock', 'rps_sector', 'sync_pe', 'precompute']
+        RECALC_NAMES = ['计算个股RPS', '计算板块RPS', '更新PE', '预计算基础数据']
+
+        for date_idx, date in enumerate(dates):
+            if tm.is_cancelled(task_id):
+                logger.info(f'任务 {task_id} 已取消，停止执行')
+                return
+
+            logger.info(f"[一键更新] Phase2 日期 {date_idx+1}/{total_dates}: {date}")
+
+            for step_offset, (step_key, step_name) in enumerate(zip(RECALC_KEYS, RECALC_NAMES)):
+                step_idx = 3 + step_offset  # 全局步骤索引 (3,4,5,6)
+
+                if tm.is_cancelled(task_id):
+                    return
+
+                self.task_repo.update_step_progress(task_id, step_idx, status='running', completed_count=date_idx)
+                self.task_repo.update_task_progress(task_id, current_step=step_idx)
+
+                try:
+                    self.execute_step(step_key, task_id, [date], step_idx)
+                except Exception as e:
+                    logger.error(f'[一键更新] {date} {step_name} 失败: {e}', exc_info=True)
+                    self.task_repo.update_step_progress(task_id, step_idx, status='failed', message=str(e)[:200])
+                    self.task_repo.fail_task(task_id, f'步骤失败: {str(e)[:200]}')
+                    return
+
+                self.task_repo.update_step_progress(task_id, step_idx, completed_count=date_idx + 1, message=f'{date} {step_name}')
+
+            logger.info(f"[一键更新] Phase2 日期 {date_idx+1}/{total_dates}: {date} 重算完成")
+
+        # 全部完成
         refresh_trade_dates()
         self.task_repo.complete_task(task_id, '全部完成')
         logger.info(f'[一键更新] 全部完成，共处理 {total_dates} 个交易日')
+    
+    def _check_xdxr_drift(self, db) -> int:
+        """检查有多少只股票的 xdxr 指纹发生了漂移（需全量重拉）
+        
+        当除权事件在数据首次同步后出现，数据数量不变但前复权系数改变，
+        需要触发全量重拉覆盖历史数据。
+        
+        :return: 指纹漂移的股票数量
+        """
+        from app.data.manager import get_data_manager
+        dm = get_data_manager()
+        
+        drifted = 0
+        # 抽样检查（全量检查太慢，只检查有指纹记录的股票）
+        fps = list(db['stock_xdxr'].find({}, {'stock_code': 1, 'fingerprint': 1}).limit(200))
+        for fp_doc in fps:
+            code = fp_doc['stock_code']
+            stored_fp = fp_doc.get('fingerprint')
+            try:
+                current_fp = dm._get_xdxr_fingerprint(code)
+                if current_fp is None:
+                    continue
+                # None→有值 或 有值→变化 都算漂移
+                if stored_fp is None or stored_fp != current_fp:
+                    drifted += 1
+                    logger.debug(f"[一键更新] xdxr 漂移: {code} stored={stored_fp} current={current_fp}")
+            except Exception:
+                continue
+        return drifted
     
     def _is_data_synced_for_date(self, collection_name: str, date_field: str, target_date: str, expected_count: int = 0) -> bool:
         """
@@ -315,23 +371,37 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             sync_method = factory.sync_daily
 
         # 检查哪些日期需要同步
-        # 获取期望的数据量（从步骤的 total_count）
+        # 用 95% 阈值判断，与 sync_daily_data 内部逻辑一致
         from app.data.db import get_db
         db = get_db()
-        step_doc = db['sync_tasks'].find_one(
-            {'task_id': task_id},
-            {'_id': 0, 'steps': 1}
-        )
-        expected_count = 0
-        if step_doc and 'steps' in step_doc and step_idx < len(step_doc['steps']):
-            expected_count = step_doc['steps'][step_idx].get('total_count', 0)
+        from app.data.manager import get_data_manager
+        dm = get_data_manager()
+
+        # 获取实际启用数作为 expected
+        if step_key == 'sync_stocks':
+            expected = db['stock_basics'].count_documents({'is_disable': False})
+        elif step_key == 'sync_sectors':
+            expected = db['sector_basics'].count_documents({'is_disable': False})
+        else:
+            expected = db['index_basics'].count_documents({'is_disable': False})
+
+        threshold = int(expected * 0.95)
 
         dates_to_sync = []
         for date in dates:
-            if not self._is_data_synced_for_date(collection, field, date, expected_count):
-                dates_to_sync.append(date)
+            count = dm._count_final_records('stock' if step_key == 'sync_stocks' else ('sector' if step_key == 'sync_sectors' else 'index'), date)
+            if count >= threshold:
+                # 数量达标，但需检查 xdxr 指纹漂移（仅个股）
+                # 当除权事件在数据首次同步后出现，数据数量不变但需要全量重拉
+                if step_key == 'sync_stocks':
+                    drifted = self._check_xdxr_drift(db)
+                    if drifted > 0:
+                        logger.info(f"[一键更新] {step_key} 日期 {date} 数据数量达标({count}>={threshold})，但 {drifted} 只股票除权指纹变化，需重拉")
+                        dates_to_sync.append(date)
+                        continue
+                logger.info(f"[一键更新] {step_key} 日期 {date} 已有数据 ({count}>= {threshold})，跳过")
             else:
-                logger.info(f"[一键更新] {step_key} 日期 {date} 已有数据，跳过")
+                dates_to_sync.append(date)
 
         if not dates_to_sync:
             logger.info(f"[一键更新] {step_key} 所有日期数据已存在，跳过")
@@ -339,7 +409,7 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             db['sync_tasks'].update_one(
                 {'task_id': task_id},
                 {'$set': {
-                    f'steps.{step_idx}.completed_count': expected_count,
+                    f'steps.{step_idx}.completed_count': expected,
                     f'steps.{step_idx}.message': '数据已存在，跳过同步'
                 }}
             )
@@ -364,7 +434,10 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                     message=message or f'同步 {date}'
                 )
 
-            result = sync_method(date, task_id=task_id, progress_callback=progress_callback)
+            if step_key in ('sync_stocks', 'sync_sectors'):
+                result = sync_method(date, task_id=task_id, progress_callback=progress_callback, single_date=True)
+            else:
+                result = sync_method(date, task_id=task_id, progress_callback=progress_callback)
 
             # 更新步骤进度（最终状态）：不覆盖 completed_count，保留 progress_callback 设的实际值
             self.task_repo.update_step_progress(task_id, step_idx, message=f'同步 {date} 完成')

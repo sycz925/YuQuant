@@ -170,6 +170,10 @@ class SettingsOrchestrator(BaseOrchestrator):
         from app.server.services.factors_service import _run_sync_pe
         _run_sync_pe(task_id, settings.LEGULEGU_TOKEN, is_external=True)
 
+        self.task_repo.update_step_progress(task_id, 0, status='running', message='同步历史PE_TTM...')
+        from app.server.services.factors_service import sync_pe_historical
+        sync_pe_historical()
+
         self.task_repo.update_step_progress(task_id, 0, status='completed', completed_count=1, message='PE同步完成')
 
     def _precompute_base(self, task_id: str, **kwargs) -> None:

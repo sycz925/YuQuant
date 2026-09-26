@@ -173,7 +173,8 @@ class StockFactory:
     def sync_daily(self, target_date: Optional[str] = None,
                    max_workers: int = 16,
                    task_id: str = None,
-                   progress_callback: Callable = None) -> SyncResult:
+                   progress_callback: Callable = None,
+                   single_date: bool = False) -> SyncResult:
         """
         同步个股日线数据（多数据源备份）
         数据源优先级：pytdx → akshare → baostock → yfinance
@@ -211,7 +212,8 @@ class StockFactory:
                 task_id=task_id,
                 max_workers=max_workers,
                 is_external=True,
-                progress_callback=step_progress_callback
+                progress_callback=step_progress_callback,
+                single_date=single_date,
             )
             
             success_count = result.get('success', 0)

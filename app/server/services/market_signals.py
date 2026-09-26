@@ -53,7 +53,7 @@ def generate_market_overview(latest_date: Optional[str] = None) -> Dict[str, Any
     else:
         today, yesterday = dates[0], dates[1]
 
-    # 批量拉取指数数据（直接使用预计算的chg_pct）
+    # 批量拉取指数数据
     index_codes = [c['code'] for c in index_config]
     cursor = db['index_daily'].find(
         {'stock_code': {'$in': index_codes}, 'trade_date': today},
@@ -65,14 +65,30 @@ def generate_market_overview(latest_date: Optional[str] = None) -> Dict[str, Any
 
     df = pd.DataFrame(rows)
     if df.empty:
-        return {'success': False, 'message': '无指数数据'}
+        return {'success': False, 'message': '无有效指数数据'}
 
     # 合并配置名称
     config_map = {c['code']: c for c in index_config}
     df['code'] = df['stock_code']
     df['name'] = df['stock_code'].map(lambda c: config_map.get(c, {}).get('name', c))
     df['code_display'] = df['stock_code'].map(lambda c: config_map.get(c, {}).get('tdx_code', c))
-    df['pct_chg'] = df['chg_pct'].fillna(0)
+
+    # 计算涨跌幅：优先用 chg_pct，缺失时从前一交易日 close 计算
+    if 'chg_pct' in df.columns and df['chg_pct'].notna().any():
+        df['pct_chg'] = df['chg_pct'].fillna(0)
+    else:
+        prev_close_map = {}
+        for code in index_codes:
+            prev_doc = db['index_daily'].find_one(
+                {'stock_code': code, 'trade_date': {'$lt': today}},
+                {'_id': 0, 'close': 1},
+                sort=[('trade_date', -1)]
+            )
+            prev_close_map[code] = prev_doc['close'] if prev_doc and prev_doc.get('close') else 0
+        df['pct_chg'] = df.apply(
+            lambda r: round((r['close'] - prev_close_map.get(r['stock_code'], 0)) / prev_close_map.get(r['stock_code'], 1) * 100, 2)
+            if prev_close_map.get(r['stock_code'], 0) > 0 else 0, axis=1
+        )
 
     # 过滤掉无效数据
     df = df.dropna(subset=['close']).reset_index(drop=True)
@@ -192,18 +208,21 @@ def generate_market_overview(latest_date: Optional[str] = None) -> Dict[str, Any
             'tdx_status': get_index_tdx_status(code, today),
         })
 
-    # 获取指数PE_TTM（从 index_basics 读取，由 sync-index-pe 写入）
+    # 获取指数PE_TTM（按日期从 index_pe_daily 读取，回退到 index_basics）
     try:
-        pe_map = {}
-        pe_cursor = db['index_basics'].find(
-            {'pe_ttm': {'$exists': True, '$ne': None}, 'is_disable': {'$ne': True}},
-            {'_id': 0, 'code': 1, 'pe_ttm': 1}
-        )
-        for doc in pe_cursor:
-            pe_map[doc['code']] = round(float(doc['pe_ttm']), 2)
+        from app.server.services.factors_service import get_pe_ttm_by_date
         for idx in indices:
-            if idx['code'] in pe_map:
-                idx['pe_ttm'] = pe_map[idx['code']]
+            code = idx.get('code', '')
+            pe = get_pe_ttm_by_date(code, today)
+            if pe is not None:
+                idx['pe_ttm'] = pe
+            else:
+                doc = db['index_basics'].find_one(
+                    {'code': code, 'pe_ttm': {'$exists': True, '$ne': None}},
+                    {'_id': 0, 'pe_ttm': 1}
+                )
+                if doc:
+                    idx['pe_ttm'] = round(float(doc['pe_ttm']), 2)
     except Exception as e:
         logger.warning(f"[PE] 读取指数PE失败: {e}")
 

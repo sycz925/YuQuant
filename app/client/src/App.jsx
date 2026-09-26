@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
-import { Button, Tag, Tooltip, notification } from 'antd'
+import { Button, Tag, Tooltip } from 'antd'
 import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined, FundOutlined, AlertOutlined, StarOutlined, AppstoreOutlined, CalendarOutlined } from '@ant-design/icons'
 import CalendarReview from './pages/CalendarReview'
 import ReviewDetail from './pages/ReviewDetail'
@@ -82,20 +82,10 @@ function App() {
       const items = res || []
       if (items.length > 0) {
         unreadCountRef.current += items.length
-        const recent = items.slice(0, 3)
-        const desc = recent.map(r => r.reason).join('\n')
-        const more = items.length > 3 ? `\n...还有${items.length - 3}条` : ''
-        notification.warning({
-          message: `ETF下轨击穿预警 (${items.length}条)`,
-          description: desc + more,
-          duration: 8,
-          onClick: () => { navigate('/etf/alerts'); notification.destroy() },
-          style: { cursor: 'pointer' },
-        })
       }
       lastAlertCheckRef.current = new Date().toISOString()
     } catch (e) { /* 静默 */ }
-  }, [navigate])
+  }, [])
 
   usePolling(checkAlerts, 30000)
 

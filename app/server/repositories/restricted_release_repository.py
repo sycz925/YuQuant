@@ -81,6 +81,43 @@ class RestrictedReleaseRepository:
         )
         return result.deleted_count
 
+    def get_monthly_market_distribution(self, year: int) -> List[Dict[str, Any]]:
+        """获取指定年份各月的市场板块分布"""
+        # 获取所有数据
+        results = self.collection.find(
+            {"release_date": {"$regex": f"^{year}-"}},
+            {"_id": 0, "stock_code": 1, "release_date": 1, "release_market_value": 1}
+        )
+        
+        # 按月统计板块分布
+        monthly_data = {}
+        for r in results:
+            month = int(r["release_date"][5:7])
+            code = str(r["stock_code"]).strip()
+            value = r.get("release_market_value", 0)
+            
+            # 判断板块
+            if code.startswith(('600', '601', '603', '605')):
+                market = '上证'
+            elif code.startswith(('000', '001', '002', '003')):
+                market = '深综'
+            elif code.startswith('300'):
+                market = '创业板'
+            elif code.startswith('688'):
+                market = '科创板'
+            else:
+                market = '其他'
+            
+            if month not in monthly_data:
+                monthly_data[month] = {"month": month, "markets": {}}
+            
+            if market not in monthly_data[month]["markets"]:
+                monthly_data[month]["markets"][market] = 0
+            
+            monthly_data[month]["markets"][market] += value
+        
+        return list(monthly_data.values())
+
 
 # 单例
 _repo_instance = None

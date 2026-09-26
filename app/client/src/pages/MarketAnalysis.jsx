@@ -101,15 +101,20 @@ export default function MarketAnalysis({ initialDate }) {
     try {
       const dateStr = queryDate || toYmd(date) || undefined
 
-      // 先尝试从缓存读取分组统计
+      // 缓存中的 rps_stats 固定为 RPS20，仅当选择 RPS20 时使用缓存
+      // 其他周期需要实时计算以获取正确的分组数据
+      const useCache = rpsGroup === 20
       let cachedStats = null
-      try {
-        const groupRes = await marketReviewApi.getGroupStats(dateStr)
-        if (groupRes?.success && groupRes?.stats && Object.keys(groupRes.stats).length > 0) {
-          cachedStats = groupRes.stats
+
+      if (useCache) {
+        try {
+          const groupRes = await marketReviewApi.getGroupStats(dateStr)
+          if (groupRes?.success && groupRes?.stats && Object.keys(groupRes.stats).length > 0) {
+            cachedStats = groupRes.stats
+          }
+        } catch (e) {
+          // 缓存读取失败，继续实时计算
         }
-      } catch (e) {
-        // 缓存读取失败，继续实时计算
       }
 
       if (cachedStats) {
@@ -123,7 +128,7 @@ export default function MarketAnalysis({ initialDate }) {
           float_mv_stats: cachedStats.float_mv_stats || [],
         })
       } else {
-        // 缓存未命中，实时计算
+        // 缓存未命中或非 RPS20 周期，实时计算
         const params = {}
         if (dateStr) params.date = dateStr
         if (rpsGroup) params.rps_period = rpsGroup

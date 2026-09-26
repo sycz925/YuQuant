@@ -154,6 +154,14 @@ class CalendarRepository(BaseRepository):
             {'_id': 0, 'stock_code': 1, rps_key: 1, 'chg_pct': 1}
         )
 
+    def get_sector_momentum_bubble(self, date: str):
+        """读某日板块四维动量气泡图数据（RPS20>85 的强势板块）"""
+        return list(self._db()['sector_daily'].find(
+            {'trade_date': date, 'rps_20': {'$gt': 85}},
+            {'_id': 0, 'stock_code': 1, 'rps_10': 1, 'rps_20': 1, 'rps_50': 1, 
+             'chg_pct': 1, 'chg_5d': 1, 'chg_20d': 1, 'amount': 1}
+        ).sort('rps_20', -1))
+
     def list_enabled_indices(self) -> List[Dict]:
         """读所有未禁用指数的 code+name"""
         return list(self._db()['index_basics'].find(

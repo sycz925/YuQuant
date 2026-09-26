@@ -186,7 +186,8 @@ class SectorFactory:
     
     def sync_daily(self, target_date: Optional[str] = None,
                    task_id: str = None,
-                   progress_callback: Callable = None) -> SyncResult:
+                   progress_callback: Callable = None,
+                   single_date: bool = False) -> SyncResult:
         """
         同步板块日线数据
         :param target_date: 指定日期 YYYYMMDD，None 同步到最新
@@ -211,7 +212,9 @@ class SectorFactory:
             result = dm.sync_sector_indices(
                 task_id=task_id,
                 enabled_codes=enabled_sectors,
-                is_external=True
+                is_external=True,
+                single_date=single_date,
+                target_date=target_date,
             )
             
             # 计算冗余字段

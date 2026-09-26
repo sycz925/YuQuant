@@ -9,10 +9,11 @@
 import sys
 import time
 import json
+import os
 import hashlib
 import datetime
 import threading
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from queue import Queue, Empty, Full
 
 try:
@@ -33,23 +34,77 @@ except ImportError:
         HAS_PYTDX = False
 
 
-# 通达信服务器列表（优选）
-TDX_SERVERS = [
-    ('180.153.18.170', 7709),
-    ('119.147.212.81', 7709),
-    ('112.74.214.43', 7709),
-    ('121.14.110.194', 7709),
-    ('218.108.98.244', 7709),
-    ('60.12.136.250', 7709),
-]
+def _load_pytdx_config() -> Tuple[List[Tuple[str, int]], Dict]:
+    """
+    从配置文件加载通达信服务器列表和连接参数
+    
+    配置文件路径: config/pytdx_servers.json
+    返回: (servers_list, connection_config)
+    """
+    # 默认配置
+    default_servers = [
+        ('39.108.166.99', 7709),
+        ('180.153.18.170', 7709),
+        ('119.147.212.81', 7709),
+        ('112.74.214.43', 7709),
+        ('121.14.110.194', 7709),
+        ('218.108.98.244', 7709),
+        ('60.12.136.250', 7709),
+    ]
+    default_connection = {
+        'timeout': 5,
+        'pool_size': 16,
+        'ttl_seconds': 900,
+        'max_retries': 3
+    }
+    
+    # 尝试从项目根目录加载配置
+    config_paths = [
+        os.path.join(os.path.dirname(__file__), '..', '..', '..', 'config', 'pytdx_servers.json'),
+        os.path.join(os.getcwd(), 'config', 'pytdx_servers.json'),
+    ]
+    
+    for config_path in config_paths:
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                servers = [(s['host'], s['port']) for s in config.get('servers', [])]
+                connection = config.get('connection', default_connection)
+                
+                if servers:
+                    return servers, connection
+        except Exception:
+            continue
+    
+    return default_servers, default_connection
+
+
+# 加载通达信服务器配置
+TDX_SERVERS, TDX_CONNECTION_CONFIG = _load_pytdx_config()
+
+# 连接配置
+CONNECTION_TIMEOUT = TDX_CONNECTION_CONFIG.get('timeout', 5)
+CONNECTION_POOL_SIZE = TDX_CONNECTION_CONFIG.get('pool_size', 16)
+CONNECTION_TTL = TDX_CONNECTION_CONFIG.get('ttl_seconds', 900)
+MAX_RETRIES = TDX_CONNECTION_CONFIG.get('max_retries', 3)
 
 # 指数代码与市场（板块代码在通达信里使用沪市市场=1）
 MARKET_SH = 1
 MARKET_SZ = 0
 
-# 连接池配置
-CONNECTION_POOL_SIZE = 16  # 连接池大小，匹配线程池
-CONNECTION_TTL = 15 * 60  # 连接最大闲置时长（秒），超时归还时销毁，防止长驻进程堆积失效连接
+
+def get_server_config() -> Dict:
+    """获取当前服务器配置（用于调试和日志）"""
+    return {
+        'servers': [{'host': h, 'port': p} for h, p in TDX_SERVERS],
+        'server_count': len(TDX_SERVERS),
+        'connection': TDX_CONNECTION_CONFIG
+    }
+
+
+# 连接池
 _connection_pool = Queue(maxsize=CONNECTION_POOL_SIZE)
 _pool_lock = threading.Lock()
 _pool_initialized = False
@@ -68,7 +123,7 @@ def _init_connection_pool():
             connected = False
             for host, port in TDX_SERVERS:
                 try:
-                    if api.connect(host, port, time_out=5):
+                    if api.connect(host, port, time_out=CONNECTION_TIMEOUT):
                         connected = True
                         break
                 except Exception:
@@ -123,7 +178,7 @@ def _get_connection():
     api = TdxHq_API()
     for host, port in TDX_SERVERS:
         try:
-            if api.connect(host, port, time_out=5):
+            if api.connect(host, port, time_out=CONNECTION_TIMEOUT):
                 return api
         except Exception:
             continue
@@ -158,7 +213,7 @@ def _get_connection_for_liutong():
     api = TdxHq_API()
     for host, port in TDX_SERVERS:
         try:
-            if api.connect(host, port, time_out=5):
+            if api.connect(host, port, time_out=CONNECTION_TIMEOUT):
                 return api
         except Exception:
             continue
@@ -170,7 +225,7 @@ def _create_new_connection():
     for host, port in TDX_SERVERS:
         api = TdxHq_API()
         try:
-            if api.connect(host, port, time_out=5):
+            if api.connect(host, port, time_out=CONNECTION_TIMEOUT):
                 return api
         except Exception:
             continue
@@ -221,7 +276,7 @@ class PytdxSource:
         api = TdxHq_API()
         for host, port in TDX_SERVERS:
             try:
-                if api.connect(host, port, time_out=5):
+                if api.connect(host, port, time_out=CONNECTION_TIMEOUT):
                     return api
             except Exception:
                 continue

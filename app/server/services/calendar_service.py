@@ -495,6 +495,60 @@ def _format_date_label(date_str: str) -> str:
         return date_str
 
 
+def _build_sector_momentum_bubble(trade_date: str, include_chg_20d: bool = False) -> str:
+    """构建板块四维动量气泡图数据（参考日分析数据格式）
+    
+    Args:
+        trade_date: 交易日期 YYYYMMDD
+        include_chg_20d: 是否包含20日涨幅（月度总结使用）
+    
+    Returns:
+        格式化的板块四维动量气泡图文本
+    """
+    try:
+        repo = get_calendar_repo()
+        
+        # 获取RPS20>85的强势板块
+        high_rps_sectors = repo.get_sector_momentum_bubble(trade_date)
+        
+        if not high_rps_sectors:
+            return ""
+        
+        # 获取板块名称映射
+        code_to_name = {}
+        for s in repo.list_enabled_sectors():
+            code_to_name[s['code']] = s['name']
+        
+        # 构建气泡图文本
+        parts = []
+        parts.append("【板块四维动量气泡图】（RPS20>85 的强势板块，按RPS20降序）")
+        
+        if include_chg_20d:
+            parts.append("  五维指标: RPS20(中期动量) RPS10(短期动量) 当日涨幅 5日涨幅 20日涨幅")
+        else:
+            parts.append("  四维指标: RPS20(中期动量) RPS10(短期动量) 当日涨幅 5日涨幅")
+        
+        parts.append(f"  共 {len(high_rps_sectors)} 个板块:")
+        
+        for s in high_rps_sectors:
+            name = code_to_name.get(s['stock_code'], s['stock_code'])
+            rps20 = s.get('rps_20', 0) or 0
+            rps10 = s.get('rps_10', 0) or 0
+            chg = s.get('chg_pct', 0) or 0
+            chg5 = s.get('chg_5d', 0) or 0
+            
+            if include_chg_20d:
+                chg20 = s.get('chg_20d', 0) or 0
+                parts.append(f"    {name}: RPS20={rps20:.1f}, RPS10={rps10:.1f}, 涨幅={chg:+.1f}%, 5日={chg5:+.1f}%, 20日={chg20:+.1f}%")
+            else:
+                parts.append(f"    {name}: RPS20={rps20:.1f}, RPS10={rps10:.1f}, 涨幅={chg:+.1f}%, 5日={chg5:+.1f}%")
+        
+        return '\n'.join(parts)
+    except Exception as e:
+        logger.warning(f"构建板块四维动量气泡图失败: {e}")
+        return ""
+
+
 def _build_weekly_input_text(week_days: list, ai_docs: dict,
                              new_high_docs: dict = None, lps_docs: dict = None) -> str:
     """构建发送给 DeepSeek 的周总结输入文本"""
@@ -603,8 +657,8 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
             continue
         formatted = _format_date_label(date_str)
         parts.append(f"【{formatted}】")
-        parts.append(f"市场阶段诊断: {ai.get('market_phase_diagnosis', '无')}")
-        parts.append(f"行业集群评估: {ai.get('industry_cluster_evaluation', '无')}")
+        parts.append(f"市场阶段诊断: {ai.get('market_phase_diagnosis', '无').replace('**', '')}")
+        parts.append(f"行业集群评估: {ai.get('industry_cluster_evaluation', '无').replace('**', '')}")
         advices = ai.get('execution_strategy_advice', [])
         if advices:
             parts.append(f"执行策略建议: {'; '.join(advices)}")
@@ -647,6 +701,15 @@ def _build_weekly_input_text(week_days: list, ai_docs: dict,
                 entries = [f"{name}(RPS{val},涨{chg:+.1f}%)" for name, val, chg in items]
                 parts.append(f"{label}: {', '.join(entries)}")
         parts.append("")
+    
+    # 添加板块四维动量气泡图（使用最后一个交易日的数据）
+    if week_days:
+        last_day = week_days[-1]
+        bubble_text = _build_sector_momentum_bubble(last_day, include_chg_20d=False)
+        if bubble_text:
+            parts.append(bubble_text)
+            parts.append("")
+    
     return '\n'.join(parts)
 
 
@@ -748,8 +811,8 @@ def _build_monthly_input_text(month_dates: list, ai_docs: dict,
             ai = ai_docs.get(date_str)
             if ai:
                 day_text = f"【{formatted}】"
-                day_text += f"\n市场阶段诊断: {ai.get('market_phase_diagnosis', '无')}"
-                day_text += f"\n行业集群评估: {ai.get('industry_cluster_evaluation', '无')}"
+                day_text += f"\n市场阶段诊断: {ai.get('market_phase_diagnosis', '无').replace('**', '')}"
+                day_text += f"\n行业集群评估: {ai.get('industry_cluster_evaluation', '无').replace('**', '')}"
                 
                 advices = ai.get('execution_strategy_advice', [])
                 if advices:
@@ -794,6 +857,14 @@ def _build_monthly_input_text(month_dates: list, ai_docs: dict,
         for day_data in current_week:
             parts.append(day_data)
         parts.append("")
+    
+    # 添加板块四维动量气泡图（使用最后一个交易日的数据，包含20日涨幅）
+    if month_dates:
+        last_day = month_dates[-1]
+        bubble_text = _build_sector_momentum_bubble(last_day, include_chg_20d=True)
+        if bubble_text:
+            parts.append(bubble_text)
+            parts.append("")
 
     return '\n'.join(parts)
 

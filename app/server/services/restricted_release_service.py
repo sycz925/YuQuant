@@ -15,18 +15,48 @@ class RestrictedReleaseService:
     def __init__(self):
         self.repo = get_restricted_release_repository()
 
+    @staticmethod
+    def _get_market(code: str) -> str:
+        """根据股票代码判断市场板块"""
+        code = str(code).strip()
+        if code.startswith(('600', '601', '603', '605')):
+            return '上证'
+        elif code.startswith(('000', '001', '002', '003')):
+            return '深综'
+        elif code.startswith('300'):
+            return '创业板'
+        elif code.startswith('688'):
+            return '科创板'
+        else:
+            return '其他'
+
     def get_monthly_summary(self, year: int) -> Dict[str, Any]:
         """获取指定年份的月度汇总"""
         months = self.repo.get_monthly_summary(year)
         
+        # 获取各月板块分布
+        monthly_market = self.repo.get_monthly_market_distribution(year)
+        
         # 补充12个月，没有数据的月份显示为0
         month_map = {m["month"]: m for m in months}
+        market_map = {m["month"]: m.get("markets", {}) for m in monthly_market}
+        
         full_months = []
         for m in range(1, 13):
-            if m in month_map:
-                full_months.append(month_map[m])
-            else:
-                full_months.append({"month": m, "total_value": 0, "stock_count": 0})
+            month_data = month_map.get(m, {"month": m, "total_value": 0, "stock_count": 0})
+            markets = market_map.get(m, {})
+            
+            # 计算板块比例
+            total = month_data["total_value"]
+            market_ratio = {}
+            for market_name in ['上证', '深综', '创业板', '科创板']:
+                market_value = markets.get(market_name, 0)
+                market_ratio[market_name] = round(market_value / total * 100, 1) if total > 0 else 0
+            
+            full_months.append({
+                **month_data,
+                "market_ratio": market_ratio
+            })
         
         return {"year": year, "months": full_months}
 

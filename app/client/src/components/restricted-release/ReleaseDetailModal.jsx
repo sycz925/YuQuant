@@ -71,6 +71,8 @@ export default function ReleaseDetailModal({ visible, year, month, onClose }) {
       title: '解禁金额(亿)',
       dataIndex: 'release_market_value',
       width: 110,
+      sorter: (a, b) => (a.release_market_value || 0) - (b.release_market_value || 0),
+      defaultSortOrder: 'descend',
       render: (v) => (v ? v.toFixed(2) : '---'),
     },
     { title: '解禁类型', dataIndex: 'release_type', width: 150 },

@@ -9,12 +9,8 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# TDX 服务器列表
-TDX_SERVERS = [
-    ('180.153.18.170', 7709),
-    ('180.153.18.171', 7709),
-    ('60.12.136.250', 7709),
-]
+# 从配置文件加载TDX服务器列表
+from app.data.sources.pytdx_source import TDX_SERVERS
 
 # 数据源优先级
 DATA_SOURCE_PRIORITY = ['pytdx', 'akshare', 'baostock', 'yfinance']
