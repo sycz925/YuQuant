@@ -6,6 +6,7 @@ import { factorApi, healthApi, marketReviewApi } from '../api'
 import MarketOverview from '../components/MarketOverview'
 import MarketSignals from '../components/MarketSignals'
 import MaBreadthChart from '../components/MaBreadthChart'
+import BtiChart from '../components/BtiChart'
 import NhNlOverlayChart from '../components/NhNlOverlayChart'
 import AiAnalysis from '../components/AiAnalysis'
 
@@ -76,6 +77,11 @@ function MarketMonitor({ queryDate: propQueryDate }) {
   const dateRef = useRef(null)
   const [, forceUpdate] = useState(0)
   const [totalStocks, setTotalStocks] = useState(0)
+  // 图例点击切换系列显示（key: value=个股CR5% / sectorCr=板块CR10% / indexValue=指数）
+  const [hiddenSeries, setHiddenSeries] = useState([])
+  const toggleSeries = useCallback((key) => {
+    setHiddenSeries(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
+  }, [])
   const requestIdRef = useRef(0)
   const initializedRef = useRef(false)
 
@@ -199,9 +205,26 @@ function MarketMonitor({ queryDate: propQueryDate }) {
             </div>
             <div className="flex items-center justify-between md:space-x-4">
               <div className="flex items-center space-x-2 md:space-x-3 text-[10px] md:text-xs font-bold text-gray-500">
-                <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-blue-500 mr-1 md:mr-1.5"></span><span className="hidden sm:inline">个股CR5%</span><span className="sm:hidden">CR5</span></div>
-                <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-purple-500 mr-1 md:mr-1.5"></span><span className="hidden sm:inline">板块CR10%</span><span className="sm:hidden">CR10</span></div>
-                <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-orange-400 mr-1 md:mr-1.5"></span>{selectedIndexName}</div>
+                <button type="button" onClick={() => toggleSeries('value')} title="点击切换显示/隐藏"
+                  className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+                  style={{ opacity: hiddenSeries.includes('value') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+                  <span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-blue-500 mr-1 md:mr-1.5"></span>
+                  <span className={`hidden sm:inline ${hiddenSeries.includes('value') ? 'line-through' : ''}`}>个股CR5%</span>
+                  <span className={`sm:hidden ${hiddenSeries.includes('value') ? 'line-through' : ''}`}>CR5</span>
+                </button>
+                <button type="button" onClick={() => toggleSeries('sectorCr')} title="点击切换显示/隐藏"
+                  className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+                  style={{ opacity: hiddenSeries.includes('sectorCr') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+                  <span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-purple-500 mr-1 md:mr-1.5"></span>
+                  <span className={`hidden sm:inline ${hiddenSeries.includes('sectorCr') ? 'line-through' : ''}`}>板块CR10%</span>
+                  <span className={`sm:hidden ${hiddenSeries.includes('sectorCr') ? 'line-through' : ''}`}>CR10</span>
+                </button>
+                <button type="button" onClick={() => toggleSeries('indexValue')} title="点击切换显示/隐藏"
+                  className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+                  style={{ opacity: hiddenSeries.includes('indexValue') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+                  <span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-orange-400 mr-1 md:mr-1.5"></span>
+                  <span className={hiddenSeries.includes('indexValue') ? 'line-through' : ''}>{selectedIndexName}</span>
+                </button>
               </div>
               <Select
                 value={selectedIndex}
@@ -252,9 +275,9 @@ function MarketMonitor({ queryDate: propQueryDate }) {
                     strokeWidth={1}
                     label={{ value: '警戒线', position: 'insideBottomRight', fill: '#ef4444', fontSize: 9, fontWeight: 800 }}
                   />
-                  <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} dot={false} activeDot={{ r: 4, strokeWidth: 0, fill: '#3b82f6' }} name="个股CR5%" />
-                  <Line type="monotone" dataKey="sectorCr" stroke="#a855f7" strokeWidth={1.5} dot={false} activeDot={{ r: 3, strokeWidth: 0, fill: '#a855f7' }} name="板块CR10%" connectNulls />
-                  <Line type="monotone" dataKey="indexValue" stroke="#fbbf24" strokeWidth={1.5} dot={false} strokeDasharray="8 4" strokeOpacity={0.8} name={selectedIndexName} />
+                  <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} dot={false} activeDot={{ r: 4, strokeWidth: 0, fill: '#3b82f6' }} name="个股CR5%" hide={hiddenSeries.includes('value')} />
+                  <Line type="monotone" dataKey="sectorCr" stroke="#a855f7" strokeWidth={1.5} dot={false} activeDot={{ r: 3, strokeWidth: 0, fill: '#a855f7' }} name="板块CR10%" connectNulls hide={hiddenSeries.includes('sectorCr')} />
+                  <Line type="monotone" dataKey="indexValue" stroke="#fbbf24" strokeWidth={1.5} dot={false} strokeDasharray="8 4" strokeOpacity={0.8} name={selectedIndexName} hide={hiddenSeries.includes('indexValue')} />
                 </LineChart>
               </ResponsiveContainer>
             )}
@@ -264,6 +287,9 @@ function MarketMonitor({ queryDate: propQueryDate }) {
 
       {/* 均线占比趋势 */}
       <div data-section="均线占比趋势"><MaBreadthChart /></div>
+
+      {/* BTI 广度指标 */}
+      <div data-section="BTI广度指标"><BtiChart /></div>
 
       {/* 新高新低指数 */}
       <div data-section="新高新低指数"><NhNlOverlayChart /></div>

@@ -34,9 +34,10 @@ router = APIRouter(prefix="/api/market-review", tags=["market-review"])
 
 @router.get("/base-data")
 def get_base_data(
-    type: str = Query(..., description="数据类型: cr5/ma/nh-nl"),
+    type: str = Query(..., description="数据类型: cr5/ma/nh-nl/bti"),
     period: str = Query("day", description="聚合周期: day/week/month/quarter/year"),
-    index_code: Optional[str] = Query(None, description="叠加指数代码")
+    index_code: Optional[str] = Query(None, description="叠加指数代码"),
+    warmup: int = Query(0, ge=0, le=60, description="额外预热的周期数（供 MABTI 等派生指标计算，前端可自行裁剪掉）")
 ):
     """统一基础数据接口：从 base_data_daily 读取，支持周期聚合"""
     try:
@@ -46,16 +47,25 @@ def get_base_data(
         period_days = {'day': 120, 'week': 365, 'month': 365 * 3, 'quarter': 365 * 5, 'year': 365 * 10}
         days = period_days.get(period, 120)
 
+        # 预热：额外多取 warmup 个周期的数据，供派生指标（如 MABTI）计算后再裁剪
+        if warmup > 0:
+            per_period_days = {'day': 1, 'week': 7, 'month': 30, 'quarter': 91, 'year': 365}
+            days += warmup * per_period_days.get(period, 1)
+
         # 选择查询字段
         if type == 'cr5':
             fields = {'_id': 0, 'date': 1, 'cr5_pct': 1, 'cr10_pct': 1}
             filter_q = {'cr5_pct': {'$exists': True}}
         elif type == 'ma':
-            fields = {'_id': 0, 'date': 1, 'ma50_pct': 1, 'ma20_pct': 1}
+            fields = {'_id': 0, 'date': 1, 'ma50_pct': 1, 'ma20_pct': 1, 'ma250_pct': 1}
             filter_q = {'ma50_pct': {'$exists': True}}
         elif type == 'nh-nl':
             fields = {'_id': 0, 'date': 1, 'nh': 1, 'nl': 1, 'nh_3m': 1, 'nl_3m': 1, 'nh_1m': 1, 'nl_1m': 1}
             filter_q = {'nh': {'$exists': True}}
+        elif type == 'bti':
+            # BTI 广度指标（含当日广度比，MABTI 由前端按当前周期计算）
+            fields = {'_id': 0, 'date': 1, 'bti': 1, 'up_count_ratio': 1}
+            filter_q = {'bti': {'$exists': True}}
         else:
             raise HTTPException(status_code=400, detail=f"未知type: {type}")
 
@@ -81,11 +91,7 @@ def get_base_data(
                 logger.info(f"[base-data] 盘中补充{len(bulk_ops)}天数据到base_data_daily")
             data.sort(key=lambda x: x['date'])
 
-        # 周期聚合（非日线时）
-        if period != 'day' and data:
-            data = _aggregate_base_data(data, type, period)
-
-        # 叠加指数数据
+        # 叠加指数数据（放在周期聚合之前，便于一并按周期聚合，长周期也能显示）
         if index_code and data:
             idx_dates = [d['date'] for d in data]
             idx_map = repo.get_index_daily(index_code, idx_dates)
@@ -97,6 +103,10 @@ def get_base_data(
                     if item['date'] in idx_map:
                         item['index_value'] = round(20 + (idx_map[item['date']] - min_v) / rng * 60, 1)
                         item['index_raw'] = idx_map[item['date']]
+
+        # 周期聚合（非日线时）
+        if period != 'day' and data:
+            data = _aggregate_base_data(data, type, period)
 
         return {'success': True, 'data': data}
     except HTTPException:

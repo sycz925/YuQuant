@@ -39,7 +39,7 @@ SECTOR_RPS_FIELDS = ['rps_10', 'rps_20', 'rps_50', 'rps_120', 'rps_250']
 SECTOR_RPS_PERIODS = {'rps_10': 10, 'rps_20': 20, 'rps_50': 50, 'rps_120': 120, 'rps_250': 250}
 
 # 均线周期
-MA_PERIODS = [10, 20, 50, 120]
+MA_PERIODS = [10, 20, 50, 120, 250]
 VOL_MA_PERIODS = [5, 10, 20, 50]
 
 # 区间涨幅周期

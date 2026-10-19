@@ -55,6 +55,11 @@ function MaBreadthChart() {
   const [indexConfig, setIndexConfig] = useState([])
   const [selectedIndex, setSelectedIndex] = useState('')
   const [initialized, setInitialized] = useState(false)
+  // 图例点击切换系列显示（key: ma50_pct / ma250_pct / ma20_pct / index_value）
+  const [hiddenSeries, setHiddenSeries] = useState([])
+  const toggleSeries = useCallback((key) => {
+    setHiddenSeries(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
+  }, [])
 
   useEffect(() => {
     loadIndices()
@@ -105,9 +110,32 @@ function MaBreadthChart() {
         </div>
         <div className="flex items-center justify-between md:space-x-4">
           <div className="flex items-center space-x-2 md:space-x-3 text-[10px] md:text-xs font-bold text-gray-500">
-            <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-blue-500 mr-1 md:mr-1.5"></span>MA50</div>
-            <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-purple-500 mr-1 md:mr-1.5"></span>MA20</div>
-            {selectedIndex && <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-orange-400 mr-1 md:mr-1.5"></span>{indexName}</div>}
+            <button type="button" onClick={() => toggleSeries('ma50_pct')} title="点击切换显示/隐藏"
+              className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+              style={{ opacity: hiddenSeries.includes('ma50_pct') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+              <span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-blue-500 mr-1 md:mr-1.5"></span>
+              <span className={hiddenSeries.includes('ma50_pct') ? 'line-through' : ''}>MA50</span>
+            </button>
+            <button type="button" onClick={() => toggleSeries('ma250_pct')} title="点击切换显示/隐藏"
+              className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+              style={{ opacity: hiddenSeries.includes('ma250_pct') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+              <span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-emerald-500 mr-1 md:mr-1.5"></span>
+              <span className={hiddenSeries.includes('ma250_pct') ? 'line-through' : ''}>MA250</span>
+            </button>
+            <button type="button" onClick={() => toggleSeries('ma20_pct')} title="点击切换显示/隐藏"
+              className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+              style={{ opacity: hiddenSeries.includes('ma20_pct') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+              <span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-purple-500 mr-1 md:mr-1.5"></span>
+              <span className={hiddenSeries.includes('ma20_pct') ? 'line-through' : ''}>MA20</span>
+            </button>
+            {selectedIndex && (
+              <button type="button" onClick={() => toggleSeries('index_value')} title="点击切换显示/隐藏"
+                className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+                style={{ opacity: hiddenSeries.includes('index_value') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+                <span className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-orange-400 mr-1 md:mr-1.5"></span>
+                <span className={hiddenSeries.includes('index_value') ? 'line-through' : ''}>{indexName}</span>
+              </button>
+            )}
           </div>
           <Select value={selectedIndex} onChange={setSelectedIndex} size="small" className="w-28 md:w-32 flex-shrink-0"
             options={indexConfig.map(c => ({ value: c.code, label: c.name }))} />
@@ -137,12 +165,14 @@ function MaBreadthChart() {
               <ReferenceLine yAxisId="pct" y={20} stroke="#22c55e" strokeDasharray="8 8" strokeWidth={1}
                 label={{ value: '20%超跌', position: 'insideBottomRight', fill: '#22c55e', fontSize: 9, fontWeight: 700 }} />
               <Line yAxisId="pct" type="monotone" dataKey="ma50_pct" stroke="#3b82f6" strokeWidth={2} dot={false}
-                activeDot={{ r: 4, strokeWidth: 0, fill: '#3b82f6' }} name="MA50占比" />
+                activeDot={{ r: 4, strokeWidth: 0, fill: '#3b82f6' }} name="MA50占比" hide={hiddenSeries.includes('ma50_pct')} />
+              <Line yAxisId="pct" type="monotone" dataKey="ma250_pct" stroke="#10b981" strokeWidth={1.5} dot={false}
+                activeDot={{ r: 3, strokeWidth: 0, fill: '#10b981' }} name="MA250占比" hide={hiddenSeries.includes('ma250_pct')} />
               <Line yAxisId="pct" type="monotone" dataKey="ma20_pct" stroke="#a855f7" strokeWidth={1.5} dot={false}
-                activeDot={{ r: 3, strokeWidth: 0, fill: '#a855f7' }} name="MA20占比" />
+                activeDot={{ r: 3, strokeWidth: 0, fill: '#a855f7' }} name="MA20占比" hide={hiddenSeries.includes('ma20_pct')} />
               {data.some(d => d.index_value != null) && (
                 <Line yAxisId="pct" type="monotone" dataKey="index_value" stroke="#fbbf24" strokeWidth={1.5} dot={false}
-                  strokeDasharray="8 4" strokeOpacity={0.8} name={indexName} />
+                  strokeDasharray="8 4" strokeOpacity={0.8} name={indexName} hide={hiddenSeries.includes('index_value')} />
               )}
             </LineChart>
           </ResponsiveContainer>

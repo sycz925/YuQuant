@@ -853,19 +853,26 @@ def _compute_realtime(data_type, trade_date):
             row['cr10_pct'] = round(sum(amounts[:n10]) / sum(amounts) * 100, 4)
 
     elif data_type == 'ma':
-        # MA50/MA20占比
+        # MA20/MA50/MA250 占比
         pipeline = [
             {'$match': {'trade_date': trade_date, 'close': {'$gt': 0}, 'ma50': {'$gt': 0}}},
             {'$group': {
                 '_id': '$trade_date', 'total': {'$sum': 1},
                 'above_ma50': {'$sum': {'$cond': [{'$gt': ['$close', '$ma50']}, 1, 0]}},
-                'above_ma20': {'$sum': {'$cond': [{'$gt': ['$close', '$ma20']}, 1, 0]}}
+                'above_ma20': {'$sum': {'$cond': [{'$gt': ['$close', '$ma20']}, 1, 0]}},
+                'total_ma250': {'$sum': {'$cond': [{'$gt': ['$ma250', 0]}, 1, 0]}},
+                'above_ma250': {'$sum': {'$cond': [
+                    {'$and': [{'$gt': ['$ma250', 0]}, {'$gt': ['$close', '$ma250']}]}, 1, 0]}}
             }}
         ]
         r = list(db['stock_daily'].aggregate(pipeline))
         if r and r[0]['total'] > 0:
             row['ma50_pct'] = round(r[0]['above_ma50'] / r[0]['total'] * 100, 1)
             row['ma20_pct'] = round(r[0]['above_ma20'] / r[0]['total'] * 100, 1)
+            # MA250 仅以「上市满250日（存在 ma250）」的个股为分母，避免新股拉低占比
+            base_ma250 = r[0].get('total_ma250', 0)
+            if base_ma250 > 0:
+                row['ma250_pct'] = round(r[0]['above_ma250'] / base_ma250 * 100, 1)
 
     elif data_type == 'nh-nl':
         # NH-NL：支持250日/60日(3个月)/20日(1个月)滚动窗口
@@ -982,6 +989,47 @@ def _compute_realtime(data_type, trade_date):
         row['nh_1m'] = nh_1m
         row['nl_1m'] = nl_1m
 
+    elif data_type == 'bti':
+        # BTI 广度指标 = N日EMA( 上涨家数 / (上涨家数+下跌家数) × 100 )
+        # 经典 Zweig Breadth Thrust：10日EMA，天线 61.5% / 地线 40%
+        # 递推需要历史序列，取最近 120 个交易日重算 EMA（足以收敛）
+        N = 10
+        alpha = 2.0 / (N + 1)
+        docs = list(db['base_data_daily'].find(
+            {'date': {'$lte': trade_date},
+             'up_count': {'$exists': True},
+             'down_count': {'$exists': True}},
+            {'_id': 0, 'date': 1, 'up_count': 1, 'down_count': 1}
+        ).sort('date', -1).limit(120))
+        docs.reverse()
+
+        # 当天若尚未落库涨跌家数，则从 stock_daily 实时聚合补上
+        if not any(d['date'] == trade_date for d in docs):
+            agg = list(db['stock_daily'].aggregate([
+                {'$match': {'trade_date': trade_date, 'close': {'$gt': 0}}},
+                {'$group': {'_id': None,
+                            'up': {'$sum': {'$cond': [{'$gt': ['$chg_pct', 0]}, 1, 0]}},
+                            'down': {'$sum': {'$cond': [{'$lt': ['$chg_pct', 0]}, 1, 0]}}}}
+            ]))
+            if agg:
+                docs.append({'date': trade_date,
+                             'up_count': agg[0]['up'], 'down_count': agg[0]['down']})
+
+        ema = None
+        for d in docs:
+            up = d.get('up_count', 0) or 0
+            dn = d.get('down_count', 0) or 0
+            tot = up + dn
+            if tot <= 0:
+                continue
+            x = up / tot * 100.0          # 当日广度比（百分比）
+            if d['date'] == trade_date:
+                row['up_count_ratio'] = round(x, 2)
+            ema = x if ema is None else (alpha * x + (1 - alpha) * ema)
+
+        if ema is not None:
+            row['bti'] = round(ema, 2)
+
     return row if len(row) > 1 else None
 
 
@@ -1011,7 +1059,7 @@ def _aggregate_base_data(data, data_type, period):
             key = s
 
         if key not in buckets:
-            buckets[key] = {'date': key}
+            buckets[key] = {'date': key, '_idx_value': None, '_idx_raw': None}
             if data_type == 'cr5':
                 buckets[key]['cr5_sum'] = 0
                 buckets[key]['cr10_sum'] = 0
@@ -1019,6 +1067,8 @@ def _aggregate_base_data(data, data_type, period):
             elif data_type == 'ma':
                 buckets[key]['ma50_sum'] = 0
                 buckets[key]['ma20_sum'] = 0
+                buckets[key]['ma250_sum'] = 0
+                buckets[key]['ma250_count'] = 0
                 buckets[key]['count'] = 0
             elif data_type == 'nh-nl':
                 buckets[key]['nh'] = 0
@@ -1027,8 +1077,15 @@ def _aggregate_base_data(data, data_type, period):
                 buckets[key]['nl_3m'] = 0
                 buckets[key]['nh_1m'] = 0
                 buckets[key]['nl_1m'] = 0
+            elif data_type == 'bti':
+                buckets[key]['bti_last'] = None
+                buckets[key]['bti_count'] = 0
 
         b = buckets[key]
+        # 指数叠加：取该周期最后一个交易日的值（data 按日期升序，后值覆盖前值）
+        if d.get('index_value') is not None:
+            b['_idx_value'] = d['index_value']
+            b['_idx_raw'] = d.get('index_raw')
         if data_type == 'cr5':
             b['cr5_sum'] += d.get('cr5_pct', 0) or 0
             b['cr10_sum'] += d.get('cr10_pct', 0) or 0
@@ -1036,6 +1093,9 @@ def _aggregate_base_data(data, data_type, period):
         elif data_type == 'ma':
             b['ma50_sum'] += d.get('ma50_pct', 0) or 0
             b['ma20_sum'] += d.get('ma20_pct', 0) or 0
+            if d.get('ma250_pct') is not None:
+                b['ma250_sum'] += d['ma250_pct']
+                b['ma250_count'] += 1
             b['count'] += 1
         elif data_type == 'nh-nl':
             b['nh'] += d.get('nh', 0) or 0
@@ -1044,17 +1104,28 @@ def _aggregate_base_data(data, data_type, period):
             b['nl_3m'] += d.get('nl_3m', 0) or 0
             b['nh_1m'] += d.get('nh_1m', 0) or 0
             b['nl_1m'] += d.get('nl_1m', 0) or 0
+        elif data_type == 'bti':
+            # BTI 已是平滑值，周期聚合取该周期最后一个交易日的值
+            v = d.get('bti')
+            if v is not None:
+                b['bti_last'] = v
+                b['bti_count'] += 1
 
     # 计算均值
     result = []
     for b in sorted(buckets.values(), key=lambda x: x['date']):
         item = {'date': b['date']}
+        if b.get('_idx_value') is not None:
+            item['index_value'] = b['_idx_value']
+            item['index_raw'] = b['_idx_raw']
         if data_type == 'cr5' and b.get('count', 0) > 0:
             item['cr5_pct'] = round(b['cr5_sum'] / b['count'], 4)
             item['cr10_pct'] = round(b['cr10_sum'] / b['count'], 4)
         elif data_type == 'ma' and b.get('count', 0) > 0:
             item['ma50_pct'] = round(b['ma50_sum'] / b['count'], 1)
             item['ma20_pct'] = round(b['ma20_sum'] / b['count'], 1)
+            if b.get('ma250_count', 0) > 0:
+                item['ma250_pct'] = round(b['ma250_sum'] / b['ma250_count'], 1)
         elif data_type == 'nh-nl':
             item['nh'] = b['nh']
             item['nl'] = b['nl']
@@ -1062,5 +1133,8 @@ def _aggregate_base_data(data, data_type, period):
             item['nl_3m'] = b['nl_3m']
             item['nh_1m'] = b['nh_1m']
             item['nl_1m'] = b['nl_1m']
+        elif data_type == 'bti':
+            if b.get('bti_count', 0) > 0 and b.get('bti_last') is not None:
+                item['bti'] = b['bti_last']
         result.append(item)
     return result

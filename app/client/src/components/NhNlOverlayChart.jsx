@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { Spin, Select, Segmented } from 'antd'
 import ReactECharts from 'echarts-for-react'
 import { marketReviewApi, factorApi } from '../api'
@@ -63,6 +63,11 @@ function NhNlOverlayChart() {
   const [indexConfig, setIndexConfig] = useState([])
   const [selectedIndex, setSelectedIndex] = useState('000001')
   const [period, setPeriod] = useState('day')
+  // 图例点击切换系列显示（key: nh250 / nh3m / nh1m / index）
+  const [hiddenSeries, setHiddenSeries] = useState([])
+  const toggleSeries = useCallback((key) => {
+    setHiddenSeries(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
+  }, [])
 
   useEffect(() => { loadIndices() }, [])
   useEffect(() => { loadData() }, [selectedIndex, period])
@@ -148,7 +153,17 @@ function NhNlOverlayChart() {
           return html
         }
       },
-      legend: { data: ['NH-NL (250日)', 'NH-NL (3个月)', 'NH-NL (1个月)', indexName], top: 5, textStyle: { fontSize: 11, color: '#6b7280' } },
+      legend: {
+        data: ['NH-NL (250日)', 'NH-NL (3个月)', 'NH-NL (1个月)', indexName],
+        selected: {
+          'NH-NL (250日)': !hiddenSeries.includes('nh250'),
+          'NH-NL (3个月)': !hiddenSeries.includes('nh3m'),
+          'NH-NL (1个月)': !hiddenSeries.includes('nh1m'),
+          [indexName]: !hiddenSeries.includes('index'),
+        },
+        top: 5,
+        textStyle: { fontSize: 11, color: '#6b7280' }
+      },
       grid: { left: 55, right: 15, top: 35, bottom: 30 },
       xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10, color: '#9ca3af', formatter: (v) => formatDate(v) }, axisLine: { lineStyle: { color: '#e5e7eb' } }, axisTick: { show: false } },
       yAxis: [
@@ -189,10 +204,30 @@ function NhNlOverlayChart() {
           <Segmented options={PERIOD_OPTIONS} value={period} onChange={setPeriod} size="small" />
         </div>
         <div className="flex items-center space-x-3 text-xs font-bold text-gray-500">
-          <div className="flex items-center"><span className="w-3 h-3 rounded-full bg-indigo-500 mr-1.5"></span>NH-NL (250日)</div>
-          <div className="flex items-center"><span className="w-3 h-3 rounded-full bg-orange-500 mr-1.5"></span>NH-NL (3个月)</div>
-          <div className="flex items-center"><span className="w-3 h-3 rounded-full bg-purple-500 mr-1.5"></span>NH-NL (1个月)</div>
-          <div className="flex items-center"><span className="w-3 h-3 rounded-full bg-amber-500 mr-1.5"></span>{indexName}</div>
+          <button type="button" onClick={() => toggleSeries('nh250')} title="点击切换显示/隐藏"
+            className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+            style={{ opacity: hiddenSeries.includes('nh250') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+            <span className="w-3 h-3 rounded-full bg-indigo-500 mr-1.5"></span>
+            <span className={hiddenSeries.includes('nh250') ? 'line-through' : ''}>NH-NL (250日)</span>
+          </button>
+          <button type="button" onClick={() => toggleSeries('nh3m')} title="点击切换显示/隐藏"
+            className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+            style={{ opacity: hiddenSeries.includes('nh3m') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+            <span className="w-3 h-3 rounded-full bg-orange-500 mr-1.5"></span>
+            <span className={hiddenSeries.includes('nh3m') ? 'line-through' : ''}>NH-NL (3个月)</span>
+          </button>
+          <button type="button" onClick={() => toggleSeries('nh1m')} title="点击切换显示/隐藏"
+            className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+            style={{ opacity: hiddenSeries.includes('nh1m') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+            <span className="w-3 h-3 rounded-full bg-purple-500 mr-1.5"></span>
+            <span className={hiddenSeries.includes('nh1m') ? 'line-through' : ''}>NH-NL (1个月)</span>
+          </button>
+          <button type="button" onClick={() => toggleSeries('index')} title="点击切换显示/隐藏"
+            className="flex items-center cursor-pointer select-none transition-opacity hover:opacity-70"
+            style={{ opacity: hiddenSeries.includes('index') ? 0.35 : 1, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit' }}>
+            <span className="w-3 h-3 rounded-full bg-amber-500 mr-1.5"></span>
+            <span className={hiddenSeries.includes('index') ? 'line-through' : ''}>{indexName}</span>
+          </button>
           <Select value={selectedIndex} onChange={setSelectedIndex} size="small" style={{ width: 120 }}
             options={indexConfig.map(c => ({ value: c.code, label: c.name }))} />
         </div>
@@ -202,7 +237,22 @@ function NhNlOverlayChart() {
         <div className="h-[300px] flex items-center justify-center"><Spin /></div>
       ) : (
         <div className="h-[300px] w-full">
-          <ReactECharts option={getOption()} style={{ height: '100%', width: '100%' }} />
+          <ReactECharts
+            option={getOption()}
+            onEvents={{
+              // 内置图例点击时回写 state，保证内置图例与自定义图例状态一致
+              legendselectchanged: (params) => {
+                const sel = params?.selected || {}
+                const hidden = []
+                if (sel['NH-NL (250日)'] === false) hidden.push('nh250')
+                if (sel['NH-NL (3个月)'] === false) hidden.push('nh3m')
+                if (sel['NH-NL (1个月)'] === false) hidden.push('nh1m')
+                if (sel[indexName] === false) hidden.push('index')
+                setHiddenSeries(hidden)
+              }
+            }}
+            style={{ height: '100%', width: '100%' }}
+          />
         </div>
       )}
     </div>
