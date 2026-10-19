@@ -20,7 +20,6 @@ from app.server.config import get_settings
 from app.server.models import HealthResponse
 from app.server.api import stocks, factors, sync, market_analysis, market_review, screenshot, calendar, search, etf, alert
 from app.server.api import one_click_update_v2 as one_click_update
-from app.server.api import settings_tasks
 from app.server.api import watchlist
 from app.server.api.restricted_release import router as restricted_release_router
 from app.server.cache import init_trade_dates, get_latest_trade_date
@@ -84,12 +83,23 @@ def _start_alert_scheduler():
     _alert_scheduler_thread.start()
 
 
+def _cleanup_sync_tasks():
+    """启动时清空 sync_tasks（僵尸 running/pending 任务与历史记录一并清除）"""
+    try:
+        from app.server.repositories import get_task_repo
+        deleted = get_task_repo().clear_all()
+        logger.info(f"[任务] 启动清理 sync_tasks，清除 {deleted} 条记录")
+    except Exception as e:
+        logger.warning(f"[任务] 启动清理 sync_tasks 失败: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
     logger.info("应用启动中...")
     init_trade_dates()
+    _cleanup_sync_tasks()
     _start_alert_scheduler()
     logger.info("应用启动完成")
     yield
@@ -156,7 +166,6 @@ app.include_router(screenshot.router)
 app.include_router(calendar.router)
 app.include_router(search.router)
 app.include_router(one_click_update.router)
-app.include_router(settings_tasks.router)
 app.include_router(etf.router)
 app.include_router(alert.router)
 app.include_router(watchlist.router)

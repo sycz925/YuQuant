@@ -4,23 +4,11 @@
 从 api/factors.py 迁移而来
 """
 import logging
-import threading
 from typing import Optional
 
 from app.data.db import get_db
 
 logger = logging.getLogger(__name__)
-
-# ========== 对比任务共享状态 ==========
-
-_compare_tasks = {}
-_compare_lock = threading.Lock()
-
-
-def _compare_update_status(task_id, **kwargs):
-    with _compare_lock:
-        if task_id in _compare_tasks:
-            _compare_tasks[task_id].update(kwargs)
 
 
 # ========== 预计算后台任务 ==========
@@ -57,7 +45,7 @@ def _run_precompute_base_for_date(task_id: str, target_date: str, is_external: b
         _safe_update_progress( current_stock_name=f"计算 {target_date} CR5/CR10/MA/NH-NL...")
 
         merged_row = {'date': target_date, 'is_final': is_market_closed}
-        for dtype in ['cr5', 'cr10', 'ma', 'nh-nl']:
+        for dtype in ['cr5', 'cr10', 'ma', 'nh-nl', 'bti']:
             try:
                 row = _compute_realtime(dtype, target_date)
                 if row:
@@ -471,11 +459,13 @@ def get_pe_ttm_by_date(code: str, date: str) -> Optional[float]:
 
 def _run_compare_stocks_task(task_id):
     """后台执行个股对比任务：基于次新股板块成分股对比本地，排除北交所"""
+    from app.server.repositories import get_task_repo
+    task_repo = get_task_repo()
     try:
         db = get_db()
 
         # 1. 获取本地所有股票代码
-        _compare_update_status(task_id, step='获取本地数据', progress='0%')
+        task_repo.update_task_progress(task_id, current_stock_name='获取本地数据')
         local_codes = set(
             doc['stock_code'] for doc in db['stock_basics'].find(
                 {}, {'_id': 0, 'stock_code': 1}
@@ -483,7 +473,7 @@ def _run_compare_stocks_task(task_id):
         )
 
         # 2. 从 pytdx 获取次新股板块成分股（排除北交所）
-        _compare_update_status(task_id, step='获取次新股板块', progress='30%')
+        task_repo.update_task_progress(task_id, current_stock_name='获取次新股板块')
         import sys
         if '_vendor/pytdx' not in sys.path:
             sys.path.insert(0, '_vendor/pytdx')
@@ -507,7 +497,7 @@ def _run_compare_stocks_task(task_id):
                     })
 
         # 3. 找出本地缺失的股票
-        _compare_update_status(task_id, step='对比数据', progress='70%')
+        task_repo.update_task_progress(task_id, current_stock_name='对比数据')
         remote_set = {s['stock_code'] for s in remote_stocks}
         new_codes = remote_set - local_codes
         new_stocks = [s for s in remote_stocks if s['stock_code'] in new_codes]
@@ -515,7 +505,7 @@ def _run_compare_stocks_task(task_id):
 
         # 4. 补全缺失股票名称（pytdx 遍历两市，无外部依赖）
         if new_stocks:
-            _compare_update_status(task_id, step='补全股票名称', progress='85%')
+            task_repo.update_task_progress(task_id, current_stock_name='补全股票名称')
             try:
                 df = PytdxSource.get_stock_basics()
                 if df is not None and not df.empty:
@@ -525,32 +515,29 @@ def _run_compare_stocks_task(task_id):
             except Exception as e:
                 logger.warning(f"获取股票名称失败: {e}")
 
-        # 5. 存储结果
-        _compare_update_status(
-            task_id,
-            status='completed',
-            step='完成',
-            progress='100%',
-            result={
-                'local_count': len(local_codes),
-                'remote_count': len(remote_set),
-                'new_count': len(new_stocks),
-                'new_stocks': new_stocks,
-            }
-        )
+        # 5. 存储结果并完成
+        task_repo.update_task_progress(task_id, result={
+            'local_count': len(local_codes),
+            'remote_count': len(remote_set),
+            'new_count': len(new_stocks),
+            'new_stocks': new_stocks,
+        })
+        task_repo.complete_task(task_id, '对比完成')
 
     except Exception as e:
         logger.error(f"对比个股任务失败: {e}")
-        _compare_update_status(task_id, status='failed', error=str(e))
+        task_repo.fail_task(task_id, str(e)[:200])
 
 
 def _run_compare_sectors_task(task_id):
-    """后台执行板块对比任务"""
+    """后台执行板块对比任务：区分「新增板块」（本地没有）与「待更新板块」（成分股变化）"""
+    from app.server.repositories import get_task_repo
+    task_repo = get_task_repo()
     try:
         db = get_db()
 
         # 1. 获取本地所有板块（名称→code，code→板块）
-        _compare_update_status(task_id, step='获取本地数据', progress='0%')
+        task_repo.update_task_progress(task_id, current_stock_name='获取本地数据')
         local_name_to_code = {}
         local_sector_by_code = {}
         for doc in db['sector_basics'].find({}, {'_id': 0, 'name': 1, 'stock_codes': 1, 'code': 1}):
@@ -562,7 +549,7 @@ def _run_compare_sectors_task(task_id):
                 local_sector_by_code[code] = doc
 
         # 2. 从 pytdx 获取远程板块列表
-        _compare_update_status(task_id, step='连接pytdx获取板块', progress='30%')
+        task_repo.update_task_progress(task_id, current_stock_name='连接pytdx获取板块')
         import sys
         if '_vendor/pytdx' not in sys.path:
             sys.path.insert(0, '_vendor/pytdx')
@@ -573,7 +560,7 @@ def _run_compare_sectors_task(task_id):
 
         try:
             blocks = pytdx.get_concept_blocks()
-            for idx, block in enumerate(blocks):
+            for block in blocks:
                 name = block.get('name', '')
                 stock_codes = block.get('stock_codes', [])
                 if name and stock_codes:
@@ -588,42 +575,159 @@ def _run_compare_sectors_task(task_id):
         except Exception as e:
             logger.warning(f"获取pytdx板块失败: {e}")
 
-        # 3. 按 code 分类：成分股相同且code本地存在则忽略；否则标记 无code/待更新/待加入
-        _compare_update_status(task_id, step='对比数据', progress='80%')
-        new_sectors = []
+        # 3. 对比：分为「新增板块」与「待更新板块」
+        task_repo.update_task_progress(task_id, current_stock_name='对比数据')
+        new_sectors = []      # 新增：本地没有，pytdx 板块文件不含 885xxx 代码，需 Excel 导入
+        update_sectors = []   # 待更新：本地已有，成分股变化
         for sector in remote_sectors:
             code = sector.get('code', '')
             stock_codes = sector.get('all_stock_codes', [])
 
-            local = local_sector_by_code.get(code) if code else None
-            if code and local and set(local.get('stock_codes', [])) == set(stock_codes):
+            # 本地没有此板块（名称匹配不到 code）→ 新增
+            if not code:
+                new_sectors.append({
+                    'code': '',
+                    'name': sector.get('name', ''),
+                    'stock_count': len(stock_codes),
+                    'stock_codes': stock_codes[:10],
+                    'all_stock_codes': stock_codes,
+                    'status': '新增',
+                })
                 continue
 
-            if not code:
-                status = '无code'
-            elif local:
-                status = '待更新'
-            else:
-                status = '待加入'
-            sector['status'] = status
-            new_sectors.append(sector)
-        
+            local = local_sector_by_code.get(code)
+            if not local:
+                continue
+            # 成分股相同则忽略，不同则标记「待更新」
+            if set(local.get('stock_codes', [])) == set(stock_codes):
+                continue
+            sector['status'] = '待更新'
+            update_sectors.append(sector)
+
+        update_sectors.sort(key=lambda x: -x['stock_count'])
         new_sectors.sort(key=lambda x: -x['stock_count'])
 
-        # 4. 存储结果
-        _compare_update_status(
-            task_id,
-            status='completed',
-            step='完成',
-            progress='100%',
-            result={
-                'local_count': len(local_sector_by_code),
-                'remote_count': len(remote_sectors),
-                'new_count': len(new_sectors),
-                'new_sectors': new_sectors,
-            }
-        )
+        # 4. 存储结果并完成
+        task_repo.update_task_progress(task_id, result={
+            'local_count': len(local_sector_by_code),
+            'remote_count': len(remote_sectors),
+            'new_count': len(new_sectors),
+            'update_count': len(update_sectors),
+            'new_sectors': new_sectors,
+            'update_sectors': update_sectors,
+        })
+        task_repo.complete_task(task_id, '对比完成')
 
     except Exception as e:
         logger.error(f"对比板块任务失败: {e}")
-        _compare_update_status(task_id, status='failed', error=str(e))
+        task_repo.fail_task(task_id, str(e)[:200])
+
+
+# ========== 股票名称修复 ==========
+
+def _normalize_name(name: str) -> str:
+    """名称规范化：去空格、全角转半角"""
+    if not name:
+        return ''
+    name = name.replace(' ', '').replace('\u3000', '')
+    out = []
+    for ch in name:
+        code = ord(ch)
+        if 0xFF01 <= code <= 0xFF5E:
+            out.append(chr(code - 0xFEE0))
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+def _split_st(name: str):
+    """拆分 ST/*ST 标记与核心名，返回 (标记, 核心名)"""
+    if name.startswith('*ST'):
+        return '*ST', name[3:]
+    if name.startswith('ST'):
+        return 'ST', name[2:]
+    return '', name
+
+
+def _decide_name_fix(local_name: str, remote_name: str):
+    """判断单个股票的修复动作（仅名称修复，退市判断由调用处用 status 字段处理）。
+
+    返回 None（无变化）或 {'action': 'fix', 'name': 新名}。
+    规则：截断补全、改名更新、ST/*ST 标记保留。
+    """
+    ln = _normalize_name(local_name)
+    rn = _normalize_name(remote_name)
+
+    # 语义一致
+    if ln == rn:
+        # 原始名称含空格/全角字符 → 清洗规范化（如 "南  玻Ａ" → "南玻A"）
+        if local_name != ln:
+            return {'action': 'fix', 'name': ln}
+        return None
+
+    l_st, l_core = _split_st(ln)
+    r_st, r_core = _split_st(rn)
+
+    # 核心名相同 → 仅 ST 标记差异，采用 baostock 最新标记
+    if l_core == r_core:
+        new_name = (r_st or l_st) + r_core
+    else:
+        # 核心名不同 → 截断补全 / 改名，用 baostock 核心名，保留本地 ST 标记
+        new_name = (l_st or r_st) + r_core
+
+    if new_name == ln:
+        return None
+    return {'action': 'fix', 'name': new_name}
+
+
+def repair_stock_names() -> dict:
+    """一键修复 stock_basics 名称：对比 baostock 完整简称。
+
+    返回 {'fixed': 修复数, 'disabled': 退市禁用数}
+    """
+    import baostock as bs
+    from app.data.sources.pytdx_source import PytdxSource  # noqa: F401 保持导入一致性
+
+    db = get_db()
+    local = list(db['stock_basics'].find({}, {'_id': 0, 'stock_code': 1, 'stock_name': 1}))
+
+    lg = bs.login()
+    if lg.error_code != '0':
+        raise RuntimeError(f"baostock 登录失败: {lg.error_msg}")
+
+    remote = {}
+    try:
+        rs = bs.query_stock_basic()
+        while (rs.error_code == '0') & rs.next():
+            row = rs.get_row_data()  # [code, code_name, ipoDate, outDate, type, status]
+            if row[4] != '1':  # type=1 为股票
+                continue
+            remote[row[0].split('.')[1]] = {'name': row[1], 'status': row[5]}
+    finally:
+        bs.logout()
+
+    fixed = 0
+    disabled = 0
+    for doc in local:
+        code = doc['stock_code']
+        rinfo = remote.get(code)
+        if rinfo is None:
+            continue
+        rname = rinfo['name']
+        rstatus = rinfo.get('status', '1')
+
+        # 退市（baostock status=0，名称含"退"兜底）→ 禁用
+        if rstatus == '0' or '退' in rname:
+            db['stock_basics'].update_one({'stock_code': code}, {'$set': {'is_disable': True}})
+            disabled += 1
+            continue
+
+        decision = _decide_name_fix(doc.get('stock_name', ''), rname)
+        if decision is None:
+            continue
+        if decision['action'] == 'fix':
+            db['stock_basics'].update_one({'stock_code': code}, {'$set': {'stock_name': decision['name']}})
+            fixed += 1
+
+    logger.info(f"[名称修复] 修复 {fixed} 个, 禁用退市 {disabled} 个")
+    return {'fixed': fixed, 'disabled': disabled}

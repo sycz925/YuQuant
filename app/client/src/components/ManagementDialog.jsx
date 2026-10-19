@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Modal, Table, Switch, Button, Space, Input, Select, message, Form } from 'antd'
 import { SearchOutlined, ReloadOutlined, PlusOutlined } from '@ant-design/icons'
 import { stockApi, factorApi } from '../api'
@@ -17,8 +17,6 @@ export default function ManagementDialog({ open, onClose, category, title }) {
   const [addVisible, setAddVisible] = useState(false)
   const [addLoading, setAddLoading] = useState(false)
   const [addForm] = Form.useForm()
-  const fileInputRef = useRef(null)
-  const [importExcelLoading, setImportExcelLoading] = useState(false)
 
   const resetConditions = () => {
     setSearchText('')
@@ -57,7 +55,7 @@ export default function ManagementDialog({ open, onClose, category, title }) {
       if (category === 'index') {
         res = await factorApi.getIndices({ page, page_size: size, keyword, filter_mode: filter })
       } else if (category === 'sector') {
-        res = await factorApi.getSectors({ page, page_size: size, keyword, filter_mode: filter, min_stock_count: 5 })
+        res = await factorApi.getSectors({ page, page_size: size, keyword, filter_mode: filter })
       } else if (category === 'stock') {
         res = await stockApi.getStockList({ page, page_size: size, keyword, filter_mode: filter })
       }
@@ -103,33 +101,6 @@ export default function ManagementDialog({ open, onClose, category, title }) {
   const handleFilterChange = (value) => {
     setFilterMode(value)
     setCurrentPage(1)
-  }
-
-  const handleImportExcel = async (e) => {
-    const file = e.target.files[0]
-    if (!file) return
-    
-    setImportExcelLoading(true)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      
-      const res = await factorApi.importSectorCodes(formData)
-      if (res?.success) {
-        message.success(res.message)
-        loadData(currentPage, pageSize, searchText, filterMode)
-      } else {
-        message.error(res?.message || '导入失败')
-      }
-    } catch (e) {
-      console.error('导入失败:', e)
-      message.error(e.response?.data?.detail || '导入失败')
-    } finally {
-      setImportExcelLoading(false)
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ''
-      }
-    }
   }
 
   const handleAdd = async () => {
@@ -210,24 +181,6 @@ export default function ManagementDialog({ open, onClose, category, title }) {
             <Button size="small" icon={<ReloadOutlined />} onClick={() => loadData(currentPage, pageSize, searchText, filterMode)} />
           </Space>
           <Space>
-            {category === 'sector' && (
-              <>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept=".xlsx,.xls,.csv"
-                  onChange={handleImportExcel}
-                  style={{ display: 'none' }}
-                />
-                <Button 
-                  size="small" 
-                  loading={importExcelLoading}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  导入板块代码
-                </Button>
-              </>
-            )}
             {(category === 'sector' || category === 'index') && (
               <Button size="small" icon={<PlusOutlined />} onClick={() => setAddVisible(true)}>
                 新增

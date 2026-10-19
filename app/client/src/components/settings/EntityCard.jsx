@@ -1,30 +1,19 @@
 import React from 'react'
-import { Card, Button, Typography, Space } from 'antd'
+import { Card, Typography } from 'antd'
+import { RightOutlined } from '@ant-design/icons'
 
 const { Title, Text } = Typography
 
 /**
- * 可复用的实体管理卡片
- * 用于指数/个股/板块的管理界面
+ * 实体管理入口卡
+ * 点击整卡打开对应的实体管理对话框（指数/个股/板块）
  */
-export default function EntityCard({
-  icon,
-  iconBg,
-  iconColor,
-  title,
-  description,
-  buttons,
-  onManage,
-  onCardClick,
-}) {
+export default function EntityCard({ icon, iconBg, title, description, onManage }) {
   return (
-    <Card
-      className="rounded-2xl shadow-sm border-gray-100 cursor-pointer hover:shadow-md transition-shadow"
-      onClick={onCardClick}
-    >
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-2">
-          <div className={`p-3 rounded-xl`} style={{ backgroundColor: iconBg }}>
+    <Card hoverable className="rounded-2xl shadow-sm border-gray-100" onClick={onManage}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <div className="p-3 rounded-xl" style={{ backgroundColor: iconBg }}>
             {icon}
           </div>
           <div>
@@ -32,25 +21,8 @@ export default function EntityCard({
             <Text type="secondary" className="text-xs">{description}</Text>
           </div>
         </div>
-        <Button size="small" onClick={(e) => { e.stopPropagation(); onManage() }}>
-          管理
-        </Button>
+        <RightOutlined className="text-gray-300" />
       </div>
-      <Space direction="vertical" className="w-full">
-        {buttons.map((btn, i) => (
-          <Button
-            key={i}
-            block
-            icon={btn.icon}
-            onClick={(e) => { e.stopPropagation(); btn.onClick() }}
-            loading={btn.loading}
-            disabled={btn.disabled}
-            className={`rounded-lg font-bold ${btn.className || ''}`}
-          >
-            {btn.label}
-          </Button>
-        ))}
-      </Space>
     </Card>
   )
 }

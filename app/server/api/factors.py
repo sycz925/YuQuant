@@ -18,11 +18,9 @@ from app.server.repositories import (
     get_stock_repo, get_sector_repo, get_index_repo, get_task_repo, get_system_config_repo,
 )
 from app.server.services.factors_service import (
-    _compare_tasks,
-    _compare_lock,
-    _compare_update_status,
     _run_compare_stocks_task,
     _run_compare_sectors_task,
+    repair_stock_names,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,7 +150,7 @@ def get_sector_list(
     keyword: Optional[str] = Query(None, description="搜索关键词（代码或名称）"),
     filter_mode: Optional[str] = Query(None, description="筛选模式: enabled/disabled"),
     limit: Optional[int] = Query(None, description="返回数量（兼容旧接口）"),
-    min_stock_count: Optional[int] = Query(5, description="最少成分股数"),
+    min_stock_count: Optional[int] = Query(0, description="最少成分股数（0=不过滤）"),
     sort_by: Optional[str] = Query(None, description="排序字段"),
     sort_order: Optional[str] = Query("desc", description="排序方向"),
     rps_red: Optional[str] = Query(None, description="RPS红筛选: one/two/three"),
@@ -398,19 +396,10 @@ def create_item(item: Dict[str, Any]):
 
 @router.post("/compare-stocks")
 def start_compare_stocks():
-    """启动个股对比任务"""
-    task_id = str(uuid.uuid4())[:8]
-
-    with _compare_lock:
-        _compare_tasks[task_id] = {
-            'task_id': task_id,
-            'type': 'stock',
-            'status': 'running',
-            'step': '准备中',
-            'progress': '0%',
-            'result': None,
-            'error': None,
-        }
+    """启动次新股对比任务"""
+    task_id = str(uuid.uuid4())
+    steps = [{'key': 'compare_stocks', 'name': '次新股对比', 'total_count': 1, 'completed_count': 0}]
+    get_task_repo().create_task(task_id, steps, name='次新股对比')
 
     thread = threading.Thread(target=_run_compare_stocks_task, args=(task_id,), daemon=True)
     thread.start()
@@ -421,18 +410,9 @@ def start_compare_stocks():
 @router.post("/compare-sectors")
 def start_compare_sectors():
     """启动板块对比任务"""
-    task_id = str(uuid.uuid4())[:8]
-
-    with _compare_lock:
-        _compare_tasks[task_id] = {
-            'task_id': task_id,
-            'type': 'sector',
-            'status': 'running',
-            'step': '准备中',
-            'progress': '0%',
-            'result': None,
-            'error': None,
-        }
+    task_id = str(uuid.uuid4())
+    steps = [{'key': 'compare_sectors', 'name': '板块对比', 'total_count': 1, 'completed_count': 0}]
+    get_task_repo().create_task(task_id, steps, name='板块对比')
 
     thread = threading.Thread(target=_run_compare_sectors_task, args=(task_id,), daemon=True)
     thread.start()
@@ -440,228 +420,252 @@ def start_compare_sectors():
     return {'success': True, 'task_id': task_id}
 
 
+def _parse_concept_txt(content: bytes) -> List[Dict]:
+    """解析概念板块 txt（UTF-8，分号分隔：板块代码;板块名称;成分股代码;成分股名称），按板块聚合成分股"""
+    text = content.decode('utf-8-sig', errors='ignore')
+    sectors = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(';')
+        if len(parts) < 3:
+            continue
+        code = parts[0].strip()
+        name = parts[1].strip()
+        stock_code = parts[2].strip()
+        if not code or not name or not stock_code:
+            continue
+        sectors.setdefault((code, name), []).append(stock_code)
+    return [{'code': c, 'name': n, 'stock_codes': codes} for (c, n), codes in sectors.items()]
+
+
 @router.post("/sectors/import-excel")
-async def import_sector_codes_from_excel(file: UploadFile):
-    """从 Excel/CSV 导入板块代码，匹配本地缺少的板块（带 pytdx 成分股校验）"""
+async def import_sector_codes_from_excel(file: UploadFile, preview: bool = Query(False)):
+    """导入板块（preview=True 只预览不落库）。
+
+    支持两种格式：
+    - .txt：板块代码;板块名称;成分股代码;成分股名称（成分股来自文件）
+    - .xlsx/.xls/.csv：code + name 两列（成分股从 pytdx 拿）
+
+    本地不存在的 code，导入时会先验证能拉到板块日线，能拉到才落库。
+    """
     try:
         sector_repo = get_sector_repo()
-        
         content = await file.read()
         filename = file.filename or ''
-        
+
         import pandas as pd
         import io
-        
-        if filename.endswith('.xlsx') or filename.endswith('.xls'):
-            try:
-                df = pd.read_excel(io.BytesIO(content), engine='openpyxl')
-            except Exception:
-                df = pd.read_excel(io.BytesIO(content), engine='xlrd')
-        elif filename.endswith('.csv') or filename.endswith('.tsv'):
-            df = pd.read_csv(io.BytesIO(content), encoding='utf-8', sep=None)
+
+        # ---- 解析：得到统一板块列表 [{code, name, stock_codes}] ----
+        sectors = []
+        if filename.endswith('.txt'):
+            sectors = _parse_concept_txt(content)
         else:
-            try:
-                df = pd.read_csv(io.BytesIO(content), encoding='utf-8', sep=None)
-            except Exception:
-                return {'success': False, 'message': '不支持的文件格式，请使用 Excel、CSV 或 TSV'}
-        
-        code_col = None
-        name_col = None
-        for col in df.columns:
-            col_lower = str(col).lower()
-            if col_lower in ['code', '代码', '板块代码', 'tdx_code']:
-                code_col = col
-            elif col_lower in ['name', '名称', '板块名称', '板块名']:
-                name_col = col
-        
-        if not code_col or not name_col:
-            return {'success': False, 'message': f'未找到 code/name 列，当前列: {list(df.columns)}'}
-        
-        local_names = sector_repo.get_all_names()
-        
-        import sys
-        if '_vendor/pytdx' not in sys.path:
-            sys.path.insert(0, '_vendor/pytdx')
-        from app.data.sources.pytdx_source import PytdxSource
-        
-        pytdx = PytdxSource()
-        remote_blocks = {}
-        try:
-            blocks = pytdx.get_concept_blocks()
-            for block in blocks:
-                name = block.get('name', '')
-                stock_codes = block.get('stock_codes', [])
-                if name and stock_codes:
-                    remote_blocks[name] = stock_codes
-        except Exception as e:
-            logger.warning(f"获取 pytdx 板块失败: {e}")
-        
-        imported = 0
-        imported_codes = []
-        skipped_no_data = 0
-        skipped_exists = 0
-        
-        for _, row in df.iterrows():
-            code = str(row[code_col]).strip()
-            name = str(row[name_col]).strip()
-            
-            if not code or not name:
-                continue
-            
-            if name in local_names:
-                skipped_exists += 1
-                continue
-            
-            stock_codes = remote_blocks.get(name, [])
-            if not stock_codes:
-                skipped_no_data += 1
-                continue
-            
-            sector_repo.insert_one({
-                'code': code,
-                'tdx_code': code,
-                'name': name,
-                'source': 'Excel导入',
-                'stock_count': len(stock_codes),
-                'stock_codes': stock_codes,
-                'block_type': 2,
-                'is_disable': False,
-                'update_time': __import__('datetime').datetime.now(),
-            })
-            imported += 1
-            imported_codes.append(code)
-        
-        if imported_codes:
-            def _sync_sector_daily():
+            # Excel/CSV：解析 code + name 两列，成分股从 pytdx 拿
+            df = None
+            if filename.endswith('.xlsx'):
                 try:
-                    import sys
-                    if '_vendor/pytdx' not in sys.path:
-                        sys.path.insert(0, '_vendor/pytdx')
-                    from pytdx.hq import TdxHq_API
-                    from app.data.sources.pytdx_source import TDX_SERVERS
-                    import numpy as np
-                    
-                    api = TdxHq_API()
-                    for host, port in TDX_SERVERS:
+                    df = pd.read_excel(io.BytesIO(content), engine='openpyxl')
+                except Exception:
+                    df = None
+            elif filename.endswith('.xls'):
+                try:
+                    df = pd.read_excel(io.BytesIO(content), engine='xlrd')
+                except Exception:
+                    df = None
+                if df is None:
+                    for enc in ('gbk', 'gb18030', 'utf-8'):
                         try:
-                            api.connect(host, port)
-                            for sector_code in imported_codes:
-                                sector_doc = sector_repo.get_by_code(sector_code)
-                                if not sector_doc:
-                                    continue
-                                
-                                data = api.get_index_bars(9, 1, sector_code, 0, 250)
-                                if not data or len(data) == 0:
-                                    logger.warning(f"[导入] 板块 {sector_doc['name']}({sector_code}) 无日线数据")
-                                    continue
-                                
-                                records = []
-                                for bar in data:
-                                    dt_str = bar['datetime']
-                                    trade_date = dt_str[:10].replace('-', '')
-                                    records.append({
-                                        'stock_code': sector_code,
-                                        'trade_date': trade_date,
-                                        'open': bar['open'],
-                                        'high': bar['high'],
-                                        'low': bar['low'],
-                                        'close': bar['close'],
-                                        'vol': bar['vol'],
-                                        'amount': bar['amount'],
-                                        'data_source': 'tdx_concept',
-                                    })
-                                
-                                from app.data.db import bulk_upsert_daily_data
-                                bulk_upsert_daily_data(sector_code, records, 'tdx_concept', 'sector')
-                                
-                                all_data = sector_repo.get_daily_docs(sector_code)
-                                
-                                if len(all_data) >= 5:
-                                    closes = [d['close'] for d in all_data]
-                                    vols = [d.get('vol', 0) for d in all_data]
-                                    
-                                    for i in range(len(all_data)):
-                                        date = all_data[i]['trade_date']
-                                        update_fields = {}
-                                        
-                                        if i >= 4:
-                                            update_fields['ma5'] = round(np.mean(closes[i-4:i+1]), 2)
-                                        if i >= 9:
-                                            update_fields['ma10'] = round(np.mean(closes[i-9:i+1]), 2)
-                                        if i >= 19:
-                                            update_fields['ma20'] = round(np.mean(closes[i-19:i+1]), 2)
-                                        if i >= 49:
-                                            update_fields['ma50'] = round(np.mean(closes[i-49:i+1]), 2)
-                                        if i >= 119:
-                                            update_fields['ma120'] = round(np.mean(closes[i-119:i+1]), 2)
-                                        
-                                        if i >= 4:
-                                            update_fields['vol_ma5'] = round(np.mean(vols[i-4:i+1]), 2)
-                                        if i >= 9:
-                                            update_fields['vol_ma10'] = round(np.mean(vols[i-9:i+1]), 2)
-                                        if i >= 19:
-                                            update_fields['vol_ma20'] = round(np.mean(vols[i-19:i+1]), 2)
-                                        if i >= 49:
-                                            update_fields['vol_ma50'] = round(np.mean(vols[i-49:i+1]), 2)
-                                        
-                                        if i > 0 and closes[i-1] > 0:
-                                            update_fields['chg_pct'] = round((closes[i] - closes[i-1]) / closes[i-1] * 100, 2)
-                                        
-                                        if i >= 4 and closes[i-4] > 0:
-                                            update_fields['chg_5d'] = round((closes[i] - closes[i-4]) / closes[i-4] * 100, 2)
-                                        if i >= 9 and closes[i-9] > 0:
-                                            update_fields['chg_10d'] = round((closes[i] - closes[i-9]) / closes[i-9] * 100, 2)
-                                        if i >= 19 and closes[i-19] > 0:
-                                            update_fields['chg_20d'] = round((closes[i] - closes[i-19]) / closes[i-19] * 100, 2)
-                                        if i >= 49 and closes[i-49] > 0:
-                                            update_fields['chg_50d'] = round((closes[i] - closes[i-49]) / closes[i-49] * 100, 2)
-                                        if i >= 119 and closes[i-119] > 0:
-                                            update_fields['chg_120d'] = round((closes[i] - closes[i-119]) / closes[i-119] * 100, 2)
-                                        if i >= 249 and closes[i-249] > 0:
-                                            update_fields['chg_250d'] = round((closes[i] - closes[i-249]) / closes[i-249] * 100, 2)
-                                        
-                                        if i == len(all_data) - 1:
-                                            update_fields['is_final'] = True
-                                        
-                                        if update_fields:
-                                            sector_repo.update_daily(sector_code, date, update_fields)
-                                
-                                logger.info(f"[导入] 板块 {sector_doc['name']}({sector_code}) 日线同步完成，{len(data)} 条")
-                            
-                            api.disconnect()
+                            df = pd.read_csv(io.BytesIO(content), sep='\t', encoding=enc)
                             break
-                        except Exception as e:
-                            logger.warning(f"[导入] pytdx 连接失败 {host}:{port}: {e}")
-                            continue
-                    
-                    logger.info(f"[导入] 同步 {imported} 个新板块日线数据完成")
+                        except Exception:
+                            df = None
+            else:
+                for enc in ('utf-8', 'gbk', 'gb18030'):
+                    try:
+                        df = pd.read_csv(io.BytesIO(content), sep=None, engine='python', encoding=enc)
+                        break
+                    except Exception:
+                        df = None
+
+            if df is None:
+                return {'success': False, 'message': '无法解析文件，请使用 Excel(.xlsx)、CSV 或通达信导出的 .xls'}
+
+            code_col = name_col = None
+            for col in df.columns:
+                col_lower = str(col).strip().lower()
+                if col_lower in ['code', '代码', '板块代码', 'tdx_code']:
+                    code_col = col
+                elif col_lower in ['name', '名称', '板块名称', '板块名']:
+                    name_col = col
+            if not code_col or not name_col:
+                return {'success': False, 'message': f'未找到 code/name 列，当前列: {list(df.columns)}'}
+
+            # pytdx 成分股（name -> stock_codes）
+            import sys
+            if '_vendor/pytdx' not in sys.path:
+                sys.path.insert(0, '_vendor/pytdx')
+            from app.data.sources.pytdx_source import PytdxSource
+            remote_blocks = {}
+            try:
+                blocks = PytdxSource().get_concept_blocks()
+                for block in blocks:
+                    nm = block.get('name', '')
+                    sc = block.get('stock_codes', [])
+                    if nm and sc:
+                        remote_blocks[nm] = sc
+            except Exception as e:
+                logger.warning(f"获取 pytdx 板块失败: {e}")
+
+            for _, row in df.iterrows():
+                code = str(row[code_col]).strip()
+                name = str(row[name_col]).strip()
+                if code.startswith('="') and code.endswith('"'):
+                    code = code[2:-1]
+                if not code or not name:
+                    continue
+                sectors.append({'code': code, 'name': name, 'stock_codes': remote_blocks.get(name, [])})
+
+        if not sectors:
+            return {'success': False, 'message': '文件无有效板块数据'}
+
+        # ---- 对比：按 code 判重 ----
+        local_codes = {d['code'] for d in sector_repo.get_all_with_stocks() if d.get('code')}
+
+        new_sectors = []
+        skipped = []
+        invalid = []
+        no_data = []
+
+        for s in sectors:
+            code = s['code']
+            name = s['name']
+            if not (len(code) == 6 and code.isdigit()):
+                invalid.append({'code': code, 'name': name})
+                continue
+            if code in local_codes:
+                skipped.append({'code': code, 'name': name})
+                continue
+            if not s['stock_codes']:
+                no_data.append({'code': code, 'name': name})
+                continue
+            new_sectors.append({
+                'code': code,
+                'name': name,
+                'stock_count': len(s['stock_codes']),
+                'all_stock_codes': s['stock_codes'],
+            })
+
+        # ---- 预览 ----
+        if preview:
+            return {
+                'success': True,
+                'preview': True,
+                'total': len(sectors),
+                'new_count': len(new_sectors),
+                'skipped_count': len(skipped),
+                'no_data_count': len(no_data),
+                'invalid_count': len(invalid),
+                'new_sectors': new_sectors,
+                'skipped': skipped,
+                'no_data': no_data,
+                'invalid': invalid,
+            }
+
+        # ---- 导入：后台线程逐个验证拉日线，能拉到才存 ----
+        if not new_sectors:
+            return {'success': True, 'imported': 0, 'skipped': len(skipped),
+                    'message': f'无新增板块（重复 {len(skipped)} 个）'}
+
+        def _import_with_verify():
+            import sys
+            if '_vendor/pytdx' not in sys.path:
+                sys.path.insert(0, '_vendor/pytdx')
+            from app.data.sources.pytdx_source import PytdxSource
+            from app.data.db import bulk_upsert_daily_data
+
+            imported = 0
+            failed_codes = []
+            for s in new_sectors:
+                code = s['code']
+                df = PytdxSource.get_tdx_index_daily(code, market=1, start_date='20200101', max_bars=250)
+                if df is None or df.empty:
+                    logger.warning(f"[导入] 板块 {s['name']}({code}) 无法通过 pytdx 拉取日线，跳过")
+                    failed_codes.append(code)
+                    continue
+
+                sector_repo.insert_one({
+                    'code': code,
+                    'tdx_code': code,
+                    'name': s['name'],
+                    'source': '概念板块导入',
+                    'stock_count': s['stock_count'],
+                    'stock_codes': s['all_stock_codes'],
+                    'block_type': 2,
+                    'is_disable': False,
+                    'update_time': __import__('datetime').datetime.now(),
+                })
+
+                records = []
+                for _, bar in df.iterrows():
+                    records.append({
+                        'stock_code': code,
+                        'trade_date': bar['trade_date'],
+                        'open': bar['open'],
+                        'high': bar['high'],
+                        'low': bar['low'],
+                        'close': bar['close'],
+                        'vol': bar['vol'],
+                        'amount': bar['amount'],
+                        'data_source': 'tdx_concept',
+                    })
+                bulk_upsert_daily_data(code, records, 'tdx_concept', 'sector')
+                imported += 1
+
+            # 统一计算板块衍生字段（均线/涨跌幅等）
+            if imported > 0:
+                try:
+                    from app.data.manager import get_data_manager
+                    get_data_manager().calculate_all_derived_fields(target='sector')
                 except Exception as e:
-                    logger.error(f"[导入] 同步板块日线数据失败: {e}")
-            
-            thread = threading.Thread(target=_sync_sector_daily, daemon=True)
-            thread.start()
-        
+                    logger.warning(f"[导入] 计算板块衍生字段失败: {e}")
+
+            logger.info(
+                f"[导入] 板块导入完成：成功 {imported}/{len(new_sectors)} 个" +
+                (f"，失败 {len(failed_codes)} 个: {failed_codes}" if failed_codes else '')
+            )
+
+        thread = threading.Thread(target=_import_with_verify, daemon=True)
+        thread.start()
+
         return {
             'success': True,
-            'imported': imported,
-            'skipped_exists': skipped_exists,
-            'skipped_no_data': skipped_no_data,
-            'message': f'导入完成: 成功 {imported} 个, 已存在 {skipped_exists} 个, 无成分股 {skipped_no_data} 个' +
-                       (f', 正在后台同步日线数据...' if imported > 0 else '')
+            'imported': 0,
+            'pending': len(new_sectors),
+            'skipped': len(skipped),
+            'message': f'已启动导入，后台验证 {len(new_sectors)} 个板块日线并导入中...',
         }
     except Exception as e:
-        logger.error(f"导入板块代码失败: {e}")
+        logger.error(f"导入板块失败: {e}")
         return {'success': False, 'message': str(e)}
 
 
 @router.get("/compare-status/{task_id}")
 def get_compare_status(task_id: str):
-    """获取对比任务状态"""
-    with _compare_lock:
-        task = _compare_tasks.get(task_id)
-        if not task:
-            return {'success': False, 'message': '任务不存在'}
-        return {'success': True, **task}
+    """获取对比任务状态（从 MongoDB 任务记录读取）"""
+    task = get_task_repo().get_by_task_id(task_id)
+    if not task:
+        return {'success': False, 'message': '任务不存在'}
+    return {
+        'success': True,
+        'status': task.get('status', 'idle'),
+        'step': task.get('current_stock_name', ''),
+        'progress': '100%' if task.get('status') == 'completed' else '',
+        'result': task.get('result'),
+        'error': task.get('message') or task.get('error', ''),
+    }
 
 
 # ==================== 系统配置 ====================
@@ -851,12 +855,28 @@ def import_sectors(sectors: List[Dict[str, Any]]):
         return {'success': False, 'message': str(e)}
 
 
-@router.post("/clear-sync-tasks")
-def clear_sync_tasks():
-    """清除所有同步任务状态"""
-    try:
-        get_task_repo().clear_all()
-        return {'success': True, 'message': '已清除所有同步任务'}
-    except Exception as e:
-        logger.error(f"清除同步任务失败: {e}")
-        return {'success': False, 'message': str(e)}
+@router.post("/repair-stock-names")
+def repair_stock_names_api():
+    """一键修复股票名称（任务模式，后台执行 baostock 查询 + 批量修复）"""
+    import uuid
+    task_id = str(uuid.uuid4())
+    steps = [{'key': 'repair', 'name': '修复股票名称', 'total_count': 1, 'completed_count': 0}]
+    get_task_repo().create_task(task_id, steps, name='名称修复')
+
+    def _run():
+        task_repo = get_task_repo()
+        try:
+            task_repo.update_task_progress(task_id, current_stock_name='连接 baostock 并查询股票列表...')
+            result = repair_stock_names()
+            task_repo.update_task_progress(task_id, result=result)
+            task_repo.complete_task(
+                task_id,
+                f"名称修复完成：修复 {result['fixed']} 个，禁用退市 {result['disabled']} 个"
+            )
+        except Exception as e:
+            logger.error(f"名称修复失败: {e}")
+            task_repo.fail_task(task_id, str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return {'success': True, 'task_id': task_id, 'message': '名称修复已启动'}

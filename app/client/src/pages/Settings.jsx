@@ -1,79 +1,45 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { ConfigProvider, Card, Button, Space, Typography, Select, message, notification } from 'antd'
+import { ConfigProvider, Card, Button, Space, Typography, Switch, message } from 'antd'
 import {
-  DatabaseOutlined,
-  SyncOutlined,
   SettingOutlined,
-  HistoryOutlined,
-  CheckCircleOutlined,
+  DatabaseOutlined,
+  ToolOutlined,
+  SwapOutlined,
+  UploadOutlined,
   BarChartOutlined,
   StockOutlined,
-  AppstoreOutlined,
-  CalculatorOutlined,
-  DeleteOutlined,
-  SwapOutlined
+  AppstoreOutlined
 } from '@ant-design/icons'
 import zhCN from 'antd/locale/zh_CN'
-import 'dayjs/locale/zh-cn'
-import dayjs from 'dayjs'
-import { factorApi, syncApi } from '../api'
-import { useTaskPolling } from '../hooks/useTaskPolling'
+import { factorApi, taskApi } from '../api'
 import ManagementDialog from '../components/ManagementDialog'
-import DeepSeekConfigCard from '../components/settings/DeepSeekConfigCard'
-import ClearTaskCard from '../components/settings/ClearTaskCard'
 import CompareDataModal from '../components/settings/CompareDataModal'
+import ImportSectorModal from '../components/settings/ImportSectorModal'
 import EntityCard from '../components/settings/EntityCard'
 
 const { Title, Text } = Typography
-dayjs.locale('zh-cn')
 
-const taskNames = {
-  indices: '同步指数',
-  daily: '同步个股',
-  sectors: '同步板块',
-  rps: '计算个股RPS',
-  sector_rps: '计算板块RPS',
-  index_pe: '更新PE',
-  precompute_base: '预计算基础数据',
+function SectionTitle({ icon, children }) {
+  return (
+    <div className="flex items-center space-x-2">
+      <span className="text-gray-400">{icon}</span>
+      <Title level={4} className="!mb-0">{children}</Title>
+    </div>
+  )
 }
 
 function Settings() {
-  const [threadCount, setThreadCount] = useState(24)
-
   // 管理对话框状态
   const [manageDialog, setManageDialog] = useState({ open: false, category: '', title: '' })
 
-  // 同步时间窗口检查
-  const checkSyncTime = () => {
-    const now = dayjs()
-    const t = now.hour() * 60 + now.minute()
-    return (t >= 690 && t < 780) || (t >= 930 && t <= 1439)
-  }
-  const [syncTimeOk, setSyncTimeOk] = useState(checkSyncTime)
-  const [syncTimeMsg, setSyncTimeMsg] = useState('')
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const ok = checkSyncTime()
-      setSyncTimeOk(ok)
-      if (!ok) {
-        const now = dayjs()
-        const t = now.hour() * 60 + now.minute()
-        if (t < 690) setSyncTimeMsg(`盘中同步 11:30 开放`)
-        else if (t < 930) setSyncTimeMsg(`盘后同步 15:30 开放`)
-        else setSyncTimeMsg(`明日同步 11:30 开放`)
-      } else {
-        setSyncTimeMsg('')
-      }
-    }, 30000)
-    return () => clearInterval(timer)
-  }, [])
-
-  // 同步状态集
-  const [activeTasks, setActiveTasks] = useState({})
-  const [taskIds, setTaskIds] = useState({})
-
   // 对比数据状态
   const [compareModal, setCompareModal] = useState({ open: false, type: '', data: null, loading: false })
+
+  // 名称修复状态
+  const [repairing, setRepairing] = useState(false)
+
+  // 导入板块弹窗（mode: 'sector' 仅代码 | 'sector_with_stocks' 板块+成分股）
+  const [importModal, setImportModal] = useState({ open: false, mode: 'sector' })
 
   // DeepSeek 时间窗口配置
   const [deepseekTimeLimit, setDeepseekTimeLimit] = useState(true)
@@ -107,86 +73,42 @@ function Settings() {
     }
   }
 
-  // 任务轮询子组件
-  function TaskItem({ type, taskId }) {
-    useTaskPolling(taskId, {
-      interval: 2000,
-      onProgress: (status) => {
-        const key = `settings-${type}`
-        const steps = status.steps || []
-        const step = steps[status.current_step ?? 0]
-        if (status.status === 'running' || status.status === 'pending') {
-          const stepDesc = step ? `${step.name}(${step.completed_count || 0}/${step.total_count || 1})` : (status.current_stock_name || '处理中...')
-          notification.info({ key, message: `${status.name || taskNames[type]}(${status.current_step ?? 0}/${steps.length})`, description: stepDesc, duration: 0 })
-        }
-      },
-      onComplete: (status) => {
-        const key = `settings-${type}`
-        notification.success({ key, message: `${status.name || taskNames[type]}完成`, description: status.message || '完成', duration: 4 })
-        setActiveTasks(prev => { const next = { ...prev }; delete next[type]; return next })
-        setTaskIds(prev => { const next = { ...prev }; delete next[type]; return next })
-      },
-      onFailed: (status) => {
-        const key = `settings-${type}`
-        notification.error({ key, message: `${status.name || taskNames[type]}失败`, description: status.error || status.message || '失败', duration: 0 })
-        setActiveTasks(prev => { const next = { ...prev }; delete next[type]; return next })
-        setTaskIds(prev => { const next = { ...prev }; delete next[type]; return next })
-      },
-    })
-    return null
-  }
-
-  // 通用启动任务
-  const startTask = async (apiCall, type) => {
-    if (activeTasks[type]) return
-    setActiveTasks(prev => ({ ...prev, [type]: true }))
+  const handleRepairStockNames = async () => {
+    if (repairing) return
+    setRepairing(true)
     try {
-      const res = await apiCall()
-      const taskId = res.task_id
-      if (taskId) {
-        notification.info({
-          key: `settings-${type}`,
-          message: `${taskNames[type] || type}`,
-          description: '启动中...',
-          duration: 0,
-        })
-        setTaskIds(prev => ({ ...prev, [type]: taskId }))
-      } else {
-        notification.success({
-          key: `settings-${type}`,
-          message: `${taskNames[type] || type}完成`,
-          description: res.message || '完成',
-          duration: 4,
-        })
-        setActiveTasks(prev => { const next = { ...prev }; delete next[type]; return next })
+      const res = await factorApi.repairStockNames()
+      const taskId = res?.task_id
+      if (!taskId) {
+        message.error('启动名称修复失败')
+        setRepairing(false)
+        return
       }
+      message.info('名称修复已启动，后台执行中...')
+      // 轮询任务状态
+      const timer = setInterval(async () => {
+        try {
+          const status = await taskApi.getStatus(taskId)
+          if (status.status === 'completed') {
+            clearInterval(timer)
+            message.success(status.message || '名称修复完成')
+            setRepairing(false)
+          } else if (status.status === 'failed') {
+            clearInterval(timer)
+            message.error(status.message || '名称修复失败')
+            setRepairing(false)
+          }
+        } catch (e) {
+          console.error('轮询名称修复状态失败:', e)
+        }
+      }, 2000)
     } catch (e) {
-      notification.error({
-        key: `settings-${type}`,
-        message: `${taskNames[type] || type}启动失败`,
-        description: e.response?.data?.detail || '启动失败',
-        duration: 0,
-      })
-      setActiveTasks(prev => { const next = { ...prev }; delete next[type]; return next })
+      message.error(e?.response?.data?.detail || '名称修复启动失败')
+      setRepairing(false)
     }
   }
 
-  const handleSyncIndices = () => startTask(() => factorApi.syncIndices({ max_workers: threadCount }), 'indices')
-  const handleSyncAllDaily = () => startTask(() => syncApi.syncAllDaily({ max_workers: threadCount, min_days: 200 }), 'daily')
-  const handleCalculateRPS = () => startTask(() => factorApi.calculateRPS({ max_workers: threadCount, min_days: 200, target: 'stock' }), 'rps')
-  const handleSyncSectors = () => startTask(() => factorApi.syncSectors({ max_workers: threadCount, min_days: 20 }), 'sectors')
-  const handleCalculateSectorRPS = () => startTask(() => factorApi.calculateRPS({ target: 'sector', max_workers: threadCount, min_days: 20 }), 'sector_rps')
-  const handleSyncIndexPE = () => {
-    const savedToken = localStorage.getItem('legulegu_token')
-    if (!savedToken) {
-      message.warning('请先在设置中配置乐咕乐股 Token')
-      return
-    }
-    startTask(() => factorApi.syncIndexPE(savedToken), 'index_pe')
-  }
-  const handleSyncBaseData = () => startTask(() => factorApi.precomputeBase(), 'precompute_base')
-
-  // 对比数据处理（任务模式）
+  // 对比数据（任务模式）
   const comparePollRef = useRef(null)
 
   const handleCompare = async (type) => {
@@ -245,126 +167,129 @@ function Settings() {
   }
 
   const handleImportSuccess = () => {
-    setCompareModal(prev => ({
-      ...prev,
-      data: { ...prev.data, new_count: 0 }
-    }))
+    setCompareModal(prev => {
+      const data = { ...prev.data }
+      if (prev.type === 'stock') {
+        data.new_stocks = []
+        data.new_count = 0
+      } else {
+        data.update_sectors = []
+        data.update_count = 0
+      }
+      return { ...prev, data }
+    })
   }
+
+  const openManage = (category, title) => setManageDialog({ open: true, category, title })
 
   return (
     <ConfigProvider locale={zhCN}>
       <div className="max-w-4xl mx-auto space-y-8 pb-12">
-        <header className="flex items-center justify-between">
-          <Space size="middle">
-            <div className="p-3 bg-gray-900 rounded-2xl text-white">
-              <SettingOutlined style={{ fontSize: '24px' }} />
-            </div>
-            <div>
-              <Title level={2} style={{ margin: 0, fontWeight: 900, letterSpacing: '-0.5px' }}>一键更新</Title>
-              <Text type="secondary" className="text-xs font-bold uppercase tracking-widest">System Configuration & Data Sync</Text>
-            </div>
-          </Space>
-
-          <Space size="middle">
-            <div className="flex items-center space-x-2">
-              <Text className="text-sm font-medium text-gray-600">并发线程</Text>
-              <Select
-                value={threadCount}
-                onChange={setThreadCount}
-                style={{ width: 100 }}
-                size="large"
-              >
-                <Select.Option value={4}>4</Select.Option>
-                <Select.Option value={8}>8</Select.Option>
-                <Select.Option value={16}>16</Select.Option>
-                <Select.Option value={24}>24</Select.Option>
-                <Select.Option value={32}>32</Select.Option>
-              </Select>
-            </div>
-          </Space>
+        <header className="flex items-center space-x-4">
+          <div className="p-3 bg-gray-900 rounded-2xl text-white">
+            <SettingOutlined style={{ fontSize: '24px' }} />
+          </div>
+          <div>
+            <Title level={2} style={{ margin: 0, fontWeight: 900, letterSpacing: '-0.5px' }}>系统设置</Title>
+            <Text type="secondary" className="text-xs font-bold uppercase tracking-widest">Entity Management · Data Maintenance · System Config</Text>
+          </div>
         </header>
 
-        {/* 同步说明 */}
-        <Card className="rounded-3xl shadow-sm border-none bg-blue-600 text-white overflow-hidden relative">
-           <div className="absolute top-0 right-0 p-8 opacity-10">
-              <DatabaseOutlined style={{ fontSize: '100px' }} />
-           </div>
-           <Title level={4} className="!text-white !mb-2 flex items-center">
-              <HistoryOutlined className="mr-2" /> 同步说明
-           </Title>
-           <Text className="!text-white/80 text-sm">
-              逐天回溯同步：从最新交易日往前逐天检查，找到 is_final 收盘数据 ≥ 95% 的那天即停止。最早追溯10年。
-           </Text>
-        </Card>
+        {/* 实体管理 */}
+        <section className="space-y-4">
+          <SectionTitle icon={<DatabaseOutlined />}>实体管理</SectionTitle>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <EntityCard
+              icon={<BarChartOutlined className="text-blue-600 text-xl" />}
+              iconBg="#dbeafe"
+              title="指数"
+              description="管理指数的启用/禁用与 TDX 代码"
+              onManage={() => openManage('index', '管理指数')}
+            />
+            <EntityCard
+              icon={<StockOutlined className="text-green-600 text-xl" />}
+              iconBg="#dcfce7"
+              title="个股"
+              description="管理个股的启用/禁用与退市标记"
+              onManage={() => openManage('stock', '管理个股')}
+            />
+            <EntityCard
+              icon={<AppstoreOutlined className="text-purple-600 text-xl" />}
+              iconBg="#f3e8ff"
+              title="板块"
+              description="管理板块与成分股，支持导入板块代码"
+              onManage={() => openManage('sector', '管理板块')}
+            />
+          </div>
+        </section>
 
-        {/* DeepSeek 配置 */}
-        <DeepSeekConfigCard
-          enabled={deepseekTimeLimit}
-          onToggle={handleToggleDeepseekTimeLimit}
-        />
+        {/* 数据维护 */}
+        <section className="space-y-4">
+          <SectionTitle icon={<ToolOutlined />}>数据维护</SectionTitle>
+          <Card className="rounded-2xl shadow-sm border-gray-100">
+            <div className="space-y-5">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div>
+                  <Text className="text-sm font-medium">数据对比</Text>
+                  <Text type="secondary" className="text-xs block">对比 pytdx 与本地数据，发现缺失次新股或板块变化</Text>
+                </div>
+                <Space>
+                  <Button icon={<SwapOutlined />} onClick={() => handleCompare('stock')}>次新股对比</Button>
+                  <Button icon={<SwapOutlined />} onClick={() => handleCompare('sector')}>板块对比</Button>
+                </Space>
+              </div>
 
-        {/* 清除任务记录 */}
-        <ClearTaskCard
-          onClear={async () => {
-            const res = await factorApi.clearSyncTasks()
-            if (res?.success) {
-              message.success(res.message || '清除成功')
-            } else {
-              throw new Error('清除失败')
-            }
-          }}
-        />
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div>
+                  <Text className="text-sm font-medium">名称修复</Text>
+                  <Text type="secondary" className="text-xs block">修复截断/改名的股票名称，自动禁用退市股</Text>
+                </div>
+                <Button
+                  icon={<ToolOutlined />}
+                  loading={repairing}
+                  disabled={repairing}
+                  onClick={handleRepairStockNames}
+                >
+                  修复名称
+                </Button>
+              </div>
 
-        {/* 管理指数、个股、板块 */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <EntityCard
-            icon={<BarChartOutlined className="text-blue-600 text-xl" />}
-            iconBg="#dbeafe"
-            title="指数"
-            description="同步大盘指数日线数据"
-            buttons={[
-              { icon: <SyncOutlined />, label: '同步指数', onClick: handleSyncIndices, loading: activeTasks.indices, disabled: activeTasks.indices },
-              { icon: <CalculatorOutlined />, label: '计算 PE', onClick: handleSyncIndexPE, loading: activeTasks.index_pe, disabled: activeTasks.index_pe, className: '!border-purple-500 !text-purple-600 hover:!bg-purple-50' },
-              { icon: <DatabaseOutlined />, label: '同步基础数据', onClick: handleSyncBaseData, loading: activeTasks.precompute_base, disabled: activeTasks.precompute_base, className: '!border-green-500 !text-green-600 hover:!bg-green-50' },
-            ]}
-            onManage={() => setManageDialog({ open: true, category: 'index', title: '管理指数' })}
-            onCardClick={() => setManageDialog({ open: true, category: 'index', title: '管理指数' })}
-          />
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div>
+                  <Text className="text-sm font-medium">导入板块</Text>
+                  <Text type="secondary" className="text-xs block">导入板块代码（Excel）或板块带成分股（txt），预览后确认</Text>
+                </div>
+                <Space>
+                  <Button icon={<UploadOutlined />} onClick={() => setImportModal({ open: true, mode: 'sector' })}>
+                    导入板块
+                  </Button>
+                  <Button icon={<UploadOutlined />} onClick={() => setImportModal({ open: true, mode: 'sector_with_stocks' })}>
+                    导入板块带成分股
+                  </Button>
+                </Space>
+              </div>
+            </div>
+          </Card>
+        </section>
 
-          <EntityCard
-            icon={<StockOutlined className="text-green-600 text-xl" />}
-            iconBg="#dcfce7"
-            title="个股"
-            description="同步全部 A 股日线数据"
-            buttons={[
-              { icon: <SyncOutlined />, label: '同步数据', onClick: handleSyncAllDaily, loading: activeTasks.daily, disabled: activeTasks.daily },
-              { icon: <CalculatorOutlined />, label: '计算 RPS', onClick: handleCalculateRPS, loading: activeTasks.rps, disabled: activeTasks.daily || activeTasks.rps, className: '!border-purple-500 !text-purple-600 hover:!bg-purple-50' },
-              { icon: <SwapOutlined />, label: '对比数据', onClick: () => handleCompare('stock'), className: '!border-orange-500 !text-orange-600 hover:!bg-orange-50' },
-            ]}
-            onManage={() => setManageDialog({ open: true, category: 'stock', title: '管理个股' })}
-            onCardClick={() => setManageDialog({ open: true, category: 'stock', title: '管理个股' })}
-          />
-
-          <EntityCard
-            icon={<AppstoreOutlined className="text-purple-600 text-xl" />}
-            iconBg="#f3e8ff"
-            title="板块"
-            description="同步通达信板块概念并聚合"
-            buttons={[
-              { icon: <SyncOutlined />, label: '同步数据', onClick: handleSyncSectors, loading: activeTasks.sectors, disabled: activeTasks.sectors },
-              { icon: <CalculatorOutlined />, label: '计算 RPS', onClick: handleCalculateSectorRPS, loading: activeTasks.sector_rps, disabled: activeTasks.sectors || activeTasks.sector_rps, className: '!border-purple-500 !text-purple-600 hover:!bg-purple-50' },
-              { icon: <SwapOutlined />, label: '对比数据', onClick: () => handleCompare('sector'), className: '!border-orange-500 !text-orange-600 hover:!bg-orange-50' },
-            ]}
-            onManage={() => setManageDialog({ open: true, category: 'sector', title: '管理板块' })}
-            onCardClick={() => setManageDialog({ open: true, category: 'sector', title: '管理板块' })}
-          />
-        </div>
-
-        {syncTimeMsg && <Text type="warning" className="text-sm">{syncTimeMsg}</Text>}
-
-        {Object.entries(taskIds).map(([type, taskId]) => (
-          <TaskItem key={type} type={type} taskId={taskId} />
-        ))}
+        {/* 系统配置 */}
+        <section className="space-y-4">
+          <SectionTitle icon={<SettingOutlined />}>系统配置</SectionTitle>
+          <Card className="rounded-2xl shadow-sm border-gray-100">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <Text className="text-sm font-medium">DeepSeek API 时间窗口</Text>
+                <Text type="secondary" className="text-xs block">可用时间：12:00-13:00 或 18:00-23:59；关闭后不限时</Text>
+              </div>
+              <Space>
+                <Text className="text-sm" type={deepseekTimeLimit ? 'secondary' : 'success'}>
+                  {deepseekTimeLimit ? '已启用' : '已禁用'}
+                </Text>
+                <Switch checked={deepseekTimeLimit} onChange={handleToggleDeepseekTimeLimit} />
+              </Space>
+            </div>
+          </Card>
+        </section>
       </div>
 
       {/* 管理对话框 */}
@@ -373,17 +298,18 @@ function Settings() {
         onClose={() => setManageDialog({ open: false, category: '', title: '' })}
         category={manageDialog.category}
         title={manageDialog.title}
-        fetchData={
-          manageDialog.category === 'index' ? factorApi.getIndices :
-          manageDialog.category === 'stock' ? factorApi.getSectors :
-          factorApi.getSectors
-        }
       />
 
       <CompareDataModal
         compareModal={compareModal}
         onClose={handleCloseCompareModal}
         onImportSuccess={handleImportSuccess}
+      />
+
+      <ImportSectorModal
+        open={importModal.open}
+        mode={importModal.mode}
+        onClose={() => setImportModal(prev => ({ ...prev, open: false }))}
       />
     </ConfigProvider>
   )

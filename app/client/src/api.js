@@ -45,32 +45,22 @@ export const stockApi = {
   scanNewStocks: () => api.post('/stocks/scan'),
   getStockDetail: (code) => api.get(`/stocks/${code}`),
   getDailyData: (code, startDate, endDate, limit) =>
-    api.get(`/stocks/${code}/daily`, { params: { startDate, endDate, limit } })
+    api.get(`/stocks/${code}/daily`, { params: { start_date: startDate, end_date: endDate, limit } })
 }
 
 export const factorApi = {
   getCr5: (params = {}) =>
     api.get('/factors/cr5', { params }),
-  syncIndices: (params = {}) =>
-    api.post('/settings-tasks/sync-indices', {}, { params }),
-  syncIndexPE: (token) =>
-    api.post('/settings-tasks/sync-index-pe', {}, { params: { token } }),
-  precomputeBase: () =>
-    api.post('/settings-tasks/precompute-base'),
   getIndices: (params = {}) =>
     api.get('/factors/indices', { params }),
   searchIndices: (keyword) =>
     api.get('/factors/indices/search', { params: { keyword } }),
-  syncSectors: (params = {}) =>
-    api.post('/settings-tasks/sync-sectors', {}, { params }),
   getSectors: (params = {}) =>
-    api.get('/factors/sectors', { params: { min_stock_count: 5, ...params } }),
+    api.get('/factors/sectors', { params }),
   getSectorDaily: (code, startDate, endDate, limit) =>
     api.get(`/factors/sectors/${code}/daily`, { params: { start_date: startDate, end_date: endDate, limit } }),
   getSectorStocks: (code, params = {}) =>
     api.get(`/factors/sectors/${code}/stocks`, { params }),
-  calculateRPS: (params = {}) =>
-    api.post('/settings-tasks/calculate-rps', {}, { params }),
   clearTasks: () =>
     api.post('/factors/tasks/clear'),
   clearRps: (params = {}) =>
@@ -97,17 +87,17 @@ export const factorApi = {
     api.post('/factors/import-stocks', stocks),
   importSectors: (sectors) =>
     api.post('/factors/import-sectors', sectors),
-  importSectorCodes: (formData) =>
+  importSectorCodes: (formData, preview = false) =>
     api.post('/factors/sectors/import-excel', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: { preview }
     }),
-  clearSyncTasks: () => api.post('/factors/clear-sync-tasks')
+  repairStockNames: () => api.post('/factors/repair-stock-names')
 }
 
 export const syncApi = {
   syncBasics: () => api.post('/sync/basics'),
   syncDaily: (data) => api.post('/sync/daily', data),
-  syncAllDaily: (data) => api.post('/settings-tasks/sync-daily', {}, { params: data }),
   cancelTask: (taskId) => api.delete(`/sync/task/${taskId}`),
   patchIsFinal: () => api.post('/sync/patch_is_final')
 }

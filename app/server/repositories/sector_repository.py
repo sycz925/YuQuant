@@ -80,9 +80,11 @@ class SectorRepository(BaseRepository):
         }
         return list(self.daily.find(query, projection).sort('trade_date', -1).limit(limit))
     
-    def get_all_names(self) -> set:
-        """获取所有板块名称集合"""
-        return {doc['name'] for doc in self.collection.find({}, {'_id': 0, 'name': 1})}
+    def get_all_with_stocks(self) -> List[Dict]:
+        """获取所有板块的 code/name/stock_codes（用于导入对比）"""
+        return list(self.collection.find(
+            {}, {'_id': 0, 'code': 1, 'name': 1, 'stock_codes': 1}
+        ))
     
     def get_daily_docs(self, code: str) -> List[Dict]:
         """获取板块日线（trade_date/close/vol，升序）"""
