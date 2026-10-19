@@ -134,6 +134,7 @@ def _check_one_etf(code: str, docs: list, name_map: dict, alert_coll) -> int:
                 'close': close,
                 'close_raw': orig_close,
                 'amount': docs[i].get('amount', 0) or 0,
+                'chg_pct': docs[i].get('chg_pct'),
                 'ene_ma': ma10,
                 'ene_upper': upper,
                 'ene_lower': lower,
@@ -165,7 +166,7 @@ def backfill_alerts() -> int:
         try:
             docs = list(etf_coll.find(
                 {'stock_code': code, 'close': {'$gt': 0}},
-                {'_id': 0, 'trade_date': 1, 'close': 1, 'open': 1, 'close_raw': 1, 'amount': 1}
+                {'_id': 0, 'trade_date': 1, 'close': 1, 'open': 1, 'close_raw': 1, 'amount': 1, 'chg_pct': 1}
             ).sort('trade_date', ASCENDING))
             new_count = _check_one_etf(code, docs, name_map, alert_coll)
             if new_count:
