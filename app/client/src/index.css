@@ -37,3 +37,28 @@ code {
     transition: opacity 0.1s;
   }
 }
+
+/* 产业地图历史 tab：数量超出一屏时横向滚动（隐藏 more 下拉，改滚动条） */
+.industry-history-tabs .ant-tabs-nav {
+  margin: 0;
+}
+.industry-history-tabs .ant-tabs-nav-wrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.industry-history-tabs .ant-tabs-nav-list {
+  flex-wrap: nowrap;
+}
+.industry-history-tabs .ant-tabs-nav-operations {
+  display: none;
+}
+.industry-history-tabs .ant-tabs-nav-wrap::-webkit-scrollbar {
+  height: 4px;
+}
+.industry-history-tabs .ant-tabs-nav-wrap::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 2px;
+}
+.industry-history-tabs .ant-tabs-nav-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -191,4 +191,23 @@ export const restrictedReleaseApi = {
   sync: (year) => api.post('/restricted-release/sync', null, { params: { year } }),
 }
 
+export const industryMapApi = {
+  // 生成走后台任务：立即返回 cached=true（命中缓存）或 task_id（需轮询）
+  generate: (keyword, refresh = false) =>
+    api.post('/industry-map/generate', null, { params: { keyword, refresh } }),
+  getCached: (keyword) =>
+    api.get('/industry-map', { params: { keyword } }),
+  getHistory: () =>
+    api.get('/industry-map/history'),
+  remove: (keyword) =>
+    api.delete('/industry-map', { params: { keyword } }),
+  intersect: (keywords) =>
+    api.post('/industry-map/intersect', { keywords }),
+  deepseekAvailable: () =>
+    api.get('/industry-map/deepseek-available'),
+  // 导入外部查好的产业链 JSON 文本（跳过 DeepSeek，直接归一化+代码匹配+落库）
+  importJson: (jsonText, keyword) =>
+    api.post('/industry-map/import', { json_text: jsonText, keyword: keyword || null }),
+}
+
 export default api
