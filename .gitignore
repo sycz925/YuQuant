@@ -43,3 +43,8 @@ demo.xlsx
 
 # Vendor
 _vendor/
+
+# Refactor working artifacts
+.refactor/logs/
+.refactor/checkpoints/
+.refactor/tasks/
