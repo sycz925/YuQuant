@@ -72,3 +72,45 @@ class DailyRecalcOrchestrator(BaseOrchestrator):
             self.task_repo.update_step_progress(task_id, step_idx, completed_count=0, message='预计算基础数据...')
             self.compute_for_step(step_key, target_date, task_id=task_id)
             self.task_repo.update_step_progress(task_id, step_idx, completed_count=1, message='预计算完成')
+
+    def run_dates(self, task_id: str, dates: List[str], complete_message: Optional[str] = None) -> None:
+        """多日重算：对每个交易日依次执行 个股RPS→板块RPS→预计算。
+
+        供 MonthlyRecalcOrchestrator 复用（单日重算也可传单元素列表）。
+        与基类 _run 的区别：本方法把 global_step_idx 传给 execute_step，
+        并写 current_stock_name，以正确定位「日期 × 步骤」展开后的全局步骤。
+        """
+        from app.data.task_manager import get_task_manager
+        tm = get_task_manager()
+        steps = self.get_steps()
+        dates = dates or []
+        n_dates = len(dates)
+
+        for date_idx, date_str in enumerate(dates):
+            for step_idx, step in enumerate(steps):
+                global_step_idx = date_idx * len(steps) + step_idx
+
+                if tm.is_cancelled(task_id):
+                    logger.info(f'任务 {task_id} 已取消，停止执行')
+                    return
+
+                self.task_repo.update_step_progress(task_id, global_step_idx, status='running', completed_count=0)
+                self.task_repo.update_task_progress(
+                    task_id,
+                    current_step=global_step_idx,
+                    current_stock_name=f'重算 {date_str}: {step["name"]}'
+                )
+
+                try:
+                    self.execute_step(step['key'], task_id, date_str, global_step_idx=global_step_idx)
+                except Exception as e:
+                    logger.error(f'[{self.__class__.__name__}] {date_str} {step["name"]} 失败: {e}', exc_info=True)
+                    self.task_repo.update_step_progress(task_id, global_step_idx, status='failed', message=str(e)[:200])
+                    self.task_repo.fail_task(task_id, f'{date_str} {step["name"]} 失败: {str(e)[:200]}')
+                    return
+
+                self.task_repo.update_step_progress(task_id, global_step_idx, status='completed')
+
+            logger.info(f'[{self.__class__.__name__}] {date_str} 重算完成 ({date_idx+1}/{n_dates})')
+
+        self.task_repo.complete_task(task_id, complete_message or f'重算完成，共处理 {n_dates} 个交易日')

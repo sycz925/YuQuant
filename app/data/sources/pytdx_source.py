@@ -345,6 +345,15 @@ class PytdxSource:
                 pos += 4
                 continue
 
+            # 向前回溯 ASCII 字母/数字前缀（板块名可能以 AI/HJT/3D/POE/5G/MLCC 等开头，
+            # 之前只识别中文/数字开头会把这些前缀截断丢失）
+            while found_name_start > 0:
+                prev = data[found_name_start - 1]
+                if (0x30 <= prev <= 0x39) or (0x41 <= prev <= 0x5A) or (0x61 <= prev <= 0x7A):
+                    found_name_start -= 1
+                else:
+                    break
+
             # 从 found_name_start 读取板块名称（以 0x00 结尾）
             name_end = data.find(b'\x00', found_name_start)
             if name_end < 0 or name_end - found_name_start > 32 or name_end - found_name_start < 2:
@@ -1430,6 +1439,43 @@ class PytdxSource:
                     # 也把 code 作为 key（便于直接通过 code 查找）
                     result[code] = code
         return result
+
+    @staticmethod
+    def load_tdx_sector_map(cache_dir: Optional[str] = None) -> Optional[Dict[str, Dict]]:
+        """
+        读取通达信本地 hq_cache 的 tdxzs.cfg，获取 880xxx 板块指数名称与类型映射。
+        文件格式: 名称|代码|类型|市场|...|T代码（GBK 编码）
+        返回: {code: {'name': str, 'block_type': int}}，无文件/解析失败返回 None
+        """
+        import re as _re
+        candidates = []
+        if cache_dir:
+            candidates.append(os.path.join(cache_dir, 'tdxzs.cfg'))
+        candidates.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'tmp', 'hq_cache', 'tdxzs.cfg'))
+        candidates.append(os.path.join(os.getcwd(), 'tmp', 'hq_cache', 'tdxzs.cfg'))
+
+        for path in candidates:
+            if not os.path.exists(path):
+                continue
+            try:
+                result = {}
+                with open(path, 'rb') as f:
+                    for line in f:
+                        parts = line.decode('gbk', 'ignore').rstrip('\r\n').split('|')
+                        if len(parts) >= 3 and _re.fullmatch(r'880\d{3}', parts[1].strip()):
+                            try:
+                                block_type = int(parts[2].strip())
+                            except ValueError:
+                                block_type = 4
+                            result[parts[1].strip()] = {
+                                'name': parts[0].strip(),
+                                'block_type': block_type,
+                            }
+                if result:
+                    return result
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def _scan_tdx_index_names() -> Optional[Dict[str, str]]:

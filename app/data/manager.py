@@ -146,21 +146,37 @@ class DataManager:
         # 清理名称中的临时前缀（XD/XR/DR 除权除息标记），避免脏前缀留库
         df['stock_name'] = df['stock_name'].apply(PyTdXSource.clean_stock_name)
 
-        # 从 AkShare 获取正确名称覆盖（通达信除权除息日名称可能不完整）
+        # 用完整名称源覆盖纠错：通达信/东财在除权除息日会返回「XD生益科」这类
+        # 带前缀且被截断的名称（证券简称字段定长 8 字节，XD 占 2 字节挤掉末尾汉字）。
+        # 优先 baostock（code_name 为完整简称、不含除权除息前缀），回退 akshare。
         try:
-            ak_df = self.akshare.get_stock_basics()
-            if ak_df is not None and not ak_df.empty:
-                ak_map = dict(zip(ak_df['stock_code'], ak_df['stock_name']))
+            ref_df = None
+            ref_label = 'AkShare'
+            try:
+                ref_df = self.baostock.get_stock_basics()
+                if ref_df is not None and not ref_df.empty:
+                    ref_label = 'BaoStock'
+            except Exception:
+                ref_df = None
+            if ref_df is None or ref_df.empty:
+                ref_df = self.akshare.get_stock_basics()
+
+            if ref_df is not None and not ref_df.empty:
+                ref_df = ref_df.copy()
+                ref_df['stock_name'] = ref_df['stock_name'].apply(PyTdXSource.clean_stock_name)
+                ref_map = dict(zip(ref_df['stock_code'], ref_df['stock_name']))
                 corrected = 0
                 for idx, row in df.iterrows():
-                    correct_name = ak_map.get(row['stock_code'])
-                    if correct_name and correct_name != row['stock_name']:
+                    correct_name = ref_map.get(row['stock_code'])
+                    # 仅当纠错源名称不短于当前名称时才覆盖，避免用更短的脏名称覆盖完整名称
+                    if (correct_name and correct_name != row['stock_name']
+                            and len(correct_name) >= len(row['stock_name'])):
                         df.at[idx, 'stock_name'] = correct_name
                         corrected += 1
                 if corrected > 0:
-                    logger.info(f'[数据更新] AkShare名称纠错: {corrected} 条')
+                    logger.info(f'[数据更新] {ref_label}名称纠错: {corrected} 条')
         except Exception as e:
-            logger.warning(f'[数据更新] AkShare名称纠错失败: {e}')
+            logger.warning(f'[数据更新] 股票名称纠错失败: {e}')
 
         # 保存到 MongoDB
         docs = []
@@ -284,6 +300,128 @@ class DataManager:
 
         return records
 
+    def _sync_code_history(self, code: str, asset_type: str,
+                           start_date: str, end_date: str) -> int:
+        """拉取并写入单个标的在 [start_date, end_date] 的日线，返回写入条数
+
+        与 sync_etf_daily 的区别：那个只按「单日」补最新交易日，
+        持仓补齐需要一次性拿到足够长的历史（ATR 14 + MTR 20 需要连续 K 线）。
+        """
+        if start_date and end_date and start_date > end_date:
+            return 0
+        df, source = None, ''
+        try:
+            df, source = self.pytdx.get_daily_data(code, start_date, end_date)
+        except Exception as e:
+            logger.warning(f"{code} 日线拉取异常(pytdx): {e}")
+        if df is None or getattr(df, 'empty', True):
+            try:
+                if asset_type == 'etf':
+                    df, source = self.akshare.get_etf_daily(code, start_date, end_date)
+                else:
+                    df, source = self.akshare.get_daily_data(code, start_date, end_date)
+            except Exception as e:
+                logger.warning(f"{code} 日线拉取异常(akshare): {e}")
+                return 0
+        if df is None or getattr(df, 'empty', True):
+            logger.warning(f"{code} 日线拉取无数据 ({start_date}~{end_date})")
+            return 0
+        records = df.to_dict('records')
+        records = [r for r in records
+                   if start_date <= str(r.get('trade_date', '')) <= end_date]
+        if not records:
+            return 0
+        bulk_upsert_daily_data(code, records, source or 'pytdx', data_type=asset_type)
+        logger.info(f"{code}({asset_type}) 日线补齐 {len(records)} 条 ({start_date}~{end_date}, {source})")
+        return len(records)
+
+    def sync_codes_daily(self, codes: List[str], asset_type: str = 'stock',
+                         end_date: Optional[str] = None, full: bool = False,
+                         history_days: int = 3650) -> dict:
+        """按需补齐少量标的的日线基础数据（持仓「刷新监控」前调用）
+
+        与 sync_daily_data 的区别：不做全市场边界回溯，只针对传入代码补数据，
+        避免为了几只持仓股触发全市场扫描。
+
+        Args:
+            codes: 标的代码列表
+            asset_type: 'stock' | 'etf'
+            end_date: 截止日期，默认今天
+            full: True=从 history_days 天前拉全量（标的无任何历史时使用）；
+                  False=从该标的已有最新日的次日增量拉取
+            history_days: full=True 时回溯的自然日数
+
+        Returns:
+            {'synced': [...], 'skipped': [...], 'failed': [...], 'rows': {code: n}}
+        """
+        result = {'synced': [], 'skipped': [], 'failed': [], 'rows': {}}
+        ordered = [c for c in dict.fromkeys(codes or []) if c]
+        if not ordered:
+            return result
+
+        today = self._today_str()
+        if end_date:
+            end = end_date
+        else:
+            # 目标日取「市场已有数据的最后一天」，避免盘中去追当天还没落库的数据
+            # （最新交易日的原始数据由一键更新负责）
+            from app.data.db import get_collection
+            ref = get_collection(asset_type).find_one(
+                {'close': {'$gt': 0}}, sort=[('trade_date', -1)],
+                projection={'trade_date': 1, '_id': 0})
+            end = min(today, ref['trade_date']) if ref else today
+        deep_start = (datetime.now(BJ_TZ) - timedelta(days=history_days)).strftime('%Y%m%d')
+
+        name_map: dict = {}
+        if asset_type != 'etf':
+            try:
+                df = self.get_stock_list()
+                if not df.empty:
+                    name_map = dict(zip(df['stock_code'], df['stock_name']))
+            except Exception:
+                name_map = {}
+
+        for code in ordered:
+            try:
+                if asset_type == 'etf':
+                    start = deep_start
+                    if not full:
+                        latest = get_daily_data(code, data_type='etf')
+                        if latest is not None and not latest.empty:
+                            last = str(latest.index[-1])
+                            if last >= end:
+                                result['skipped'].append(code)
+                                continue
+                            start = (datetime.strptime(last, '%Y%m%d')
+                                     + timedelta(days=1)).strftime('%Y%m%d')
+                    rows = self._sync_code_history(code, 'etf', start, end)
+                else:
+                    start = get_stock_sync_start_date(code)
+                    if full or start is None:
+                        rows = 1 if self._full_reload_stock(code, end) else 0
+                    elif start > end:
+                        result['skipped'].append(code)
+                        continue
+                    else:
+                        r = self._sync_single_stock(code, name_map.get(code, code), start, end)
+                        if r.get('status') == 'skipped':
+                            result['skipped'].append(code)
+                            continue
+                        rows = 1 if r.get('status') == 'success' else 0
+
+                if rows:
+                    result['synced'].append(code)
+                    result['rows'][code] = rows
+                else:
+                    result['failed'].append(code)
+            except Exception as e:  # noqa: BLE001 单只失败不影响其它
+                logger.warning(f"{code} 日线补齐失败: {e}")
+                result['failed'].append(code)
+
+        if result['synced']:
+            logger.info(f"[持仓补齐] {asset_type} 补齐 {len(result['synced'])} 只: {result['synced']}")
+        return result
+
     def sync_etf_daily(self, etf_codes: List[str] = None, max_workers: int = 16,
                        task_id: str = None, progress_callback: Callable = None) -> dict:
         """同步ETF日线数据 — 逐日检查，跳过已同步日期（与一键更新个股同步逻辑一致）"""
@@ -316,7 +454,10 @@ class DataManager:
         latest_trade = latest_doc['trade_date'] if latest_doc else today
 
         # 收集需要同步的日期（最多回溯10天）
+        # 关键：如果今天是交易日，必须包含今天（stock_daily 可能还没同步今天）
         dates_to_check = []
+        if is_workday(today) and today > latest_trade:
+            dates_to_check.append(today)
         day = latest_trade
         for _ in range(10):
             if is_workday(day):
@@ -356,6 +497,10 @@ class DataManager:
             day_success = 0
             day_fail = 0
 
+            # AkShare ETF 请求限流：东方财富服务器拒绝高并发连接
+            # PyTdX 拿不到数据时全部 fallback 到 AkShare，16并发会触发 Connection aborted
+            _etf_akshare_sem = threading.BoundedSemaphore(3)
+
             def _sync_one(etf: dict) -> bool:
                 code = etf['code']
                 sources = [
@@ -367,7 +512,8 @@ class DataManager:
                         if source_name == 'PyTdX':
                             df_data, src = source_obj.get_daily_data(code, date, date)
                         elif source_name == 'AkShare':
-                            df_data, src = source_obj.get_etf_daily(code, date, date)
+                            with _etf_akshare_sem:
+                                df_data, src = source_obj.get_etf_daily(code, date, date)
                         else:
                             df_data, src = source_obj.get_daily_data(code, date, date)
                         if df_data is not None and not df_data.empty:
@@ -444,20 +590,25 @@ class DataManager:
             # 盘中：30分钟缓存，检查最后更新时间
             latest = db['etf_daily'].find_one(
                 {'trade_date': target_date},
-                sort=[('updated_at', -1)],
-                projection={'updated_at': 1, '_id': 0}
+                sort=[('update_time', -1)],
+                projection={'update_time': 1, '_id': 0}
             )
             if not latest:
                 return False
 
-            updated_at = latest.get('updated_at')
-            if not updated_at:
+            update_time = latest.get('update_time')
+            if not update_time:
                 return False
 
-            if isinstance(updated_at, str):
-                updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+            if isinstance(update_time, str):
+                update_time = datetime.fromisoformat(update_time.replace('Z', '+00:00'))
 
-            if (now - updated_at) > timedelta(minutes=30):
+            # MongoDB 返回的是 naive UTC datetime，补上 UTC 时区才能与 now 相减
+            if update_time.tzinfo is None:
+                from datetime import timezone
+                update_time = update_time.replace(tzinfo=timezone.utc)
+
+            if (now - update_time) > timedelta(minutes=30):
                 return False
 
             if expected_count > 0:
@@ -550,15 +701,30 @@ class DataManager:
             latest_date = latest['trade_date']
 
             # 最新数据 >= 目标日期 → 已有数据，跳过（force=True 时不跳过，强制同步指定日期）
+            # ⚠ 但必须确认「目标日本身」确实有数据，否则历史中间的空洞永远补不上：
+            #   例：10-15 盘后同步只成功 56%，之后每次补 10-15 都因 latest(10-16) >= 10-15
+            #   被判定为"已是最新"而跳过，该日永远停在 3000 多只。
             if latest_date >= end_date and not force:
-                t = self._time_minutes()
-                if t >= AFTER_MARKET_START:
-                    if latest.get('is_final'):
+                # 必须要求 is_final=True：盘中抓的快照（is_final=False）仍需用收盘价覆盖升级
+                target_exists = stock_coll.find_one(
+                    {'stock_code': stock_code, 'trade_date': end_date,
+                     'close': {'$gt': 0}, 'is_final': True},
+                    {'_id': 1}
+                )
+                if target_exists:
+                    t = self._time_minutes()
+                    if t >= AFTER_MARKET_START:
+                        if latest.get('is_final'):
+                            result['status'] = 'skipped'
+                            result['error'] = f'{end_date} 已有数据'
+                            return result
+                    else:
                         result['status'] = 'skipped'
+                        result['error'] = f'{end_date} 已有数据'
                         return result
                 else:
-                    result['status'] = 'skipped'
-                    return result
+                    # 目标日缺失（历史空洞）→ 不跳过，继续往下同步这一天
+                    logger.info(f"{stock_code} {stock_name} 缺 {end_date}（最新为 {latest_date}），补该日")
 
             # 最新数据远早于目标日期 → 停牌跳过
             if latest_date < end_date:
@@ -746,29 +912,35 @@ class DataManager:
         data_sources_used = {}
         days_synced = 0
 
-        def sync_day(day, **kwargs):
+        def sync_day(day, codes=None, **kwargs):
             nonlocal total_success, total_fail, total_skipped, days_synced
+            # codes 非空时只同步这个子集（单日补差用，避免把已有数据的股票全部重拉）
+            day_codes = list(codes) if codes else stock_codes
+            day_expected = len(day_codes)
             days_synced += 1
-            logger.info(f"同步 {day}")
+            logger.info(f"同步 {day}（{day_expected} 只）")
 
             # 如果有 progress_callback，使用它更新步骤进度
             # 否则更新顶层进度（兼容旧代码）
             if progress_callback:
-                progress_callback(0, expected, f"同步 {day}...")
+                progress_callback(0, day_expected, f"同步 {day}...")
             elif tm and task_id:
                 tm.update_task_progress(task_id, current_stock=day,
                                         current_stock_name=f"同步 {day}...",
-                                        total_count=expected,
+                                        total_count=day_expected,
                                         completed_count=0)
 
             day_processed = 0
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {}
-                for stock_code in stock_codes:
+                for stock_code in day_codes:
                     stock_name = stock_name_map.get(stock_code, stock_code)
                     future = executor.submit(
                         self._sync_single_stock, stock_code, stock_name, day, day,
-                        force=single_date
+                        # ⚠ 不再传 force=single_date：那会让「已有该日数据的股票」也
+                        # 无条件重新拉取全量。改为由 _sync_single_stock 内部按
+                        # 「目标日是否存在且 is_final」逐个判定，已有则毫秒级跳过。
+                        force=False
                     )
                     future_map[future] = (stock_code, stock_name)
 
@@ -785,7 +957,7 @@ class DataManager:
                             logger.error(f"同步超时 60s: {stock_code} {stock_name}")
                             total_fail += 1
                             if progress_callback:
-                                progress_callback(day_processed, expected, f"同步超时: {stock_code}")
+                                progress_callback(day_processed, day_expected, f"同步超时: {stock_code}")
                             elif tm and task_id:
                                 tm.update_task_progress(task_id, increment_failed=1,
                                     failed_stock={'stock_code': stock_code, 'stock_name': stock_name,
@@ -819,12 +991,12 @@ class DataManager:
                         logger.info(f"  {day} 进度: {day_processed}/{expected} "
                                     f"(成功{total_success} 失败{total_fail} 跳过{total_skipped})")
                     if progress_callback:
-                        progress_callback(day_processed, expected, f"同步 {day}")
+                        progress_callback(day_processed, day_expected, f"同步 {day}")
                     elif tm and task_id:
                         tm.update_task_progress(task_id,
                             current_stock=day,
                             current_stock_name=f"同步 {day}",
-                            total_count=expected,
+                            total_count=day_expected,
                             completed_count=day_processed)
 
         # 循环调用 _find_sync_boundary，直到返回 None
@@ -835,7 +1007,17 @@ class DataManager:
             if count >= threshold:
                 logger.info(f"[一键更新] 个股 {target} 数据已完整 ({count}>= {threshold})，跳过")
             else:
-                sync_day(target)
+                # 只同步「缺这一天」的股票：已有 is_final 数据的直接跳过，
+                # 进度也按真实待办数显示，不再从 0 走 5222
+                from .db import get_collection as _get_coll
+                have_codes = set(_get_coll('stock').distinct(
+                    'stock_code',
+                    {'trade_date': target, 'is_final': True, 'close': {'$gt': 0}}))
+                todo = [c for c in stock_codes if c not in have_codes]
+                logger.info(f"[一键更新] 个股 {target} 已有 {len(have_codes)} 只，"
+                            f"待补 {len(todo)} 只")
+                if todo:
+                    sync_day(target, codes=todo)
         else:
             day = today
             while True:
@@ -883,7 +1065,7 @@ class DataManager:
         except Exception as e:
             logger.error(f"更新sector is_final失败: {e}")
 
-    def sync_sector_indices(self, task_id=None, progress_callback=None, enabled_codes=None, is_external=False, single_date=False, target_date=None) -> dict:
+    def sync_sector_indices(self, task_id=None, progress_callback=None, enabled_codes=None, is_external=False, single_date=False, target_date=None, max_workers: int = 16) -> dict:
         """同步板块指数日线 — 边找边界边同步
         :param single_date: True 时只同步 target_date 这一天，不往回走
         """
@@ -1015,8 +1197,8 @@ class DataManager:
                         with progress_lock:
                             day_written += len(new_records)
 
-            max_workers = min(16, total_sectors)
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            workers = min(max_workers, total_sectors)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {executor.submit(_sync_sector_day, idx, sec): idx
                            for idx, sec in enumerate(existing_sectors)}
                 for future in as_completed(futures):
@@ -1076,6 +1258,184 @@ class DataManager:
                 tm.complete_task(task_id, msg)
 
         return {'block_count': total_sectors, 'sector_daily_count': days_synced}
+
+    # ==================== 板块基础信息补充 ====================
+
+    # 板块简称 -> tdxzs.cfg 全称（block_gn/block_fg 里部分板块名是简称，需补全后匹配 880 代码）
+    _SECTOR_NAME_ALIAS = {
+        '核污防治': '核污染防治',
+        '智能机器': '机器人概念',
+        '幽门菌': '幽门螺杆菌',
+        '毫米雷达': '毫米波雷达',
+        '时空数据': '时空大数据',
+        '可控核变': '可控核聚变',
+        '控制变更': '控制权变更',
+        '新进成份': '新进指标股',
+        '科创次新': '科创板次新',
+        '活跃转债': '活跃可转债',
+        '科成长层': '科创成长层',
+        # '融资融券' 在 tdxzs.cfg 名称表里无对应 880 代码，跳过
+    }
+
+    def sync_sector_basics_from_tdx(self, cache_dir: Optional[str] = None,
+                                    dry_run: bool = False) -> dict:
+        """
+        从通达信补充概念/风格板块基础信息到 sector_basics（含成分股）。
+        - 名称/代码映射来自本地 hq_cache/tdxzs.cfg（880xxx 完整名称表，服务器接口拿不到）
+        - 成分股来自 block_gn.dat(概念) + block_fg.dat(风格)
+        - 已存在板块跳过（幂等），默认 is_disable=False 以便一键更新同步日线
+        :return: {added, skipped, matched, unmatched, unmatched_names, ...}
+        """
+        from .db import get_db
+
+        db = get_db()
+
+        # 1) 本地 880xxx 名称映射
+        sector_map = self.pytdx.load_tdx_sector_map(cache_dir=cache_dir)
+        if not sector_map:
+            return {'error': '无法读取本地 tdxzs.cfg（tmp/hq_cache/tdxzs.cfg）', 'added': 0}
+        name2code = {v['name']: code for code, v in sector_map.items()}
+
+        # 2) 服务器板块文件成分股
+        concept_blocks = self.pytdx.get_concept_blocks() or []   # block_gn.dat
+        style_blocks = self.pytdx.get_style_blocks() or []       # block_fg.dat
+
+        def _match_code(block_name: str) -> Optional[str]:
+            if block_name in name2code:
+                return name2code[block_name]
+            alias = self._SECTOR_NAME_ALIAS.get(block_name)
+            if alias and alias in name2code:
+                return name2code[alias]
+            for suffix in ('概念', '板块', '指数'):
+                if block_name.endswith(suffix) and block_name[:-len(suffix)] in name2code:
+                    return name2code[block_name[:-len(suffix)]]
+            if (block_name + '概念') in name2code:
+                return name2code[block_name + '概念']
+            # 包含关系（唯一匹配才采用，避免「电池」「概念」这类歧义）
+            cands = [code for name, code in name2code.items() if block_name in name or name in block_name]
+            if len(cands) == 1:
+                return cands[0]
+            return None
+
+        existing = {d['code'] for d in db['sector_basics'].find({}, {'code': 1})}
+        added = skipped = matched = unmatched = 0
+        unmatched_names = []
+        now = datetime.utcnow()
+
+        for source, blocks in (('通达信概念', concept_blocks), ('通达信风格', style_blocks)):
+            for b in blocks:
+                name = str(b.get('name', '')).strip()
+                codes = b.get('stock_codes') or []
+                code = _match_code(name)
+                if not code:
+                    unmatched += 1
+                    unmatched_names.append(f'{source[:2]}:{name}')
+                    continue
+                matched += 1
+                if code in existing:
+                    skipped += 1
+                    continue
+                info = sector_map.get(code, {})
+                doc = {
+                    'code': code,
+                    'tdx_code': code,
+                    'name': info.get('name', name),
+                    'source': source,
+                    'block_type': info.get('block_type', 4),
+                    'stock_codes': list(codes),
+                    'stock_count': len(codes),
+                    'ths_code': '',
+                    'is_disable': False,
+                    'update_time': now,
+                }
+                if not dry_run:
+                    db['sector_basics'].insert_one(doc)
+                added += 1
+
+        result = {
+            'added': added,
+            'skipped': skipped,
+            'matched': matched,
+            'unmatched': unmatched,
+            'unmatched_names': unmatched_names,
+            'total_in_db': db['sector_basics'].count_documents({}),
+        }
+        logger.info(f"[板块补充] 新增 {added}, 已存在跳过 {skipped}, 匹配 {matched}, 未匹配 {unmatched}")
+        return result
+
+    def sync_sector_daily_history(self, codes: Optional[List[str]] = None,
+                                  start_date: str = '20200101', min_days: int = 100,
+                                  max_workers: int = 8) -> dict:
+        """
+        板块日线历史回填（全量），区别于 sync_sector_indices 的增量同步。
+        用于新补充的板块首次拉取完整历史日线。
+        :param codes: 指定板块代码列表，None 则自动回填 sector_daily 记录少于 min_days 的启用板块
+        :param start_date: 回填起始日期 YYYYMMDD
+        :param min_days: 历史记录少于该天数的板块才回填
+        :return: {to_fill, filled, failed, failed_details}
+        """
+        from .db import get_db, bulk_upsert_daily_data
+        from collections import defaultdict
+
+        db = get_db()
+
+        query: Dict = {'is_disable': {'$ne': True}}
+        if codes:
+            query['code'] = {'$in': list(codes)}
+        sectors = list(db['sector_basics'].find(
+            query, {'_id': 0, 'code': 1, 'tdx_code': 1}
+        ))
+        if not sectors:
+            return {'to_fill': 0, 'filled': 0, 'failed': 0, 'failed_details': []}
+
+        # 统计各板块现有日线记录数
+        cnt = defaultdict(int)
+        for d in db['sector_daily'].aggregate([
+            {'$match': {'stock_code': {'$in': [s['code'] for s in sectors]}}},
+            {'$group': {'_id': '$stock_code', 'n': {'$sum': 1}}},
+        ]):
+            cnt[d['_id']] = d['n']
+
+        to_fill = [s for s in sectors if cnt.get(s['code'], 0) < min_days]
+
+        def _fill_one(s):
+            code = s['code']
+            tdx_code = s.get('tdx_code', code)
+            try:
+                df = self.pytdx.get_tdx_index_daily(tdx_code, market=1,
+                                                    start_date=start_date, max_bars=2000)
+                if df is None or getattr(df, 'empty', True):
+                    return code, 0, '无数据'
+                records = []
+                for _, r in df.iterrows():
+                    records.append({
+                        'trade_date': str(r['trade_date']),
+                        'close': float(r.get('close', 0) or 0),
+                        'open': float(r.get('open', 0) or 0),
+                        'high': float(r.get('high', 0) or 0),
+                        'low': float(r.get('low', 0) or 0),
+                        'amount': float(r.get('amount', 0) or 0),
+                        'vol': float(r.get('vol', 0) or 0),
+                    })
+                if records:
+                    bulk_upsert_daily_data(code, records, 'pytdx', 'sector')
+                return code, len(records), None
+            except Exception as e:
+                return code, 0, str(e)
+
+        filled = failed = 0
+        failed_details = []
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for code, n, err in ex.map(_fill_one, to_fill):
+                if err:
+                    failed += 1
+                    failed_details.append(f'{code}:{err[:80]}')
+                elif n > 0:
+                    filled += 1
+
+        logger.info(f"[板块历史回填] 待回填 {len(to_fill)}, 成功 {filled}, 失败 {failed}")
+        return {'to_fill': len(to_fill), 'filled': filled, 'failed': failed,
+                'failed_details': failed_details[:20]}
 
     # ==================== RPS 计算 ====================
 

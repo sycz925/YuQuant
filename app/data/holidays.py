@@ -4,9 +4,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Set, List, Optional
 
-# 交易日集合缓存（内存级）
-_workday_cache = {}
-_cache_year = None
+# 节假日集合缓存（内存级，按年份，避免每次 is_workday 重复查库/拉 API）
+_holidays_cache = {}
 
 
 def _get_collection():
@@ -85,24 +84,24 @@ def _fetch_from_chinese_calendar(year: int) -> Optional[Set[str]]:
 
 
 def _get_holidays(year: int) -> Set[str]:
-    """获取节假日，三级读取：数据库 > API > chinese_calendar"""
+    """获取节假日，三级读取：数据库 > API > chinese_calendar（结果内存缓存，按年份）"""
+    if year in _holidays_cache:
+        return _holidays_cache[year]
+
     # 1. 数据库
     holidays = _load_from_db(year)
-    if holidays is not None:
-        return holidays
-
     # 2. API
-    holidays = _fetch_from_api(year)
-    if holidays is not None:
-        return holidays
-
+    if holidays is None:
+        holidays = _fetch_from_api(year)
     # 3. chinese_calendar
-    holidays = _fetch_from_chinese_calendar(year)
-    if holidays is not None:
-        return holidays
-
+    if holidays is None:
+        holidays = _fetch_from_chinese_calendar(year)
     # 兜底：只返回空集合（仅靠周末判断）
-    return set()
+    if holidays is None:
+        holidays = set()
+
+    _holidays_cache[year] = holidays
+    return holidays
 
 
 def is_holiday(date_str: str) -> bool:

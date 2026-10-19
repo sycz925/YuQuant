@@ -343,7 +343,10 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
 
         curr_close = closes[i]
         if curr_close <= 0:
-            operations.append(UpdateOne({'stock_code': stock_code, 'trade_date': trade_date_str}, {'$set': doc}, upsert=True))
+            # ⚠ 坏 bar（close<=0，多为数据源异常/停牌快照）不能覆盖已有好数据，
+            #    否则该行会从「close>0」的口径里消失，表现为"日线数据变少"。
+            #    库里本来没有这一天的记录时也不写入（保留空洞总比写 0 好）。
+            logger.warning(f"{stock_code} {trade_date_str} close={curr_close}，跳过写入")
             continue
 
         update_doc = {'$set': doc}
@@ -359,7 +362,7 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
 
         # MA（etf 保留 3 位小数，其他 2 位）
         ma_decimals = 3 if data_type == 'etf' else 2
-        for p in [10, 20, 50, 120]:
+        for p in [10, 20, 50, 120, 250]:
             if i >= p - 1:
                 doc[f'ma{p}'] = round(float(np.mean(closes[i - p + 1:i + 1])), ma_decimals)
 
@@ -490,11 +493,13 @@ def bulk_patch_is_final() -> Dict[str, int]:
     for coll_name in COLLECTION_MAP.values():
         col = get_db()[coll_name]
 
+        # 注意：只改 is_final，不碰 update_time —— 否则会抹掉"这行数据是什么时候真正写入的"
+        # 审计信息，也会让按 update_time 排查同步问题彻底失效。
         # 1) trade_date < today → 标记 is_final=True（历史数据）
         r1 = col.update_many(
             {'trade_date': {'$lt': today_local},
              '$or': [{'is_final': {'$exists': False}}, {'is_final': {'$ne': True}}]},
-            {'$set': {'is_final': True, 'update_time': update_time}}
+            {'$set': {'is_final': True}}
         )
         total_patched_final += r1.modified_count
 
@@ -502,7 +507,7 @@ def bulk_patch_is_final() -> Dict[str, int]:
         r2 = col.update_many(
             {'trade_date': {'$gte': today_local},
              '$or': [{'is_final': {'$exists': False}}, {'is_final': {'$ne': False}}]},
-            {'$set': {'is_final': False, 'update_time': update_time}}
+            {'$set': {'is_final': False}}
         )
         total_patched_not_final += r2.modified_count
 

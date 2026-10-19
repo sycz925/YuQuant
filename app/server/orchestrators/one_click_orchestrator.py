@@ -22,6 +22,9 @@ from app.server.cache import refresh_trade_dates
 
 logger = logging.getLogger(__name__)
 
+# 复用单日重算的步骤执行（含进度跟踪）
+_daily_recalc = _DailyRecalc()
+
 
 class OneClickUpdateOrchestrator(BaseOrchestrator):
     """
@@ -32,6 +35,11 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
     
     STEP_KEYS = ['sync_index', 'sync_stocks', 'sync_sectors', 'rps_stock', 'rps_sector', 'sync_pe', 'precompute']
     STEP_NAMES = ['同步指数', '同步个股', '同步板块', '计算个股RPS', '计算板块RPS', '更新PE', '预计算基础数据']
+
+    # 个股同步并发线程数（一键更新专用，覆盖 stock_factory.sync_daily 默认 16）
+    STOCK_SYNC_WORKERS = 24
+    # 板块同步并发线程数（一键更新专用，覆盖 sector_factory.sync_daily 默认 16）
+    SECTOR_SYNC_WORKERS = 24
 
     def get_steps(self) -> List[Dict[str, str]]:
         return [{'key': k, 'name': n} for k, n in zip(self.STEP_KEYS, self.STEP_NAMES)]
@@ -83,6 +91,43 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         
         return dates
     
+    # 覆盖度回扫参数
+    COVERAGE_LOOKBACK_TRADING_DAYS = 10
+    COVERAGE_MIN_RATIO = 0.95
+
+    def _find_undercovered_dates(self, anchor: str, expected: int) -> List[str]:
+        """从 anchor 起回扫最近 N 个交易日，返回个股日线覆盖不足的日期（升序）
+
+        背景：_get_last_update_date() 只看 base_data_daily.is_final，
+        而某天的个股日线可能只同步了 65% 就被"预计算跑完 → 标 is_final"了。
+        这样的日子之后永远不在日期范围内，空洞永远补不上。
+        """
+        if expected <= 0 or not anchor:
+            return []
+        from app.data.db import get_db
+        from app.data.holidays import is_workday
+
+        db = get_db()
+        threshold = int(expected * self.COVERAGE_MIN_RATIO)
+        holes: List[str] = []
+        day = anchor
+        checked = 0
+        while checked < self.COVERAGE_LOOKBACK_TRADING_DAYS:
+            try:
+                dt = datetime.strptime(day, '%Y%m%d')
+            except Exception:
+                break
+            if is_workday(day):
+                checked += 1
+                count = db['stock_daily'].count_documents(
+                    {'trade_date': day, 'is_final': True, 'close': {'$gt': 0}})
+                if count < threshold:
+                    holes.append(day)
+                    logger.info(f"[一键更新] 回扫发现 {day} 个股日线仅 {count}/{expected}"
+                                f"（<{threshold}），需重新同步")
+            day = (dt - timedelta(days=1)).strftime('%Y%m%d')
+        return sorted(holes)
+
     def _get_step_totals(self, dates: List[str]) -> Dict[str, int]:
         """
         查询各步骤的实际数据量
@@ -138,7 +183,24 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         if not dates and last_date:
             dates = [last_date]
             logger.info(f"[一键更新] 数据已完整，回退为对最后一个交易日 {last_date} 执行单日重算")
-        
+
+        # ---- 覆盖度回扫：把最近"个股日线不完整"的交易日补进范围 ----
+        # 修复：某天同步只成功一部分、但预计算照跑并标了 is_final，导致该天
+        # 永远不在 dates 范围内（如 20261015 只有 3556/5222），空洞永远补不上。
+        try:
+            from app.data.db import get_db as _get_db
+            expected_stocks = _get_db()['stock_basics'].count_documents({'is_disable': False})
+            anchor_day = max(dates) if dates else (last_date or target)
+            holes = self._find_undercovered_dates(anchor_day, expected_stocks)
+            if holes:
+                merged = sorted(set(dates) | set(holes))
+                if merged != sorted(dates):
+                    logger.info(f"[一键更新] 覆盖度回扫并入 {len(holes)} 天: {holes}；"
+                                f"最终待处理日期 {merged}")
+                dates = merged
+        except Exception as e:
+            logger.warning(f"[一键更新] 覆盖度回扫失败（不影响主流程）: {e}")
+
         # 查询各步骤的实际数据量
         step_totals = self._get_step_totals(dates)
         
@@ -249,8 +311,12 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
         dm = get_data_manager()
         
         drifted = 0
-        # 抽样检查（全量检查太慢，只检查有指纹记录的股票）
-        fps = list(db['stock_xdxr'].find({}, {'stock_code': 1, 'fingerprint': 1}).limit(200))
+        # 随机抽样检查（全量检查太慢，每只需一次 pytdx 网络请求）
+        # 用 $sample 随机抽 200 只，多次同步后覆盖更均匀，避免总检查同一批
+        fps = list(db['stock_xdxr'].aggregate([
+            {'$sample': {'size': 200}},
+            {'$project': {'stock_code': 1, 'fingerprint': 1, '_id': 0}},
+        ]))
         for fp_doc in fps:
             code = fp_doc['stock_code']
             stored_fp = fp_doc.get('fingerprint')
@@ -265,80 +331,19 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
             except Exception:
                 continue
         return drifted
-    
-    def _is_data_synced_for_date(self, collection_name: str, date_field: str, target_date: str, expected_count: int = 0) -> bool:
-        """
-        检查指定日期的数据是否已同步
-        盘中（15:30前）：30分钟缓存，需要重新同步
-        盘后（15:30后）：is_final=True 才跳过（需要更新收盘价）
-        :param expected_count: 期望的数据量，0表示不检查数量
-        """
-        now = datetime.now(ZoneInfo('Asia/Shanghai'))
-        today_str = now.strftime('%Y%m%d')
 
-        from app.data.db import get_db
-        db = get_db()
-
-        # 非今天的数据，检查 is_final=True
-        if target_date != today_str:
-            count = db[collection_name].count_documents({date_field: target_date, 'is_final': True})
-            if expected_count > 0:
-                return count >= expected_count
-            return count > 0
-
-        # 今天的数据
-        is_market_closed = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
-
-        if is_market_closed:
-            # 盘后：检查 is_final=True（需要更新收盘价）
-            count = db[collection_name].count_documents({date_field: target_date, 'is_final': True})
-            if expected_count > 0:
-                return count >= expected_count
-            return count > 0
-        else:
-            # 盘中：30分钟缓存，检查最后更新时间
-            latest = db[collection_name].find_one(
-                {date_field: target_date},
-                sort=[('updated_at', -1)],
-                projection={'updated_at': 1, '_id': 0}
-            )
-            if not latest:
-                return False
-
-            updated_at = latest.get('updated_at')
-            if not updated_at:
-                return False
-
-            # 如果更新时间超过30分钟，需要重新同步
-            if isinstance(updated_at, str):
-                updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-
-            if (now - updated_at) > timedelta(minutes=30):
-                return False
-
-            # 盘中缓存命中还需检查数据量是否达标，避免部分同步被误判为已完成
-            if expected_count > 0:
-                count = db[collection_name].count_documents({date_field: target_date})
-                if count < expected_count:
-                    return False
-
-            return True
-    
     def execute_step(self, step_key: str, task_id: str, dates: List[str], step_idx: int = 0) -> None:
         """执行单个步骤"""
         from app.server.factories import get_index_factory
-
-        total_dates = len(dates)
 
         # 步骤0-2：数据同步（检查缓存，进度由 _sync_progress 线程同步）
         if step_key in ['sync_index', 'sync_stocks', 'sync_sectors']:
             self._execute_sync_step(step_key, task_id, dates, step_idx)
 
-        # 步骤3-4：RPS计算 → 复用 DailyRecalcOrchestrator.compute_for_step
-        elif step_key in ('rps_stock', 'rps_sector'):
-            for i, date in enumerate(dates):
-                _DailyRecalc.compute_for_step(step_key, date)
-                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} {step_key}')
+        # 步骤3/4/6：RPS 与预计算 → 复用单日重算的步骤执行（含进度跟踪）
+        elif step_key in ('rps_stock', 'rps_sector', 'precompute'):
+            for date in dates:
+                _daily_recalc.execute_step(step_key, task_id, date, global_step_idx=step_idx)
 
         elif step_key == 'sync_pe':
             factory = get_index_factory()
@@ -346,12 +351,6 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                 logger.info(f"[一键更新] 更新 {date} PE数据")
                 factory.sync_pe(date)
                 self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} PE')
-
-        # 步骤6：预计算 → 复用 DailyRecalcOrchestrator.compute_for_step
-        elif step_key == 'precompute':
-            for i, date in enumerate(dates):
-                _DailyRecalc.compute_for_step(step_key, date, task_id=task_id)
-                self.task_repo.update_step_progress(task_id, step_idx, completed_count=i + 1, message=f'{date} 预计算')
     
     def _execute_sync_step(self, step_key: str, task_id: str, dates: List[str], step_idx: int = 0) -> None:
         """执行数据同步步骤（检查缓存，失败率超过5%则停止）"""
@@ -434,8 +433,10 @@ class OneClickUpdateOrchestrator(BaseOrchestrator):
                     message=message or f'同步 {date}'
                 )
 
-            if step_key in ('sync_stocks', 'sync_sectors'):
-                result = sync_method(date, task_id=task_id, progress_callback=progress_callback, single_date=True)
+            if step_key == 'sync_stocks':
+                result = sync_method(date, task_id=task_id, progress_callback=progress_callback, single_date=True, max_workers=self.STOCK_SYNC_WORKERS)
+            elif step_key == 'sync_sectors':
+                result = sync_method(date, task_id=task_id, progress_callback=progress_callback, single_date=True, max_workers=self.SECTOR_SYNC_WORKERS)
             else:
                 result = sync_method(date, task_id=task_id, progress_callback=progress_callback)
 

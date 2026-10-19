@@ -54,7 +54,7 @@ class AkShareSource:
             except Exception as e:
                 logger.warning(f"AkShare ETF获取失败 {code} (尝试 {attempt + 1}/3): {e}")
                 if attempt < 2:
-                    time.sleep(3 * (attempt + 1))
+                    time.sleep(5 * (attempt + 1))
         return None, ''
 
     @staticmethod

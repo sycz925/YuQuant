@@ -185,6 +185,7 @@ class SectorFactory:
         }
     
     def sync_daily(self, target_date: Optional[str] = None,
+                   max_workers: int = 16,
                    task_id: str = None,
                    progress_callback: Callable = None,
                    single_date: bool = False) -> SyncResult:
@@ -215,6 +216,7 @@ class SectorFactory:
                 is_external=True,
                 single_date=single_date,
                 target_date=target_date,
+                max_workers=max_workers,
             )
             
             # 计算冗余字段
