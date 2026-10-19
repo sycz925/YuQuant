@@ -191,6 +191,34 @@ export const restrictedReleaseApi = {
   sync: (year) => api.post('/restricted-release/sync', null, { params: { year } }),
 }
 
+export const positionApi = {
+  // ---- 风控参数 ----
+  getSettings: () => api.get('/positions/settings'),
+  saveSettings: (params) => api.put('/positions/settings', { params }),
+  // ---- 账户 ----
+  getAccounts: () => api.get('/positions/accounts'),
+  createAccount: (payload) => api.post('/positions/accounts', payload),
+  updateAccount: (accountId, payload) => api.put(`/positions/accounts/${accountId}`, payload),
+  deleteAccount: (accountId, force = false) => api.delete(`/positions/accounts/${accountId}`, { params: { force } }),
+  getDashboard: (accountId) => api.get(`/positions/accounts/${accountId}/dashboard`),
+  // ---- 建仓 / 平仓 ----
+  getBar: (code, date) => api.get('/positions/bar', { params: { code, date } }),
+  preview: (payload) => api.post('/positions/preview', payload),
+  create: (payload) => api.post('/positions', payload),
+  close: (positionId, payload) => api.post(`/positions/${positionId}/close`, payload),
+  sell: (positionId, payload) => api.post(`/positions/${positionId}/sell`, payload),
+  revokeSell: (positionId, sellId) => api.post(`/positions/${positionId}/sells/${sellId}/revoke`),
+  // ---- 持仓 ----
+  getList: (params = {}) => api.get('/positions', { params }),
+  getDetail: (positionId) => api.get(`/positions/${positionId}`),
+  getTrajectory: (positionId) => api.get(`/positions/${positionId}/trajectory`),
+  refreshOne: (positionId) => api.post(`/positions/${positionId}/refresh`),
+  refreshAll: (accountId) => api.post('/positions/refresh', null, { params: { account_id: accountId } }),
+  remove: (positionId) => api.delete(`/positions/${positionId}`),
+  // ---- 预警 ----
+  getAlerts: (accountId) => api.get('/positions/alerts', { params: { account_id: accountId } }),
+}
+
 export const industryMapApi = {
   // 生成走后台任务：立即返回 cached=true（命中缓存）或 task_id（需轮询）
   generate: (keyword, refresh = false) =>

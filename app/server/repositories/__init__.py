@@ -18,6 +18,7 @@ from app.server.repositories.market_review_repository import MarketReviewReposit
 from app.server.repositories.calendar_repository import CalendarRepository
 from app.server.repositories.restricted_release_repository import RestrictedReleaseRepository
 from app.server.repositories.industry_map_repository import IndustryMapRepository
+from app.server.repositories.position_repository import PositionRepository, AccountRepository
 
 # 单例实例
 _stock_repo: StockRepository = None
@@ -36,6 +37,7 @@ _market_review_repo: MarketReviewRepository = None
 _calendar_repo: CalendarRepository = None
 _restricted_release_repo: RestrictedReleaseRepository = None
 _industry_map_repo: IndustryMapRepository = None
+_position_repo: PositionRepository = None
 
 
 def get_stock_repo() -> StockRepository:
@@ -166,6 +168,14 @@ def get_industry_map_repo() -> IndustryMapRepository:
     return _industry_map_repo
 
 
+def get_position_repo() -> PositionRepository:
+    """获取持仓风控仓库单例"""
+    global _position_repo
+    if _position_repo is None:
+        _position_repo = PositionRepository()
+    return _position_repo
+
+
 __all__ = [
     'BaseRepository',
     'StockRepository',
@@ -184,6 +194,8 @@ __all__ = [
     'CalendarRepository',
     'RestrictedReleaseRepository',
     'IndustryMapRepository',
+    'PositionRepository',
+    'AccountRepository',
     'get_stock_repo',
     'get_index_repo',
     'get_sector_repo',
@@ -200,4 +212,5 @@ __all__ = [
     'get_calendar_repo',
     'get_restricted_release_repo',
     'get_industry_map_repo',
+    'get_position_repo',
 ]

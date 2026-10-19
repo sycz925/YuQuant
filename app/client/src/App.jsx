@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import { Button, Tag, Tooltip } from 'antd'
-import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined, FundOutlined, AlertOutlined, StarOutlined, AppstoreOutlined, CalendarOutlined, ApartmentOutlined } from '@ant-design/icons'
+import { SearchOutlined, SyncOutlined, HomeOutlined, BarChartOutlined, SettingOutlined, FundOutlined, AlertOutlined, StarOutlined, AppstoreOutlined, CalendarOutlined, ApartmentOutlined, WalletOutlined } from '@ant-design/icons'
 import CalendarReview from './pages/CalendarReview'
 import ReviewDetail from './pages/ReviewDetail'
 import StockAnalysis from './pages/StockAnalysis'
@@ -14,12 +14,13 @@ import ETFPage from './pages/ETFPage'
 import ETFAlertPage from './pages/ETFAlertPage'
 import SectorPage from './pages/SectorPage'
 import WatchlistPage from './pages/WatchlistPage'
+import PositionPage from './pages/PositionPage'
 import WatchlistAlertPage from './pages/WatchlistAlertPage'
 import SectorDetail from './pages/SectorDetail'
 import RestrictedRelease from './pages/RestrictedRelease'
 import IndustryMap from './pages/IndustryMap'
 import ErrorBoundary from './components/ErrorBoundary'
-import { healthApi, oneClickUpdateApi, alertApi } from './api'
+import { healthApi, oneClickUpdateApi, alertApi, positionApi } from './api'
 import useOneClickUpdate from './hooks/useOneClickUpdate'
 import usePolling from './hooks/usePolling'
 
@@ -90,6 +91,30 @@ function App() {
 
   usePolling(checkAlerts, 30000)
 
+  // ---- 持仓风控预警轮询（止损触发 / 跳空止损 / 达到止盈参考）----
+  const [positionAlertCount, setPositionAlertCount] = useState(0)
+  const seenPositionAlertsRef = useRef(new Set())
+
+  const checkPositionAlerts = useCallback(async () => {
+    try {
+      const items = await positionApi.getAlerts()
+      const fresh = (items || []).filter((a) => {
+        const key = `${a.position_id}|${a.action}|${a.trade_date || ''}`
+        if (seenPositionAlertsRef.current.has(key)) return false
+        seenPositionAlertsRef.current.add(key)
+        return true
+      })
+      if (fresh.length > 0) setPositionAlertCount((c) => c + fresh.length)
+    } catch (e) { /* 静默 */ }
+  }, [])
+
+  usePolling(checkPositionAlerts, 60000)
+
+  // 进入持仓页即视为已读
+  useEffect(() => {
+    if (location.pathname === '/positions') setPositionAlertCount(0)
+  }, [location.pathname])
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* 固定顶部导航栏 */}
@@ -113,6 +138,15 @@ function App() {
               <Link to="/watchlist" className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs sm:text-sm text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1">
                 <StarOutlined />
                 <span>关注</span>
+              </Link>
+              <Link to="/positions" className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs sm:text-sm text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1">
+                <WalletOutlined />
+                <span>持仓</span>
+                {positionAlertCount > 0 && (
+                  <span className="inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-[10px] font-bold text-white leading-none">
+                    {positionAlertCount > 99 ? '99+' : positionAlertCount}
+                  </span>
+                )}
               </Link>
               <Link to="/restricted-release" className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs sm:text-sm text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1">
                 <CalendarOutlined />
@@ -197,6 +231,7 @@ function App() {
             <Route path="/etf/alerts" element={<ETFAlertPage />} />
             <Route path="/watchlist" element={<WatchlistPage />} />
             <Route path="/watchlist/alerts" element={<WatchlistAlertPage />} />
+            <Route path="/positions" element={<PositionPage />} />
             <Route path="/sector/:code" element={<SectorDetail />} />
             <Route path="/restricted-release" element={<RestrictedRelease />} />
             <Route path="/industry-map" element={<IndustryMap />} />

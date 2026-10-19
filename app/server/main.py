@@ -23,6 +23,7 @@ from app.server.api import one_click_update_v2 as one_click_update
 from app.server.api import watchlist
 from app.server.api.restricted_release import router as restricted_release_router
 from app.server.api.industry_map import router as industry_map_router
+from app.server.api.position import router as position_router
 from app.server.cache import init_trade_dates, get_latest_trade_date
 
 # 配置日志 - 输出到 logs/ 目录
@@ -84,6 +85,16 @@ def _start_alert_scheduler():
     _alert_scheduler_thread.start()
 
 
+def _init_position_indexes():
+    """持仓风控集合索引（幂等，失败不阻塞启动）"""
+    try:
+        from app.server.repositories import get_position_repo
+        get_position_repo().ensure_indexes()
+        logger.info("[持仓] accounts/positions 索引就绪")
+    except Exception as e:
+        logger.warning(f"[持仓] 索引初始化失败: {e}")
+
+
 def _cleanup_sync_tasks():
     """启动时清空 sync_tasks（僵尸 running/pending 任务与历史记录一并清除）"""
     try:
@@ -100,6 +111,7 @@ async def lifespan(app: FastAPI):
     # 启动时
     logger.info("应用启动中...")
     init_trade_dates()
+    _init_position_indexes()
     _cleanup_sync_tasks()
     _start_alert_scheduler()
     logger.info("应用启动完成")
@@ -172,6 +184,7 @@ app.include_router(alert.router)
 app.include_router(watchlist.router)
 app.include_router(restricted_release_router)
 app.include_router(industry_map_router)
+app.include_router(position_router)
 
 
 @app.get("/health", response_model=HealthResponse)

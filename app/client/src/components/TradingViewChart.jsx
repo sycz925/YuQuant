@@ -172,6 +172,99 @@ const fmt = (num, dec = 2) => {
   return num.toFixed(dec);
 };
 
+// ==================== 标注工具（持仓模块用） ====================
+
+const toChartTime = (v) => formatDateForChart(v);
+
+// 去重 + 升序 + 剔除非法值（lightweight-charts 要求时间严格升序且不重复）
+const normalizeSeriesData = (list) => {
+  const map = new Map();
+  (list || []).forEach((d) => {
+    if (!d) return;
+    const raw = d.date || d.time;
+    const val = Number(d.value);
+    if (!raw || !isFinite(val)) return;
+    map.set(toChartTime(raw), { time: toChartTime(raw), value: val });
+  });
+  return Array.from(map.values()).sort((a, b) => a.time.localeCompare(b.time));
+};
+
+const applyMarkers = (series, list) => {
+  if (!series) return;
+  try {
+    const items = (list || [])
+      .filter((m) => m && (m.date || m.time))
+      .map((m) => ({
+        time: toChartTime(m.date || m.time),
+        position: m.position || 'aboveBar',
+        color: m.color || '#ffffff',
+        shape: m.shape || 'circle',
+        text: m.text || '',
+        size: m.size || 1,
+      }))
+      .sort((a, b) => a.time.localeCompare(b.time));
+    // 同一时间只允许一个 marker
+    const seen = new Set();
+    series.setMarkers(items.filter((m) => (seen.has(m.time) ? false : seen.add(m.time))));
+  } catch (e) {
+    console.warn('[TradingViewChart] setMarkers 失败', e);
+  }
+};
+
+const applyPriceLines = (series, oldLines, list) => {
+  if (!series) return [];
+  (oldLines || []).forEach((pl) => {
+    try { series.removePriceLine(pl); } catch (e) { /* 已随 series 销毁 */ }
+  });
+  const created = [];
+  (list || []).forEach((pl) => {
+    const price = Number(pl && pl.price);
+    if (!pl || !isFinite(price)) return;
+    try {
+      created.push(series.createPriceLine({
+        price,
+        color: pl.color || '#888888',
+        lineWidth: pl.lineWidth || 1,
+        lineStyle: pl.lineStyle === undefined ? 2 : pl.lineStyle,
+        axisLabelVisible: pl.axisLabelVisible !== false,
+        title: pl.title || '',
+      }));
+    } catch (e) {
+      console.warn('[TradingViewChart] createPriceLine 失败', e);
+    }
+  });
+  return created;
+};
+
+const applyOverlays = (chart, existing, list) => {
+  if (!chart) return {};
+  // 全量重建（叠加线数量少，重建比增量比对更可靠）
+  Object.keys(existing || {}).forEach((id) => {
+    try { chart.removeSeries(existing[id]); } catch (e) { /* ignore */ }
+  });
+  const next = {};
+  (list || []).forEach((ov) => {
+    if (!ov || !ov.id) return;
+    const points = normalizeSeriesData(ov.data);
+    if (!points.length) return;
+    try {
+      const s = chart.addLineSeries({
+        color: ov.color || '#f59e0b',
+        lineWidth: ov.lineWidth || 2,
+        lineStyle: ov.lineStyle === undefined ? 2 : ov.lineStyle,
+        crosshairMarkerVisible: false,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      s.setData(points);
+      next[ov.id] = s;
+    } catch (e) {
+      console.warn('[TradingViewChart] overlay series 失败', ov.id, e);
+    }
+  });
+  return next;
+};
+
 const fmtVol = (vol) => {
   if (vol === null || vol === undefined || isNaN(vol)) return '-';
   if (vol >= 1e8) return (vol / 1e8).toFixed(2) + '亿';
@@ -179,16 +272,30 @@ const fmtVol = (vol) => {
   return vol.toString();
 };
 
-export default function TradingViewChart({ data, height = 800, stockCode, period = 'day', marketType = 'stock' }) {
+export default function TradingViewChart({
+  data, height = 800, stockCode, period = 'day', marketType = 'stock',
+  // ---- 可选标注能力（默认空 → 既有页面行为完全不变）----
+  markers = null,        // [{ date|time, position:'aboveBar'|'belowBar'|'inBar', shape, color, text }]
+  priceLines = null,     // [{ price, color, lineStyle, lineWidth, title, axisLabelVisible }]
+  overlaySeries = null,  // [{ id, color, lineWidth, lineStyle, data:[{ date|time, value }] }]
+}) {
   const containerRef = useRef(null);
   const tooltipRef = useRef(null);
   const verticalLineRef = useRef(null);
+
+  // 标注相关的系列/图表引用（供独立 effect 增量更新，避免重建整个图表）
+  const markRefs = useRef({ candleSeries: null, mainChart: null, priceLines: [], overlays: {} });
 
   // ETF 价格与均线保留 3 位小数，个股 2 位
   const priceDec = marketType === 'etf' ? 3 : 2;
 
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [hoverData, setHoverData] = useState(null);
+
+  // 标注数据序列化 key —— 父组件无需 useMemo，避免因数组引用变化而反复重建图表
+  const markerKey = useMemo(() => JSON.stringify(markers || []), [markers]);
+  const priceLineKey = useMemo(() => JSON.stringify(priceLines || []), [priceLines]);
+  const overlayKey = useMemo(() => JSON.stringify(overlaySeries || []), [overlaySeries]);
 
   // 从data中提取RPS数据（与K线使用相同周期的日期）
   const rpsData = useMemo(() => {
@@ -348,6 +455,14 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       lastValueVisible: false,
     });
     ma7Series.setData(ma7Data);
+
+    // ==================== 标注（持仓买卖点/止损阶梯/止盈线） ====================
+    markRefs.current.candleSeries = candleSeries;
+    markRefs.current.mainChart = mainChart;
+    markRefs.current.overlays = {};
+    applyMarkers(candleSeries, markers);
+    markRefs.current.priceLines = applyPriceLines(candleSeries, [], priceLines);
+    markRefs.current.overlays = applyOverlays(mainChart, {}, overlaySeries);
 
     // ==================== 成交量图 ====================
     const volumeWrapper = document.createElement('div');
@@ -636,8 +751,27 @@ export default function TradingViewChart({ data, height = 800, stockCode, period
       rpsChart.remove();
       // 清理自定义元素
       container.querySelectorAll('.crosshair-date-label').forEach(el => el.remove());
+      // 标注引用随图表销毁一并失效
+      markRefs.current = { candleSeries: null, mainChart: null, priceLines: [], overlays: {} };
     };
   }, [data, height, formatData, rpsData, priceDec]);
+
+  // ==================== 标注增量更新（不重建图表） ====================
+  useEffect(() => {
+    applyMarkers(markRefs.current.candleSeries, markers);
+  }, [markerKey, data]);
+
+  useEffect(() => {
+    const { candleSeries } = markRefs.current;
+    if (!candleSeries) return;
+    markRefs.current.priceLines = applyPriceLines(candleSeries, markRefs.current.priceLines, priceLines);
+  }, [priceLineKey, data]);
+
+  useEffect(() => {
+    const { mainChart } = markRefs.current;
+    if (!mainChart) return;
+    markRefs.current.overlays = applyOverlays(mainChart, markRefs.current.overlays, overlaySeries);
+  }, [overlayKey, data]);
 
   // 鼠标移动
   const handleMouseMove = useCallback((e) => {
