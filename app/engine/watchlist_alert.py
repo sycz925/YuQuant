@@ -43,9 +43,21 @@ def _trade_date_close_time(trade_date: str) -> datetime:
         return _now_bj()
 
 
+def _daily_coll(db, typ: str):
+    """根据关注类型返回对应日线集合（etf/stock/sector）"""
+    if typ == 'etf':
+        return db['etf_daily']
+    if typ == 'sector':
+        return db['sector_daily']
+    return db['stock_daily']
+
+
 def _resolve_name(code: str, typ: str, db) -> str:
     if typ == 'etf':
         basic = db['etf_basics'].find_one({'code': code}, {'_id': 0, 'name': 1})
+        return basic['name'] if basic else code
+    if typ == 'sector':
+        basic = db['sector_basics'].find_one({'code': code}, {'_id': 0, 'name': 1})
         return basic['name'] if basic else code
     basic = db['stock_basics'].find_one({'stock_code': code}, {'_id': 0, 'stock_name': 1})
     return basic['stock_name'] if basic else code
@@ -230,7 +242,7 @@ def check_latest(max_dates: int = 1) -> Dict:
         typ = e.get('type', 'stock')
         name = _resolve_name(code, typ, db)
         try:
-            coll = db['etf_daily'] if typ == 'etf' else db['stock_daily']
+            coll = _daily_coll(db, typ)
             docs = list(coll.find(
                 {'stock_code': code, 'close': {'$gt': 0}},
                 {'_id': 0, 'trade_date': 1, 'close': 1, 'open': 1, 'close_raw': 1,
@@ -256,7 +268,7 @@ def get_tdx_status(code: str, typ: str) -> str:
     """根据最新日线数据计算通达信MA7变色线状态：红/绿/蓝"""
     from app.data.db import get_db
     db = get_db()
-    coll = db['etf_daily'] if typ == 'etf' else db['stock_daily']
+    coll = _daily_coll(db, typ)
     docs = list(coll.find(
         {'stock_code': code, 'close': {'$gt': 0}},
         {'_id': 0, 'trade_date': 1, 'close': 1}
@@ -273,7 +285,7 @@ def get_weekly_tdx_status(code: str, typ: str) -> str:
     from app.data.db import get_db
     from datetime import datetime
     db = get_db()
-    coll = db['etf_daily'] if typ == 'etf' else db['stock_daily']
+    coll = _daily_coll(db, typ)
     docs = list(coll.find(
         {'stock_code': code, 'close': {'$gt': 0}},
         {'_id': 0, 'trade_date': 1, 'close': 1}

@@ -32,6 +32,10 @@ class WatchlistRepository(BaseRepository):
             basic = get_db()['etf_basics'].find_one({'code': code}, {'_id': 0, 'name': 1})
             name = basic['name'] if basic else code
             coll = get_collection('etf')
+        elif typ == 'sector':
+            basic = get_db()['sector_basics'].find_one({'code': code}, {'_id': 0, 'name': 1})
+            name = basic['name'] if basic else code
+            coll = get_collection('sector')
         else:
             basic = get_db()['stock_basics'].find_one({'stock_code': code}, {'_id': 0, 'stock_name': 1})
             name = basic['stock_name'] if basic else code
@@ -52,12 +56,14 @@ class WatchlistRepository(BaseRepository):
         return result
 
     def find_type(self, code: str) -> Optional[str]:
-        """识别代码类型（etf/stock），未找到返回 None"""
+        """识别代码类型（etf/stock/sector），未找到返回 None"""
         db = get_db()
         if db['etf_basics'].find_one({'code': code}, {'_id': 1}):
             return 'etf'
         if db['stock_basics'].find_one({'stock_code': code}, {'_id': 1}):
             return 'stock'
+        if db['sector_basics'].find_one({'code': code}, {'_id': 1}):
+            return 'sector'
         return None
 
     def add(self, code: str, typ: str):

@@ -115,7 +115,7 @@ function WatchlistPage() {
     { title: '名称', dataIndex: 'name', key: 'name', width: 200,
       render: (v, r) => (
         <span className="font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
-          onClick={() => navigate(`/search?${r.type === 'etf' ? 'etf' : 'code'}=${r.code}&name=${encodeURIComponent(v)}`)}>
+          onClick={() => navigate(`/search?${r.type === 'etf' ? 'etf' : r.type === 'sector' ? 'sector' : 'code'}=${r.code}&name=${encodeURIComponent(v)}`)}>
           {v}
         </span>
       ) },
@@ -154,7 +154,7 @@ function WatchlistPage() {
         </div>
         <Space wrap>
           <Input.Search
-            placeholder="输入代码(回车添加)"
+            placeholder="输入代码(个股/ETF/板块)"
             style={{ width: 220 }}
             value={addCode}
             onChange={(e) => setAddCode(e.target.value)}
