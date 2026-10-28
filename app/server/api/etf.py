@@ -38,7 +38,8 @@ def get_etf_list(
     keyword: Optional[str] = Query(None, description="搜索关键词"),
     sort_by: Optional[str] = Query(None, description="排序字段"),
     sort_order: Optional[str] = Query("desc", description="排序方向"),
-    rps_red: Optional[str] = Query(None, description="RPS红筛选: one/two/three")
+    rps_red: Optional[str] = Query(None, description="RPS红筛选: one/two/three"),
+    stage2: Optional[str] = Query(None, description="二阶段筛选: yes/no"),
 ):
     """获取ETF列表（含最新行情数据）"""
     try:
@@ -81,6 +82,7 @@ def get_etf_list(
                     rps_10=latest.get('rps_10'),
                     rps_50=latest.get('rps_50'),
                     rps_120=latest.get('rps_120'),
+                    is_stage2=latest.get('is_stage2'),
                 )
                 items.append(item)
             else:
@@ -100,6 +102,13 @@ def get_etf_list(
                 elif rps_red == 'three' and red_count >= 3:
                     filtered.append(item)
             items = filtered
+
+        # 二阶段筛选（「否」= 非二阶段，含未计算的新 ETF）
+        if stage2 in ('yes', 'no'):
+            if stage2 == 'yes':
+                items = [i for i in items if i.is_stage2 is True]
+            else:
+                items = [i for i in items if i.is_stage2 is not True]
 
         # 排序
         if sort_by and sort_by in ('change_pct', 'chg_5d', 'chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'close', 'rps_10', 'rps_50', 'rps_120'):
@@ -175,23 +184,29 @@ def _run_etf_sync(task_id: str):
         from app.engine.factor_engine import FactorEngine
         engine = FactorEngine()
         rps_result = engine.calculate_rps(data_type='etf', max_dates=50)
+        # RPS 计算后：刷新 ETF 均线 + 二阶段（含前复权兜底）
+        try:
+            engine.calculate_daily_factors(data_type='etf')
+        except Exception as e:
+            logger.warning(f'[ETF] 均线与二阶段计算失败: {e}')
         tm.complete_step(task_id, 1, f'RPS: {rps_result.get("dates", 0)}天')
 
         if tm.is_cancelled(task_id):
             return
 
-        # Step 3: 补全ETF均线（重算历史MA为3位精度）
+        # Step 3: 补全ETF均线（只为缺字段的历史补齐，已有数据不再全量重算）
         tm.start_step(task_id, 2)
-        derive_result = engine.calculate_derived_fields(data_type='etf', backfill=True)
+        derive_result = engine.calculate_derived_fields(data_type='etf', missing_only=True)
         tm.complete_step(task_id, 2, f'均线补全: {derive_result.get("dates", 0)}天 {derive_result.get("updates", 0)}条')
 
         if tm.is_cancelled(task_id):
             return
 
-        # Step 4: 计算ENE预警
+        # Step 4: 计算ENE预警（近期增量 + 仅对新增ETF做历史回刷）
         tm.start_step(task_id, 3)
-        from app.engine.ene_alert import backfill_alerts
-        ene_count = backfill_alerts()
+        from app.engine.ene_alert import check_latest, backfill_missing
+        ene_count = check_latest(max_dates=5)
+        ene_count += backfill_missing()
         tm.complete_step(task_id, 3, f'新增{ene_count}条ENE预警')
 
         tm.complete_task(task_id, 'ETF同步全部完成')

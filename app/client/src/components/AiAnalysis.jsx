@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Spin, Tag, Modal, Button, message } from 'antd'
 import { CameraOutlined } from '@ant-design/icons'
 import { toPng } from 'html-to-image'
-import { marketReviewApi, factorApi, taskApi } from '../api'
+import { marketReviewApi, factorApi } from '../api'
+import { useTaskCenter } from '../contexts/TaskCenter'
 import TacticalAllocationCard from './TacticalAllocationCard'
 
 // 风险等级颜色映射
@@ -42,16 +43,19 @@ const checkDeepseekAvailable = async () => {
 }
 
 function AiAnalysis({ date }) {
+  const { activeTasks, startTask } = useTaskCenter()
+  const aiTask = activeTasks.find(
+    t => (t.kind === 'ai-analysis' || /AI\s*分析/.test(t.name || ''))
+      && (!date || (t.name || '').includes(date)))
+  const generating = Boolean(aiTask)
+  const taskMessage = aiTask?.current_stock_name || aiTask?.message || ''
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [taskStatus, setTaskStatus] = useState(null) // 'generating' | null
-  const [taskMessage, setTaskMessage] = useState('')
   const [error, setError] = useState(null)
   const [lastError, setLastError] = useState(null) // 上次失败的错误信息
   const [inputDataVisible, setInputDataVisible] = useState(false)
   const [inputDataLoading, setInputDataLoading] = useState(false)
   const [inputDataContent, setInputDataContent] = useState('')
-  const pollingRef = useRef(null)
   const [updateAllowed, setUpdateAllowed] = useState(true)
   const [screenshotLoading, setScreenshotLoading] = useState(false)
   const screenshotRef = useRef(null)
@@ -59,8 +63,17 @@ function AiAnalysis({ date }) {
   useEffect(() => {
     if (date) loadData(date)
     checkAvailability()
-    return () => { if (pollingRef.current) clearInterval(pollingRef.current) }
   }, [date])
+
+  // 任务由「生成中」转为结束后，自动重新拉取结果直接展示
+  // （失败时 onFailed 已写入 error，此处跳过以免把错误信息覆盖掉）
+  const prevGeneratingRef = useRef(false)
+  useEffect(() => {
+    if (prevGeneratingRef.current && !generating && !error) {
+      loadData(date)
+    }
+    prevGeneratingRef.current = generating
+  }, [generating])
 
   // 定时检查 DeepSeek 可用性
   useEffect(() => {
@@ -76,7 +89,7 @@ function AiAnalysis({ date }) {
   const loadData = async (tradeDate) => {
     setLoading(true)
     setError(null)
-    setTaskStatus(null)
+    
     setLastError(null)
     try {
       const res = await marketReviewApi.getAiAnalysis(tradeDate)
@@ -99,67 +112,39 @@ function AiAnalysis({ date }) {
 
   const startGenerate = async (tradeDate) => {
     try {
+      setError(null)
       setLastError(null) // 清除上次错误信息
       const res = await marketReviewApi.generateAiAnalysis(tradeDate)
       if (res?.is_cached) {
         // 启动时发现已有缓存（可能被其他请求抢先生成）
         setData(res)
-        setTaskStatus(null)
+        
         return
       }
       // 后端返回错误（如上次生成失败且无法重新生成）
       if (res?.error) {
         setLastError(res.error)
-        setTaskStatus(null)
         return
       }
       const taskId = res?.task_id
       if (!taskId) {
         setError('未获取到任务ID')
-        setTaskStatus(null)
         return
       }
-      // 开始轮询（taskStatus可能已由handleGenerateFromInputData设置）
-      if (!taskStatus) {
-        setTaskStatus('generating')
-        setTaskMessage('AI 正在分析市场数据...')
-      }
-      pollTask(taskId, tradeDate)
+      // 注册到全局任务中心（进度跨页面/刷新可见）
+      startTask(taskId, {
+        title: `AI 分析 ${tradeDate}`,
+        kind: 'ai-analysis',
+        message: 'AI 正在分析市场数据...',
+        onFailed: (st) => setError(st?.error || 'AI分析失败'),
+      })
     } catch (e) {
       console.error('[AI] 启动生成失败:', e)
       setError(e.response?.data?.detail || '启动生成失败')
-      setTaskStatus(null)
     }
   }
 
-  const pollTask = (taskId, tradeDate) => {
-    if (pollingRef.current) clearInterval(pollingRef.current)
-    pollingRef.current = setInterval(async () => {
-      try {
-        const task = await taskApi.getStatus(taskId)
-        if (task?.current_stock_name) {
-          setTaskMessage(task.current_stock_name)
-        }
-        if (task?.status === 'completed') {
-          clearInterval(pollingRef.current)
-          pollingRef.current = null
-          setTaskStatus(null)
-          // 重新加载数据
-          const res = await marketReviewApi.getAiAnalysis(tradeDate)
-          setData(res || {})
-        } else if (task?.status === 'failed') {
-          clearInterval(pollingRef.current)
-          pollingRef.current = null
-          setTaskStatus(null)
-          setError(task?.error || 'AI分析失败')
-        }
-      } catch (e) {
-        console.error('[AI] 轮询失败:', e)
-      }
-    }, 2000)
-  }
-
-  if (loading || taskStatus === 'generating') {
+  if (loading || generating) {
     return (
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 flex flex-col items-center justify-center">
         <Spin size="large" />
@@ -212,9 +197,7 @@ function AiAnalysis({ date }) {
       return
     }
     setInputDataVisible(false)
-    // 先设置加载状态，再调用生成
-    setTaskStatus('generating')
-    setTaskMessage('AI 正在分析市场数据...')
+    // 先清错误，再调用生成
     setLastError(null)
     startGenerate(date)
   }
@@ -261,7 +244,7 @@ function AiAnalysis({ date }) {
     const isFinal = data?.is_final === true
 
     // 如果正在生成，显示加载状态
-    if (taskStatus === 'generating') {
+    if (generating) {
       return (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 flex flex-col items-center justify-center">
           <Spin size="large" />
@@ -279,8 +262,8 @@ function AiAnalysis({ date }) {
           open={inputDataVisible}
           onCancel={() => setInputDataVisible(false)}
           footer={[
-            <Button key="generate" type="primary" onClick={handleGenerateFromInputData} disabled={inputDataLoading || taskStatus === 'generating' || !updateAllowed}>
-              {taskStatus === 'generating' ? '生成中...' : '生成AI分析'}
+            <Button key="generate" type="primary" onClick={handleGenerateFromInputData} disabled={inputDataLoading || generating || !updateAllowed}>
+              {generating ? '生成中...' : '生成AI分析'}
             </Button>
           ]}
           width={700}
@@ -320,9 +303,9 @@ function AiAnalysis({ date }) {
             <button 
               onClick={() => { setLastError(null); startGenerate(date); }}
               className="text-[10px] px-2 py-1 rounded bg-red-100 text-red-600 hover:bg-red-200 transition-colors cursor-pointer"
-              disabled={taskStatus === 'generating' || !updateAllowed}
+              disabled={generating || !updateAllowed}
             >
-              {taskStatus === 'generating' ? '生成中...' : '重新生成'}
+              {generating ? '生成中...' : '重新生成'}
             </button>
           </div>
         )}
@@ -346,8 +329,8 @@ function AiAnalysis({ date }) {
         open={inputDataVisible}
         onCancel={() => setInputDataVisible(false)}
         footer={[
-          <Button key="generate" type="primary" onClick={handleGenerateFromInputData} disabled={inputDataLoading || taskStatus === 'generating' || !updateAllowed}>
-            {taskStatus === 'generating' ? '生成中...' : '生成AI分析'}
+          <Button key="generate" type="primary" onClick={handleGenerateFromInputData} disabled={inputDataLoading || generating || !updateAllowed}>
+            {generating ? '生成中...' : '生成AI分析'}
           </Button>
         ]}
         width={700}

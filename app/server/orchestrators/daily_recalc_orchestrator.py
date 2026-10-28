@@ -42,12 +42,20 @@ class DailyRecalcOrchestrator(BaseOrchestrator):
             logger.info(f"[DailyRecalc] 计算 {target_date} 个股涨幅和RPS")
             factory.compute_chg(target_date)
             factory.compute_rps(target_date)
+            # RPS 计算后：一次加载历史，刷新均线(10~250) + 二阶段（含前复权兜底）
+            from app.engine.factor_engine import FactorEngine
+            logger.info(f"[DailyRecalc] 计算 {target_date} 个股均线与二阶段")
+            FactorEngine().calculate_daily_factors(data_type='stock', trade_date=target_date)
 
         elif step_key == 'rps_sector':
             factory = get_sector_factory()
             logger.info(f"[DailyRecalc] 计算 {target_date} 板块涨幅和RPS")
             factory.compute_chg(target_date)
             factory.compute_rps(target_date)
+            # RPS 计算后：刷新板块均线与二阶段
+            from app.engine.factor_engine import FactorEngine
+            logger.info(f"[DailyRecalc] 计算 {target_date} 板块均线与二阶段")
+            FactorEngine().calculate_daily_factors(data_type='sector', trade_date=target_date)
 
         elif step_key == 'precompute':
             aggregator = get_market_aggregator()

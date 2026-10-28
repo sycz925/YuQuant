@@ -256,17 +256,44 @@ class FactorEngine:
         return {'dates': 1, 'codes': 0, 'updates': len(ops), 'skipped': 0}
 
     def calculate_derived_fields(self, data_type: str = 'stock', trade_date: str = None,
-                                  progress_callback=None, backfill: bool = False) -> Dict[str, int]:
+                                  progress_callback=None, backfill: bool = False,
+                                  missing_only: bool = False) -> Dict[str, int]:
         """
         批量计算冗余字段：涨跌幅、均线、成交量均线、区间涨幅
 
         使用向量化操作一次性计算所有日期，性能比回刷模式高10倍以上。
+
+        Args:
+            missing_only: True 时只为「派生字段缺失」的交易日补算（新增标的/历史缺口），
+                已有数据的日期跳过。用于增量同步，避免每次全量重算历史。
         """
         coll = get_collection(data_type)
 
         # 确定计算日期
+        missing_pairs = None  # missing_only 模式下精确到 (代码, 日期)
         if trade_date:
             dates_to_calc = [trade_date]
+        elif missing_only:
+            # 只补缺字段的记录（chg_pct / ma10 / vol_ma5 任一缺失）
+            missing_query = {
+                'close': {'$gt': 0},
+                'derived_skipped': {'$exists': False},
+                '$or': [
+                    {'chg_pct': {'$exists': False}},
+                    {'ma10': {'$exists': False}},
+                    {'vol_ma5': {'$exists': False}},
+                ],
+            }
+            missing_pairs = {
+                (d['stock_code'], d['trade_date'])
+                for d in coll.find(missing_query, {'_id': 0, 'stock_code': 1, 'trade_date': 1})
+            }
+            if not missing_pairs:
+                logger.info(f"[Derived-{data_type}] 派生字段无缺失，跳过")
+                return {'dates': 0, 'updates': 0}
+            dates_to_calc = sorted({p[1] for p in missing_pairs})
+            logger.info(
+                f"[Derived-{data_type}] 缺字段补算模式，{len(missing_pairs)} 条记录 / {len(dates_to_calc)} 天")
         elif backfill:
             dates_to_calc = sorted(coll.distinct('trade_date', {'close': {'$gt': 0}}))
             logger.info(f"[Derived-{data_type}] 回刷模式，共 {len(dates_to_calc)} 天")
@@ -355,8 +382,13 @@ class FactorEngine:
             for i, d in enumerate(dates_arr):
                 if d not in calc_set:
                     continue
+                if missing_pairs is not None and (code, d) not in missing_pairs:
+                    continue
 
                 set_doc = {'update_time': datetime.utcnow()}
+                # 上市最初几天历史不足、均线数学上无法计算：标记跳过，避免每次全量扫描
+                if i < max_period - 1:
+                    set_doc['derived_skipped'] = True
 
                 # 1. 涨跌幅 chg_pct
                 if i >= 1:
@@ -537,6 +569,193 @@ class FactorEngine:
 
         logger.info(f"[AllDerived-{data_type}] 全部冗余字段计算完成: {results}")
         return results
+
+    # ==================== 均线 + 二阶段（合并计算） ====================
+
+    # 二阶段与均线所需的完整周期（含 150/200）
+    STAGE2_MA_PERIODS = [10, 20, 50, 120, 150, 200, 250]
+    # 开盘/昨收偏离超过该比例视为除权跳空（与 watchlist_alert / manager 一致）
+    XDXR_GAP_THRESHOLD = 0.15
+
+    @staticmethod
+    def _adjust_closes_for_xdxr(closes, opens):
+        """检测除权跳空并对历史 close 做前复权（兜底数据层可能残留的未复权历史）。
+
+        返回 (调整后的 closes, 是否检测到除权跳空)。
+        前复权为等比缩放，不改变「价格与均线」的相对关系，因此不影响二阶段结论。
+        """
+        n = len(closes)
+        if n < 2:
+            return closes, False
+
+        prev = closes[:-1]
+        cur_open = np.where(opens[1:] > 0, opens[1:], closes[1:])
+        valid = (prev > 0) & (cur_open > 0)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ratio = np.where(valid, cur_open / prev, 1.0)
+        gaps = np.abs(ratio - 1) > FactorEngine.XDXR_GAP_THRESHOLD
+        if not gaps.any():
+            return closes, False
+
+        # 从新到旧累计复权因子
+        boundaries = []
+        cum = 1.0
+        for i in range(n - 1, 0, -1):
+            pc = closes[i - 1]
+            op = opens[i] if opens[i] > 0 else closes[i]
+            if pc <= 0 or op <= 0:
+                continue
+            if abs(op / pc - 1) > FactorEngine.XDXR_GAP_THRESHOLD:
+                cum *= pc / op
+                boundaries.append((i, cum))
+
+        adjusted = closes.copy()
+        boundaries.reverse()  # 转为按时间升序
+        prev_idx = 0
+        for idx, factor in boundaries:
+            if prev_idx < idx:
+                adjusted[prev_idx:idx] /= factor
+            prev_idx = idx
+        return adjusted, True
+
+    def calculate_daily_factors(self, data_type: str = 'stock', trade_date: Optional[str] = None,
+                                progress_callback=None) -> Dict[str, int]:
+        """一次加载历史，计算 MA(10/20/50/120/150/200/250) + 52周高低点 + 二阶段，一次写库。
+
+        - 先按除权跳空做前复权，再算均线（避免未复权历史污染均线）
+        - 8 条标准全部满足 is_stage2=True：
+          1. close > ma150 且 close > ma200
+          2. ma150 > ma200
+          3. ma200 向上（对比 20 个交易日前）
+          4. ma50 > ma150 且 ma50 > ma200
+          5. close > ma50
+          6. close >= 52周低点 * 1.25
+          7. close >= 52周高点 * 0.75
+          8. rps_120 >= 90
+        """
+        coll = get_collection(data_type)
+
+        if not trade_date:
+            latest = coll.find_one(
+                {'close': {'$gt': 0}},
+                sort=[('trade_date', -1)],
+                projection={'trade_date': 1, '_id': 0}
+            )
+            if not latest:
+                return {'dates': 0, 'updates': 0}
+            trade_date = latest['trade_date']
+
+        # 历史窗口：约 420 自然日（≈285 个交易日），覆盖 200 日均线 + 20 日偏移 + 52 周
+        try:
+            start_dt = datetime.strptime(trade_date, '%Y%m%d') - timedelta(days=420)
+            hist_start = start_dt.strftime('%Y%m%d')
+        except Exception:
+            return {'dates': 0, 'updates': 0}
+
+        hist = list(coll.find(
+            {'trade_date': {'$gte': hist_start, '$lte': trade_date}, 'close': {'$gt': 0}},
+            {'_id': 0, 'stock_code': 1, 'trade_date': 1, 'close': 1, 'open': 1, 'rps_120': 1}
+        ))
+        if not hist:
+            return {'dates': 0, 'updates': 0}
+
+        if progress_callback:
+            progress_callback("计算均线与二阶段...", 0, 1, "均线+二阶段")
+
+        df = pd.DataFrame(hist).sort_values(['stock_code', 'trade_date'])
+        ma_dec = 3 if data_type == 'etf' else 2
+        periods = self.STAGE2_MA_PERIODS
+
+        ops = []
+        adjusted_cnt = 0
+        for code, g in df.groupby('stock_code', sort=False):
+            # 只处理目标日有数据的标的（停牌/无当日行情的不参与）
+            if str(g['trade_date'].iloc[-1]) != str(trade_date):
+                continue
+
+            closes = g['close'].to_numpy(dtype=float)
+            opens = g['open'].to_numpy(dtype=float) if 'open' in g.columns else closes
+            opens = np.where(np.isnan(opens), closes, opens)
+            n = len(closes)
+            if n < 50:
+                continue
+
+            # 数据已由 pytdx 数据源做前复权，且 500 天窗口已统一重拉，序列连续。
+            # 不再用「跳空检测」兜底：跳空可能是真实大跌（-20% 跌停 / 退市整理 / 复牌暴跌），
+            # 当作除权做等比缩放会篡改均线，属于错误修复。
+            adj = closes
+            was_adjusted = False
+
+            set_doc = {'update_time': datetime.utcnow()}
+
+            # 均线（复权后序列）
+            for p in periods:
+                if n >= p:
+                    set_doc[f'ma{p}'] = round(float(np.mean(adj[-p:])), ma_dec)
+
+            # 二阶段（需 220 日：200 日均线 + 20 日偏移）
+            if n >= 220:
+                close_now = float(adj[-1])
+                ma50 = float(np.mean(adj[-50:]))
+                ma150 = float(np.mean(adj[-150:]))
+                ma200 = float(np.mean(adj[-200:]))
+                ma200_prev = float(np.mean(adj[-220:-20]))
+                window = adj[-250:] if n >= 250 else adj
+                high52 = float(np.max(window))
+                low52 = float(np.min(window))
+                rps120_raw = g['rps_120'].iloc[-1]
+                rps120 = None if pd.isna(rps120_raw) else int(rps120_raw)
+
+                c1 = close_now > ma150 and close_now > ma200
+                c2 = ma150 > ma200
+                c3 = ma200 > ma200_prev
+                c4 = ma50 > ma150 and ma50 > ma200
+                c5 = close_now > ma50
+                c6 = close_now >= low52 * 1.25
+                c7 = close_now >= high52 * 0.75
+                c8 = rps120 is not None and rps120 >= 90
+
+                set_doc['is_stage2'] = bool(c1 and c2 and c3 and c4 and c5 and c6 and c7 and c8)
+                set_doc['stage2_detail'] = {
+                    'close': round(close_now, 3),
+                    'ma50': round(ma50, 3),
+                    'ma150': round(ma150, 3),
+                    'ma200': round(ma200, 3),
+                    'ma200_prev20': round(ma200_prev, 3),
+                    'high52': round(high52, 3),
+                    'low52': round(low52, 3),
+                    'rps120': rps120,
+                    'xdxr_adjusted': bool(was_adjusted),
+                    'checks': {
+                        'c1_close_over_ma150_200': bool(c1),
+                        'c2_ma150_over_ma200': bool(c2),
+                        'c3_ma200_rising': bool(c3),
+                        'c4_ma50_over_ma150_200': bool(c4),
+                        'c5_close_over_ma50': bool(c5),
+                        'c6_above_52w_low': bool(c6),
+                        'c7_near_52w_high': bool(c7),
+                        'c8_rps120_ge_90': bool(c8),
+                    },
+                }
+
+            ops.append(UpdateOne(
+                {'stock_code': code, 'trade_date': trade_date},
+                {'$set': set_doc}
+            ))
+
+        if ops:
+            coll.bulk_write(ops, ordered=False)
+
+        logger.info(
+            f"[DailyFactors-{data_type}] {trade_date} 完成: {len(ops)} 条"
+            + (f"（其中 {adjusted_cnt} 只做了前复权修正）" if adjusted_cnt else "")
+        )
+        return {'dates': 1, 'updates': len(ops), 'adjusted': adjusted_cnt}
+
+    def calculate_stage2(self, data_type: str = 'stock', trade_date: Optional[str] = None,
+                         progress_callback=None) -> Dict[str, int]:
+        """兼容旧调用：等价于 calculate_daily_factors（同时刷新均线与二阶段）。"""
+        return self.calculate_daily_factors(data_type, trade_date, progress_callback)
 
     # ==================== CR5% 拥挤度 ====================
 

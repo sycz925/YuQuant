@@ -72,9 +72,10 @@ def get_stock_list(
     page: Optional[int] = Query(None, ge=1, description="页码"),
     page_size: Optional[int] = Query(50, ge=1, le=500, description="每页数量"),
     keyword: Optional[str] = Query(None, description="搜索关键词（代码、名称或拼音首字母）"),
-    filter_mode: Optional[str] = Query(None, description="筛选模式: enabled/disabled")
+    filter_mode: Optional[str] = Query(None, description="筛选模式: enabled/disabled"),
+    stage2: Optional[str] = Query(None, description="二阶段筛选: yes/no"),
 ):
-    """获取股票列表（支持分页、搜索和状态筛选）"""
+    """获取股票列表（支持分页、搜索、状态与二阶段筛选）"""
     try:
         dm = get_data_manager()
         df = dm.get_stock_list()
@@ -101,6 +102,21 @@ def get_stock_list(
             else:
                 df = df[~df['stock_code'].isin(disabled_codes)]
 
+        # 二阶段映射（同时用于筛选与列表展示）
+        stage2_map = {}
+        try:
+            stage2_map = get_stock_repo().get_latest_stage2_map()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"读取二阶段标记失败: {e}")
+
+        # 二阶段筛选（「否」= 非二阶段，含未计算的新股/停牌）
+        if stage2 in ('yes', 'no'):
+            yes_codes = {c for c, v in stage2_map.items() if v}
+            if stage2 == 'yes':
+                df = df[df['stock_code'].isin(yes_codes)]
+            else:
+                df = df[~df['stock_code'].isin(yes_codes)]
+
         total = len(df)
 
         if page is not None:
@@ -116,7 +132,8 @@ def get_stock_list(
                 "name": row["stock_name"],
                 "stock_name": row["stock_name"],
                 "market": row["market"],
-                "exclude_sync": stock_code in disabled_codes
+                "exclude_sync": stock_code in disabled_codes,
+                "is_stage2": stage2_map.get(stock_code),
             })
 
         return {"total": total, "data": stocks}

@@ -10,7 +10,7 @@ from app.server.repositories.base import BaseRepository
 _QUOTE_FIELDS = {
     'close': 1, 'chg_pct': 1, 'chg_5d': 1, 'chg_10d': 1,
     'chg_20d': 1, 'chg_50d': 1, 'chg_120d': 1,
-    'rps_10': 1, 'rps_50': 1, 'rps_120': 1, '_id': 0,
+    'rps_10': 1, 'rps_50': 1, 'rps_120': 1, 'is_stage2': 1, '_id': 0,
 }
 
 
@@ -27,4 +27,14 @@ class EtfRepository(BaseRepository):
             {'stock_code': code, 'close': {'$gt': 0}},
             sort=[('trade_date', -1)],
             projection=_QUOTE_FIELDS,
+        )
+
+    def get_latest_stage2(self, code: str) -> Optional[Dict]:
+        """获取 ETF 最新一根日线的二阶段标记与明细"""
+        coll = get_collection('etf')
+        return coll.find_one(
+            {'stock_code': code, 'close': {'$gt': 0}},
+            sort=[('trade_date', -1)],
+            projection={'_id': 0, 'trade_date': 1, 'close': 1,
+                        'is_stage2': 1, 'stage2_detail': 1},
         )

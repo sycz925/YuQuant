@@ -334,12 +334,9 @@ def bulk_upsert_daily_data(stock_code: str, records: List[Dict[str, Any]], data_
         doc.update({k: v for k, v in orig.items()
                     if k not in ('stock_code', 'trade_date', 'data_source', 'update_time', 'is_final')})
 
-        # 板块无vol时用amount/close补写
-        if data_type == 'sector' and (not doc.get('vol') or doc.get('vol', 0) <= 0):
-            amt = doc.get('amount', 0) or 0
-            c = doc.get('close', 0) or 0
-            if amt > 0 and c > 0:
-                doc['vol'] = round(amt / c, 2)
+        # 板块指数没有「成交量（手）」概念，amount/close 得到的是无意义数值
+        # （历史上曾用它补写，导致 vol 序列在「手」和「伪股数」间跳变几百倍）。
+        # 板块 vol 缺失时保持缺失，由数据源（pytdx）负责提供真实值。
 
         curr_close = closes[i]
         if curr_close <= 0:

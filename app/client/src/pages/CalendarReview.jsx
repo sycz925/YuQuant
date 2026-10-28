@@ -6,7 +6,7 @@ import 'dayjs/locale/zh-cn'
 import { toPng } from 'html-to-image'
 import dayjs from 'dayjs'
 import { calendarApi, taskApi } from '../api'
-import { useTaskPolling } from '../hooks/useTaskPolling'
+import { useTaskCenter } from '../contexts/TaskCenter'
 import InputDataModal from '../components/calendar/InputDataModal'
 import WeeklySummaryModal from '../components/calendar/WeeklySummaryModal'
 import MonthlySummaryModal from '../components/calendar/MonthlySummaryModal'
@@ -87,110 +87,17 @@ function CalendarReview({ latestTradeDate }) {
   const [weeklyScreenshotLoading, setWeeklyScreenshotLoading] = useState(false)
   const [monthlyScreenshotLoading, setMonthlyScreenshotLoading] = useState(false)
   // 月度重算状态
-  const RECALC_TASK_KEY = 'monthlyRecalcTaskId'
-  const [monthlyRecalcRunning, setMonthlyRecalcRunning] = useState(false)
-  const [monthlyRecalcTaskId, setMonthlyRecalcTaskId] = useState(null)
+  const { activeTasks, startTask } = useTaskCenter()
+  // 任务状态由全局任务中心派生：切页面/刷新后仍能正确反映是否在跑
+  const monthlyRecalcRunning = activeTasks.some(
+    t => t.kind === 'monthly-recalc' || /月度重算/.test(t.name || ''))
+  const monthlyAiRunning = activeTasks.some(
+    t => t.kind === 'monthly-ai-fill' || /AI分析补全|AI补全/.test(t.name || ''))
   const recalcMetaRef = useRef({ year: null, month: null })
   // AI分析补全状态
-  const [monthlyAiRunning, setMonthlyAiRunning] = useState(false)
-  const [monthlyAiFillTaskId, setMonthlyAiFillTaskId] = useState(null)
+
   const aiFillMetaRef = useRef({ year: null, month: null })
 
-  const handleRecalcProgress = useCallback((status) => {
-    const steps = status.steps || []
-    const totalSteps = steps.length
-    const currentStep = steps[status.current_step]
-    const stepDesc = currentStep ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})` : status.current_stock_name || '处理中...'
-    notification.info({
-      message: `${status.name || '月度重算'}(${status.current_step || 0}/${totalSteps})`,
-      description: stepDesc,
-      duration: 0,
-      key: `monthly-recalc-${recalcMetaRef.current.year}-${recalcMetaRef.current.month}`,
-      closable: false,
-    })
-  }, [])
-
-  const handleRecalcComplete = useCallback((status) => {
-    const { year, month } = recalcMetaRef.current
-    notification.success({
-      message: `${status.name || '月度重算'}完成`,
-      description: status.current_stock_name || '完成',
-      duration: 0,
-      key: `monthly-recalc-${year}-${month}`,
-      closable: true,
-    })
-    sessionStorage.removeItem(RECALC_TASK_KEY)
-    setMonthlyRecalcRunning(false)
-    setMonthlyRecalcTaskId(null)
-    loadCalendarData(year, month)
-  }, [])
-
-  const handleRecalcFailed = useCallback((status) => {
-    notification.error({
-      message: `${status.name || '月度重算'}失败`,
-      description: status.error || '未知错误',
-      duration: 0,
-      key: `monthly-recalc-${recalcMetaRef.current.year}-${recalcMetaRef.current.month}`,
-      closable: true,
-    })
-    sessionStorage.removeItem(RECALC_TASK_KEY)
-    setMonthlyRecalcRunning(false)
-    setMonthlyRecalcTaskId(null)
-  }, [])
-
-  useTaskPolling(monthlyRecalcTaskId, {
-    interval: 3000,
-    onProgress: handleRecalcProgress,
-    onComplete: handleRecalcComplete,
-    onFailed: handleRecalcFailed,
-  })
-
-  const handleAiFillProgress = useCallback((status) => {
-    const steps = status.steps || []
-    const totalSteps = steps.length
-    const currentStep = steps[status.current_step]
-    const stepDesc = currentStep ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})` : status.current_stock_name || '处理中...'
-    notification.info({
-      message: `${status.name || 'AI分析补全'}(${status.current_step || 0}/${totalSteps})`,
-      description: stepDesc,
-      duration: 0,
-      key: `monthly-ai-${aiFillMetaRef.current.year}-${aiFillMetaRef.current.month}`,
-      closable: false,
-    })
-  }, [])
-
-  const handleAiFillComplete = useCallback((status) => {
-    const { year, month } = aiFillMetaRef.current
-    notification.success({
-      message: `${status.name || 'AI分析补全'}完成`,
-      description: status.current_stock_name || '完成',
-      duration: 0,
-      key: `monthly-ai-${year}-${month}`,
-      closable: true,
-    })
-    setMonthlyAiRunning(false)
-    setMonthlyAiFillTaskId(null)
-    loadCalendarData(year, month)
-  }, [])
-
-  const handleAiFillFailed = useCallback((status) => {
-    notification.error({
-      message: `${status.name || 'AI分析补全'}失败`,
-      description: status.error || '未知错误',
-      duration: 0,
-      key: `monthly-ai-${aiFillMetaRef.current.year}-${aiFillMetaRef.current.month}`,
-      closable: true,
-    })
-    setMonthlyAiRunning(false)
-    setMonthlyAiFillTaskId(null)
-  }, [])
-
-  useTaskPolling(monthlyAiFillTaskId, {
-    interval: 5000,
-    onProgress: handleAiFillProgress,
-    onComplete: handleAiFillComplete,
-    onFailed: handleAiFillFailed,
-  })
 
   useEffect(() => {
     // URL 书签变化时（如手动编辑地址栏）同步月份状态
@@ -342,6 +249,7 @@ function CalendarReview({ latestTradeDate }) {
         setMonthlyLoading(false)
         return
       }
+      startTask(taskId, { title: '月度总结生成', kind: 'monthly-summary', message: '正在生成月度总结...' })
       const poll = async () => {
         try {
           const task = await taskApi.getStatus(taskId)
@@ -486,6 +394,7 @@ function CalendarReview({ latestTradeDate }) {
         setWeeklyLoading(false)
         return
       }
+      startTask(taskId, { title: '周度总结生成', kind: 'weekly-summary', message: '正在生成周度总结...' })
       const poll = async () => {
         try {
           const task = await taskApi.getStatus(taskId)
@@ -623,7 +532,7 @@ function CalendarReview({ latestTradeDate }) {
     }
   }
 
-  // 月度重算：逐日重算RPS+基础数据
+  // 月度重算：逐日重算RPS+基础数据（进度由全局任务中心驱动，切页面不中断）
   const handleMonthlyRecalc = async () => {
     if (monthlyRecalcRunning) return
 
@@ -637,64 +546,20 @@ function CalendarReview({ latestTradeDate }) {
         return
       }
 
-      setMonthlyRecalcRunning(true)
       recalcMetaRef.current = { year, month }
-      sessionStorage.setItem(RECALC_TASK_KEY, res.task_id)
-
-      const key = `monthly-recalc-${year}-${month}`
-      if (res.already_running) {
-        notification.info({
-          message: '月度重算任务正在进行中',
-          description: '正在处理中...',
-          duration: 0,
-          key,
-          closable: false,
-        })
-      } else {
-        notification.info({
-          message: `${year}-${String(month).padStart(2, '0')} 月度重算已启动`,
-          description: '正在逐日计算RPS和基础数据...',
-          duration: 0,
-          key,
-          closable: false,
-        })
-      }
-
-      setMonthlyRecalcTaskId(res.task_id)
-
+      startTask(res.task_id, {
+        title: `月度重算 ${year}-${String(month).padStart(2, '0')}`,
+        kind: 'monthly-recalc',
+        message: res.already_running ? '任务已在进行中...' : '正在逐日计算RPS和基础数据...',
+        onDone: () => { if (recalcMetaRef.current.year) loadCalendarData(recalcMetaRef.current.year, recalcMetaRef.current.month) },
+      })
     } catch (e) {
       console.error('启动月度重算失败:', e)
       message.error('启动月度重算失败')
-      setMonthlyRecalcRunning(false)
     }
   }
 
-  // 挂载时检查 sessionStorage，恢复轮询
-  useEffect(() => {
-    const savedTaskId = sessionStorage.getItem(RECALC_TASK_KEY)
-    if (savedTaskId) {
-      taskApi.getStatus(savedTaskId).then(res => {
-        if (res && res.status === 'running') {
-          // 任务仍在跑，恢复轮询
-          setMonthlyRecalcRunning(true)
-          setMonthlyRecalcTaskId(savedTaskId)
-          // 恢复 recalcMetaRef（从 task name 解析 year/month）
-          const name = res.name || ''
-          const match = name.match(/(\d{4})年(\d{1,2})月/)
-          if (match) {
-            recalcMetaRef.current = { year: parseInt(match[1]), month: parseInt(match[2]) }
-          }
-        } else {
-          // 任务已结束，清除
-          sessionStorage.removeItem(RECALC_TASK_KEY)
-        }
-      }).catch(() => {
-        sessionStorage.removeItem(RECALC_TASK_KEY)
-      })
-    }
-  }, [])
-
-  // AI分析补全：只为没有AI分析的日期生成
+  // AI分析补全：只为没有AI分析的日期生成（进度由全局任务中心驱动）
   const handleMonthlyAiFill = async () => {
     if (monthlyAiRunning) return
 
@@ -708,34 +573,16 @@ function CalendarReview({ latestTradeDate }) {
         return
       }
 
-      setMonthlyAiRunning(true)
       aiFillMetaRef.current = { year, month }
-
-      const key = `monthly-ai-${year}-${month}`
-      if (res.already_running) {
-        notification.info({
-          message: 'AI分析补全任务正在进行中',
-          description: '正在处理中...',
-          duration: 0,
-          key,
-          closable: false,
-        })
-      } else {
-        notification.info({
-          message: `${year}-${String(month).padStart(2, '0')} AI分析补全已启动`,
-          description: '正在为缺失AI分析的日期生成分析...',
-          duration: 0,
-          key,
-          closable: false,
-        })
-      }
-
-      setMonthlyAiFillTaskId(res.task_id)
-
+      startTask(res.task_id, {
+        title: `AI分析补全 ${year}-${String(month).padStart(2, '0')}`,
+        kind: 'monthly-ai-fill',
+        message: res.already_running ? '任务已在进行中...' : '正在为缺失AI分析的日期生成分析...',
+        onDone: () => { if (aiFillMetaRef.current.year) loadCalendarData(aiFillMetaRef.current.year, aiFillMetaRef.current.month) },
+      })
     } catch (e) {
       console.error('启动AI分析补全失败:', e)
       message.error('启动AI分析补全失败')
-      setMonthlyAiRunning(false)
     }
   }
 

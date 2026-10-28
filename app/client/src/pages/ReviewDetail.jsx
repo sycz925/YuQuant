@@ -7,14 +7,12 @@ import dayjs from 'dayjs'
 import MarketMonitor from './MarketMonitor'
 import MarketAnalysis from './MarketAnalysis'
 import { calendarApi, marketReviewApi, oneClickUpdateApi, taskApi } from '../api'
-import { useTaskPolling } from '../hooks/useTaskPolling'
+import { useTaskCenter } from '../contexts/TaskCenter'
 
 const TABS = [
   { key: 'monitor', label: '市场监控', icon: '📊' },
   { key: 'analysis', label: '市场分析', icon: '🔬' },
 ]
-
-const RECALC_TASK_KEY = 'recalcTaskId'
 
 function ReviewDetail({ latestTradeDate }) {
   const { date } = useParams()
@@ -29,72 +27,10 @@ function ReviewDetail({ latestTradeDate }) {
   // 市场数据状态：hasData(有数据), isFinal(盘后)
   const [marketStatus, setMarketStatus] = useState({ hasData: false, isFinal: false })
   // 数据重算状态
-  const [recalcTaskId, setRecalcTaskId] = useState(null)
+  const { activeTasks, startTask } = useTaskCenter()
+  // 重算状态由全局任务中心派生（切页面/刷新不丢进度）
+  const recalcRunning = activeTasks.some(t => t.kind === 'recalc-day' || /重算/.test(t.name || ''))
   const recalcNotifyKey = useRef(null)
-
-  const handleRecalcProgress = useCallback((status) => {
-    const steps = status.steps || []
-    const totalSteps = steps.length
-    const currentStep = steps[status.current_step]
-    const stepDesc = currentStep ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})` : '处理中...'
-    notification.info({
-      message: `${status.name || '数据重算'}(${status.current_step || 0}/${totalSteps})`,
-      description: stepDesc,
-      duration: 0,
-      key: recalcNotifyKey.current,
-      closable: false,
-    })
-  }, [])
-
-  const handleRecalcComplete = useCallback((status) => {
-    notification.success({
-      message: `${status.name || '数据重算'}完成`,
-      description: 'RPS和基础数据已更新',
-      duration: 0,
-      key: recalcNotifyKey.current,
-      closable: true,
-    })
-    sessionStorage.removeItem(RECALC_TASK_KEY)
-    setRecalcTaskId(null)
-  }, [])
-
-  const handleRecalcFailed = useCallback((status) => {
-    notification.error({
-      message: `${status.name || '数据重算'}失败`,
-      description: status.error || '未知错误',
-      duration: 0,
-      key: recalcNotifyKey.current,
-      closable: true,
-    })
-    sessionStorage.removeItem(RECALC_TASK_KEY)
-    setRecalcTaskId(null)
-  }, [])
-
-  const { isPolling: recalcRunning } = useTaskPolling(recalcTaskId, {
-    interval: 3000,
-    onProgress: handleRecalcProgress,
-    onComplete: handleRecalcComplete,
-    onFailed: handleRecalcFailed,
-  })
-
-  // 挂载时检查 sessionStorage，恢复轮询（切页后回到本页时进度不丢）
-  useEffect(() => {
-    const savedTaskId = sessionStorage.getItem(RECALC_TASK_KEY)
-    if (savedTaskId) {
-      taskApi.getStatus(savedTaskId).then(res => {
-        if (res && res.status === 'running') {
-          // 任务仍在跑，恢复轮询
-          recalcNotifyKey.current = `recalc-${res.name || currentDate}`
-          setRecalcTaskId(savedTaskId)
-        } else {
-          // 任务已结束，清除
-          sessionStorage.removeItem(RECALC_TASK_KEY)
-        }
-      }).catch(() => {
-        sessionStorage.removeItem(RECALC_TASK_KEY)
-      })
-    }
-  }, [])
 
   // 从后端获取交易日列表
   useEffect(() => {
@@ -225,7 +161,7 @@ function ReviewDetail({ latestTradeDate }) {
     }
   }
 
-  // 数据重算：只重算当前日期的数据
+  // 数据重算：只重算当前日期的数据（进度由全局任务中心驱动）
   const handleRecalculate = async () => {
     if (recalcRunning) return
 
@@ -236,28 +172,18 @@ function ReviewDetail({ latestTradeDate }) {
         return
       }
 
-      recalcNotifyKey.current = `recalc-${currentDate}`
-      if (res.already_running) {
-        notification.info({
-          message: '重算任务正在进行中',
-          description: '处理中...',
-          duration: 0,
-          key: recalcNotifyKey.current,
-          closable: false,
-        })
-      } else {
-        notification.info({
-          message: `${currentDate} 数据重算已启动`,
-          description: '正在计算RPS和基础数据...',
-          duration: 0,
-          key: recalcNotifyKey.current,
-          closable: false,
-        })
-      }
-
-      sessionStorage.setItem(RECALC_TASK_KEY, res.task_id)
-      setRecalcTaskId(res.task_id)
-
+      startTask(res.task_id, {
+        title: `${currentDate} 数据重算`,
+        kind: 'recalc-day',
+        message: res.already_running ? '任务已在进行中...' : '正在计算RPS和基础数据...',
+        onDone: () => {
+          if (currentDate) {
+            marketReviewApi.getAiAnalysis(currentDate).then(r => {
+              if (r) setMarketStatus({ hasData: true, isFinal: r.is_final === true })
+            }).catch(() => {})
+          }
+        },
+      })
     } catch (e) {
       console.error('启动重算失败:', e)
       message.error('启动重算失败')

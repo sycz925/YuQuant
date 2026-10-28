@@ -111,13 +111,13 @@ class EtfListItem(BaseModel):
     rps_10: Optional[int] = Field(None, description="RPS 10日")
     rps_50: Optional[int] = Field(None, description="RPS 50日")
     rps_120: Optional[int] = Field(None, description="RPS 120日")
+    is_stage2: Optional[bool] = Field(None, description="是否二阶段")
 
 
 class EtfListResponse(BaseModel):
     """ETF列表响应"""
     total: int = Field(..., description="总数")
     data: List[EtfListItem] = Field(..., description="ETF列表")
-
 
 class WatchlistAddRequest(BaseModel):
     """添加重点关注请求"""
@@ -139,6 +139,8 @@ class WatchlistItem(BaseModel):
     rps_10: Optional[int] = Field(None, description="RPS 10日")
     rps_50: Optional[int] = Field(None, description="RPS 50日")
     rps_120: Optional[int] = Field(None, description="RPS 120日")
+    is_stage2: Optional[bool] = Field(None, description="是否二阶段（Minervini Stage 2）")
+    stage2_detail: Optional[dict] = Field(None, description="二阶段 8 条标准明细")
     tdx_status: Optional[str] = Field(None, description="通达信MA7状态: red/green/blue")
 
 

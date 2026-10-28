@@ -3,7 +3,8 @@ import { Input, Button, Card, Spin, Empty, Tag, Typography, message, Popconfirm,
 import { SearchOutlined, ReloadOutlined, ApartmentOutlined, ArrowUpOutlined, DeleteOutlined, SwapOutlined, PlusOutlined, StarOutlined, BulbOutlined, CopyOutlined, ImportOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { industryMapApi, watchlistApi } from '../api'
-import useTaskPolling from '../hooks/useTaskPolling'
+import { useTaskCenter } from '../contexts/TaskCenter'
+import Stage2Cell from '../components/Stage2Cell'
 
 const { Text, Paragraph, Title } = Typography
 
@@ -118,8 +119,15 @@ function CompanyCard({ company, navigate, onWatch }) {
           <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>{company.market_position}</Tag>
         )}
       </div>
-      {(company.rps_10 != null || company.rps_50 != null || company.rps_120 != null) && (
+      {(company.is_stage2 != null || company.rps_10 != null || company.rps_50 != null || company.rps_120 != null) && (
         <div className="flex items-center gap-1.5 flex-wrap mb-2">
+          {company.is_stage2 != null && (
+            <Stage2Cell
+              isStage2={company.is_stage2}
+              detail={company.stage2_detail}
+              labelPrefix="二阶段"
+            />
+          )}
           <RpsBadge label="RPS10" value={company.rps_10} />
           <RpsBadge label="RPS50" value={company.rps_50} />
           <RpsBadge label="RPS120" value={company.rps_120} />
@@ -204,10 +212,10 @@ function IndustryMap() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [keyword, setKeyword] = useState('')
   const [loading, setLoading] = useState(false)
+  const { startTask } = useTaskCenter()
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [history, setHistory] = useState([])
-  const [taskId, setTaskId] = useState(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [importText, setImportText] = useState('')
@@ -276,7 +284,19 @@ function IndustryMap() {
         setData(res.data)
         setLoading(false)
       } else {
-        setTaskId(res.task_id)
+        startTask(res.task_id, {
+          title: `产业分析：${kw}`,
+          kind: 'industry-map',
+          message: '正在调用 AI 生成产业链...',
+          onDone: async () => {
+            try {
+              const r = await industryMapApi.getCached(keywordRef.current)
+              setData(r?.data)
+            } catch (e) { /* 忽略 */ }
+          },
+          onFailed: (st) => setError(st?.error || '生成失败，请稍后重试'),
+        })
+        setLoading(false)
       }
     } catch (e) {
       setError(e?.response?.data?.detail || e?.message || '生成失败，请稍后重试')
@@ -289,7 +309,6 @@ function IndustryMap() {
       await industryMapApi.remove(keywordRef.current)
       message.success('已删除')
       setData(null)
-      setTaskId(null)
       setSearchParams({}, { replace: true })
       const res = await industryMapApi.getHistory()
       setHistory(res?.data || [])
@@ -317,7 +336,6 @@ function IndustryMap() {
         setData(imported)
         setKeyword(kw)
         keywordRef.current = kw
-        setTaskId(null)
         setError('')
         if (kw) setSearchParams({ keyword: kw }, { replace: true })
       }
@@ -410,24 +428,6 @@ function IndustryMap() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // 任务轮询：完成后取缓存结果
-  useTaskPolling(taskId, {
-    interval: 3000,
-    onComplete: async () => {
-      try {
-        const res = await industryMapApi.getCached(keywordRef.current)
-        setData(res?.data)
-      } catch (e) { /* 忽略 */ }
-      setLoading(false)
-      setTaskId(null)
-    },
-    onFailed: (taskStatus) => {
-      setError(taskStatus?.error || '生成失败，请稍后重试')
-      setLoading(false)
-      setTaskId(null)
-    },
-  })
 
   const chain = data?.chain || []
 

@@ -808,13 +808,8 @@ def recalculate_month_api(
         raise HTTPException(status_code=500, detail=f"启动失败: {str(e)[:200]}")
 
 
-@router.get("/task/{task_id}")
-def get_task_status(task_id: str):
-    """通用任务状态查询接口"""
-    task = get_task_repo().get_by_task_id(task_id)
-    if not task:
-        return {'status': 'not_found', 'task_id': task_id}
-    
+def _serialize_task(task: dict) -> dict:
+    """任务文档 → 前端统一结构（全局任务中心与单任务查询共用）"""
     return {
         'status': task.get('status', 'idle'),
         'task_id': task.get('task_id'),
@@ -827,6 +822,32 @@ def get_task_status(task_id: str):
         'error': task.get('error', ''),
         'steps': task.get('steps', []),
     }
+
+
+@router.get("/task/{task_id}")
+def get_task_status(task_id: str):
+    """通用任务状态查询接口"""
+    task = get_task_repo().get_by_task_id(task_id)
+    if not task:
+        return {'status': 'not_found', 'task_id': task_id}
+
+    return _serialize_task(task)
+
+
+@router.get("/tasks/running")
+def list_running_tasks():
+    """列出所有运行中的任务
+
+    供前端「全局任务中心」在切页面 / 刷新页面后接管仍在执行的任务，
+    避免组件卸载导致进度丢失。
+    """
+    try:
+        tasks = get_task_repo().get_running_tasks()
+        data = [_serialize_task(t) for t in tasks]
+        return {'total': len(data), 'data': data}
+    except Exception as e:
+        logger.error(f"查询运行中任务失败: {e}")
+        return {'total': 0, 'data': []}
 
 
 # ==================== AI分析补全 ====================

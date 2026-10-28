@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from app.server.factories import get_index_factory, get_stock_factory, get_sector_factory, get_market_aggregator
 from app.server.repositories import (
     get_stock_repo, get_sector_repo, get_index_repo, get_task_repo, get_system_config_repo,
+    get_etf_repo,
 )
 from app.server.services.factors_service import (
     _run_compare_stocks_task,
@@ -154,17 +155,49 @@ def get_sector_list(
     sort_by: Optional[str] = Query(None, description="排序字段"),
     sort_order: Optional[str] = Query("desc", description="排序方向"),
     rps_red: Optional[str] = Query(None, description="RPS红筛选: one/two/three"),
+    stage2: Optional[str] = Query(None, description="二阶段筛选: yes/no"),
 ):
     """获取板块列表（支持分页、搜索、状态筛选和排序，含最新行情数据）"""
     try:
         factory = get_sector_factory()
         return factory.get_sector_list(
             page, page_size or 50, keyword, filter_mode, limit, min_stock_count or 0,
-            sort_by, sort_order, rps_red,
+            sort_by, sort_order, rps_red, stage2,
         )
     except Exception as e:
         logger.error(f"获取板块列表失败: {e}")
         return {"success": False, "message": str(e), "total": 0, "items": []}
+
+
+@router.get("/stage2/{code}")
+def get_stage2_status(
+    code: str,
+    type: str = Query('stock', description="标的类型: stock/sector/etf"),
+):
+    """获取指定标的最新交易日的二阶段状态与 8 条标准明细"""
+    try:
+        if type == 'sector':
+            doc = get_sector_repo().get_latest_stage2(code)
+        elif type == 'etf':
+            doc = get_etf_repo().get_latest_stage2(code)
+        else:
+            doc = get_stock_repo().get_latest_stage2(code)
+
+        if not doc:
+            return {'success': True, 'code': code, 'type': type,
+                    'trade_date': None, 'is_stage2': None, 'stage2_detail': None}
+
+        return {
+            'success': True,
+            'code': code,
+            'type': type,
+            'trade_date': doc.get('trade_date'),
+            'is_stage2': doc.get('is_stage2'),
+            'stage2_detail': doc.get('stage2_detail'),
+        }
+    except Exception as e:
+        logger.error(f"获取二阶段状态失败 {code}: {e}")
+        return {'success': False, 'message': str(e)}
 
 
 class SectorDailyBar(BaseModel):
@@ -280,6 +313,8 @@ def get_sector_stocks(
             'rps_10': 1,
             'rps_50': 1,
             'rps_120': 1,
+            'is_stage2': 1,
+            'stage2_detail': 1,
         })
 
         # 查股票名称

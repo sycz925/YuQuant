@@ -1,14 +1,14 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
-import { Table, Input, Button, Space, Tag, message, notification, Select } from 'antd'
+import React, { useState, useCallback } from 'react'
+import { Table, Input, Button, Space, Tag, message, Select } from 'antd'
 import { SearchOutlined, ReloadOutlined, SyncOutlined, AlertOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { etfApi, taskApi } from '../api'
+import { etfApi } from '../api'
+import { useTaskCenter } from '../contexts/TaskCenter'
 
 function ETFPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const pollingRef = useRef(null)
   const [searchParams, setSearchParams] = useSearchParams()
 
   // 从 URL 参数读取筛选状态（返回时自动恢复）
@@ -30,7 +30,9 @@ function ETFPage() {
     }, { replace: true })
   }, [setSearchParams])
 
-  const [syncing, setSyncing] = useState(false)
+  // 同步状态由全局任务中心派生：切页面/刷新后仍能正确反映任务是否在跑
+  const { activeTasks, startTask } = useTaskCenter()
+  const syncing = activeTasks.some(t => t.kind === 'etf' || (t.name || '').includes('ETF'))
 
   const { data = [], isFetching } = useQuery({
     queryKey: ['etf_list', keyword, rpsRed, sortBy, sortOrder],
@@ -46,81 +48,23 @@ function ETFPage() {
     },
   })
 
-  useEffect(() => {
-    return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current)
-    }
-  }, [])
-
   const handleSync = async () => {
     if (syncing) return
-    setSyncing(true)
     try {
       const res = await etfApi.sync()
       if (!res?.success) {
         message.warning(res?.message || '无法启动同步')
-        setSyncing(false)
         return
       }
-      notification.info({
-        message: 'ETF同步(0/3)',
-        description: '正在准备...',
-        duration: 0,
-        key: 'etf-sync',
-        closable: false,
+      startTask(res.task_id, {
+        title: 'ETF同步',
+        kind: 'etf',
+        message: '正在准备...',
+        onDone: () => queryClient.invalidateQueries({ queryKey: ['etf_list'] }),
       })
-      startPolling(res.task_id)
     } catch (e) {
       message.error('启动同步失败')
-      setSyncing(false)
     }
-  }
-
-  const startPolling = (taskId) => {
-    const key = 'etf-sync'
-    pollingRef.current = setInterval(async () => {
-      try {
-        const status = await taskApi.getStatus(taskId)
-        if (status.status === 'failed') {
-          notification.error({
-            message: 'ETF同步失败',
-            description: status.message || status.error || '未知错误',
-            duration: 0, key, closable: true,
-          })
-          clearInterval(pollingRef.current)
-          pollingRef.current = null
-          setSyncing(false)
-          return
-        }
-        if (status.status === 'completed') {
-          notification.success({
-            message: 'ETF同步完成',
-            description: '基础信息 | 日线 | RPS | ENE预警 全部完成',
-            duration: 0, key, closable: true,
-          })
-          clearInterval(pollingRef.current)
-          pollingRef.current = null
-          setSyncing(false)
-          queryClient.invalidateQueries({ queryKey: ['etf_list'] })
-          return
-        }
-        if (status.status === 'running') {
-          const steps = status.steps || []
-          const totalSteps = steps.length
-          const currentStep = steps[status.current_step]
-          const stepDesc = currentStep
-            ? `${currentStep.name}(${currentStep.completed_count || 0}/${currentStep.total_count || 1})`
-            : '处理中...'
-          notification.info({
-            message: `ETF同步(${(status.current_step || 0) + 1}/${totalSteps})`,
-            description: stepDesc,
-            duration: 0, key, closable: false,
-          })
-        }
-      } catch (e) {
-        console.error('[ETF Polling]', e)
-      }
-    }, 3000)
   }
 
   const handleTableChange = (pagination, filters, sorter) => {

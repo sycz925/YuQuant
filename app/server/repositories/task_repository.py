@@ -130,8 +130,14 @@ class TaskRepository(BaseRepository):
         ).sort('created_at', -1).limit(limit))
 
     def get_running_tasks(self) -> List[Dict]:
-        """获取所有运行中任务（精简投影）"""
+        """获取所有运行中任务
+
+        投影需包含进度展示所需字段（status/steps/message/计数），
+        否则前端全局任务中心无法渲染步骤与进度。
+        """
         return list(self.collection.find(
             {'status': 'running'},
-            {'_id': 0, 'task_id': 1, 'name': 1, 'current_step': 1, 'current_stock_name': 1, 'created_at': 1}
+            {'_id': 0, 'task_id': 1, 'name': 1, 'status': 1, 'steps': 1, 'message': 1,
+             'current_step': 1, 'current_stock_name': 1, 'completed_count': 1,
+             'total_count': 1, 'error': 1, 'created_at': 1}
         ).sort('created_at', -1))

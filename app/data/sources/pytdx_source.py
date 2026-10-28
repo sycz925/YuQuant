@@ -577,26 +577,48 @@ class PytdxSource:
             _return_connection(api)
 
     @staticmethod
-    def _adjust_xdxr_events(xdxr_events: List[Dict]) -> List[Dict]:
-        """过滤并标准化xdxr事件，只保留需要复权的类别"""
+    def _adjust_xdxr_events(xdxr_events: List[Dict], include_infer: bool = False) -> List[Dict]:
+        """过滤并标准化xdxr事件，只保留需要复权的类别。
+
+        Args:
+            include_infer: True 时额外纳入「有事件但无因子」的股本变动类别
+                （如 category=9 转配股上市、category=2 送配股上市）。
+                pytdx 对送股/转增有时不填 songzhuangu，只能靠价格跳空反推因子。
+                False（默认）时仅保留 category=1，用于 xdxr 指纹计算（避免指纹频繁变化）。
+        """
         adjusted = []
         for evt in xdxr_events:
             cat = evt.get('category')
+            try:
+                date_str = f"{int(evt['year']):04d}{int(evt['month']):02d}{int(evt['day']):02d}"
+            except Exception:
+                continue
             if cat == 1:
                 fenhong = evt.get('fenhong') or 0
                 songzhuangu = evt.get('songzhuangu') or 0
                 peigu = evt.get('peigu') or 0
                 peigujia = evt.get('peigujia') or 0
                 if fenhong or songzhuangu or peigu:
-                    date_str = f"{int(evt['year']):04d}{int(evt['month']):02d}{int(evt['day']):02d}"
                     adjusted.append({
                         'date': date_str,
                         'fenhong': fenhong,
                         'songzhuangu': songzhuangu,
                         'peigu': peigu,
                         'peigujia': peigujia,
+                        'infer': False,
                     })
+            elif include_infer and cat not in (3, 10):
+                # 覆盖所有可能影响股价的股本变动类别（含表外的 15+）：
+                #   2 送配股上市 / 4 未知股本变动 / 5 股本变化 / 6 增发新股 / 7 股份回购
+                #   8 增发新股上市 / 9 转配股上市 / 11 扩缩股 / 12 非流通股缩股
+                #   13 送认购权证 / 14 送认沽权证 / 15+ 协议扩展类别
+                # 排除 3（非流通股上市）与 10（可转债上市）——两者不改变总股本，不产生除权。
+                # 这些类别 pytdx 通常不填因子，只能在 apply_forward_adjust 里用跳空反推。
+                adjusted.append({'date': date_str, 'infer': True})
         return sorted(adjusted, key=lambda x: x['date'])
+
+    # 指纹参与哈希的字段：只取复权因子相关字段，忽略 infer 等内部标记
+    _FINGERPRINT_KEYS = ('date', 'fenhong', 'songzhuangu', 'peigu', 'peigujia')
 
     @staticmethod
     def xdxr_fingerprint(xdxr_events: List[Dict]) -> Optional[str]:
@@ -604,6 +626,9 @@ class PytdxSource:
 
         用于检测复权基准是否变化：事件数或任一因子（分红/送转/配股）
         变化都会导致指纹不同。与事件顺序无关。
+
+        注意：只对 _FINGERPRINT_KEYS 中的字段做哈希。任何新增的内部标记字段
+        （如 infer）都不会影响指纹，否则会让全部历史指纹失效、触发全市场重拉。
 
         Args:
             xdxr_events: 原始 xdxr 事件列表（get_xdxr_info 返回格式）
@@ -614,8 +639,10 @@ class PytdxSource:
         adjusted = PytdxSource._adjust_xdxr_events(xdxr_events or [])
         if not adjusted:
             return None
-        # 事件数变化或任一字段变化 → 排序后的序列化结果不同 → 指纹不同
-        canonical = json.dumps(adjusted, sort_keys=True, ensure_ascii=False)
+        canonical = json.dumps(
+            [{k: e.get(k) for k in PytdxSource._FINGERPRINT_KEYS} for e in adjusted],
+            sort_keys=True, ensure_ascii=False,
+        )
         return hashlib.md5(canonical.encode('utf-8')).hexdigest()
 
     @staticmethod
@@ -663,31 +690,44 @@ class PytdxSource:
 
         for evt in events:
             evt_date = evt['date']
-            fenhong = evt['fenhong']
-            songzhuangu = evt['songzhuangu']
-            peigu = evt['peigu']
-            peigujia = evt['peigujia']
 
-            prev_close = None
+            hit_idx, prev_close, curr_open = None, None, None
             for i, d in enumerate(dates):
                 if d == evt_date and i > 0 and prices['close'][i - 1] > 0:
+                    hit_idx = i
                     prev_close = prices['close'][i - 1]
+                    curr_open = prices['open'][i] if 'open' in prices else None
                     break
 
-            if prev_close is None or prev_close <= 0:
+            if hit_idx is None or prev_close is None or prev_close <= 0:
                 continue
 
-            # pytdx 的 fenhong/songzhuangu/peigu 均为每10股单位，需换算为每股
-            fenhong_per = fenhong / 10.0
-            songzhuangu_per = songzhuangu / 10.0
-            peigu_per = peigu / 10.0
+            if evt.get('infer'):
+                # 无因子的股本变动（转配股上市等）：用「当日开盘 / 昨收」反推除权因子。
+                # 前复权 = 历史价格 × 该因子（送股后价格下降，因子 < 1，历史同步下调）。
+                # 仅对明显跳空（>10%）处理，避免把正常波动的开盘缺口当除权。
+                if not curr_open or curr_open <= 0:
+                    continue
+                factor = curr_open / prev_close
+                if factor <= 0 or abs(factor - 1) < 0.10:
+                    continue
+            else:
+                fenhong = evt['fenhong']
+                songzhuangu = evt['songzhuangu']
+                peigu = evt['peigu']
+                peigujia = evt['peigujia']
 
-            factor = (prev_close - fenhong_per + peigu_per * peigujia) / (prev_close * (1 + songzhuangu_per + peigu_per))
-            if factor <= 0 or abs(factor - 1) < 1e-8:
-                continue
+                # pytdx 的 fenhong/songzhuangu/peigu 均为每10股单位，需换算为每股
+                fenhong_per = fenhong / 10.0
+                songzhuangu_per = songzhuangu / 10.0
+                peigu_per = peigu / 10.0
+
+                factor = (prev_close - fenhong_per + peigu_per * peigujia) / (prev_close * (1 + songzhuangu_per + peigu_per))
+                if factor <= 0 or abs(factor - 1) < 1e-8:
+                    continue
 
             for f in ['close', 'open', 'high', 'low']:
-                prices[f][:i] = (prices[f][:i] * factor).round(3)
+                prices[f][:hit_idx] = (prices[f][:hit_idx] * factor).round(3)
 
         for f in ['open', 'high', 'low', 'close']:
             df[f] = prices[f]
@@ -700,7 +740,8 @@ class PytdxSource:
     def get_stock_daily(stock_code: str,
                         start_date: str = '20200101',
                         end_date: Optional[str] = None,
-                        adjusted: bool = True) -> Optional['pd.DataFrame']:
+                        adjusted: bool = True,
+                        max_bars: Optional[int] = None) -> Optional['pd.DataFrame']:
         """
         获取个股日线数据（使用连接池，支持前复权）
 
@@ -709,20 +750,34 @@ class PytdxSource:
             start_date: 起始日期
             end_date: 截止日期
             adjusted: 是否前复权（默认 True）
+            max_bars: 最多拉取的 K 线条数；None 时按 start_date 到今天的跨度自动推算。
+                增量同步（只补最近几天）时传小值可把 12 次分页请求降到 1 次。
+                前复权对窗口内日期的调整只依赖窗口内的除权事件，因此截断窗口不影响结果的正确性。
         """
         if not HAS_PYTDX or not HAS_PANDAS:
             return None
         market = MARKET_SH if stock_code.startswith(('5', '6', '8', '9')) else MARKET_SZ
 
+        # 按 start_date 推算需要拉取的条数（交易日 ≈ 自然日 × 0.7，这里留足余量）
+        if max_bars is None:
+            try:
+                days_back = (datetime.datetime.now() - datetime.datetime.strptime(str(start_date), '%Y%m%d')).days
+            except Exception:
+                days_back = 3650
+            max_bars = max(20, int(days_back * 1.6) + 30)
+        max_bars = min(int(max_bars), 10000)
+
         def _fetch_stock_daily(api, stock_code, start_date, end_date, market, adjusted):
             """内部函数：从指定连接获取股票日线数据"""
             all_bars = []
-            for start in range(0, 10000, 800):
-                bars = api.get_security_bars(9, market, stock_code, start, 800)
+            for start in range(0, max_bars, 800):
+                # 末页只取剩余条数，避免每次都传输 800 条（增量同步时能少传 90%+ 数据）
+                count = min(800, max_bars - start)
+                bars = api.get_security_bars(9, market, stock_code, start, count)
                 if not bars:
                     break
                 all_bars.extend(bars)
-                if len(bars) < 800:
+                if len(bars) < count:
                     break
             if not all_bars:
                 return None
@@ -758,7 +813,7 @@ class PytdxSource:
                 try:
                     xdxr_raw = api.get_xdxr_info(market, stock_code)
                     if xdxr_raw:
-                        xdxr = PytdxSource._adjust_xdxr_events(xdxr_raw)
+                        xdxr = PytdxSource._adjust_xdxr_events(xdxr_raw, include_infer=True)
                         if xdxr:
                             df = PytdxSource.apply_forward_adjust(df, xdxr)
                 except Exception:

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   Modal, Form, InputNumber, DatePicker, Input, Alert, Descriptions, Row, Col,
-  Button, Space, message, Tag, Divider, Select,
+  Button, Space, message, Tag, Divider, Select, Tooltip,
 } from 'antd'
 import dayjs from 'dayjs'
 import { positionApi } from '../../api'
@@ -229,21 +229,54 @@ export default function SellPositionDialog({ open, position, onCancel, onOk }) {
 
         {barInfo && (
           <div className="text-xs text-gray-500 -mt-1 mb-2">
-            {barInfo.trade_date} 行情：开 {fmtPrice(barInfo.open, barInfo.price_dec)}
-            {' · '}高 {fmtPrice(barInfo.high, barInfo.price_dec)}
-            {' · '}低 {fmtPrice(barInfo.low, barInfo.price_dec)}
-            {' · '}收 <span className="font-mono">{fmtPrice(barInfo.close, barInfo.price_dec)}</span>
-            <Button type="link" size="small" onClick={() => form.setFieldValue('sell_price', barInfo.close)}>
-              用收盘价
-            </Button>
-            {position?.current_price != null && (
-              <Button
-                type="link"
-                size="small"
-                onClick={() => form.setFieldValue('sell_price', position.current_price)}
-              >
-                用最新价 {fmtPrice(position.current_price, dec)}
-              </Button>
+            <span>{barInfo.trade_date} 行情：</span>
+            {[['开', barInfo.open], ['高', barInfo.high], ['低', barInfo.low], ['收', barInfo.close]]
+              .map(([label, val], i) => {
+                const picked = Number(values.sell_price) === Number(val)
+                return (
+                  <span key={label} className="inline-flex items-center">
+                    {i > 0 && <span className="mx-1 text-gray-300">·</span>}
+                    <span>{label}</span>
+                    <Tooltip title={`点击填入卖出价 ${fmtPrice(val, barInfo.price_dec)}`}>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => form.setFieldValue('sell_price', val)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') form.setFieldValue('sell_price', val) }}
+                        className={`ml-0.5 font-mono cursor-pointer rounded px-1 -mx-0.5 transition-colors ${
+                          picked
+                            ? 'text-blue-600 font-bold bg-blue-50'
+                            : 'text-blue-600 hover:bg-blue-50 hover:underline'
+                        }`}
+                      >
+                        {fmtPrice(val, barInfo.price_dec)}
+                      </span>
+                    </Tooltip>
+                  </span>
+                )
+              })}
+            {position?.current_price != null && Number(position.current_price) !== Number(barInfo.close) && (
+              <span className="inline-flex items-center">
+                <span className="mx-1 text-gray-300">|</span>
+                <span>最新价</span>
+                <Tooltip title={`点击填入卖出价 ${fmtPrice(position.current_price, dec)}`}>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => form.setFieldValue('sell_price', position.current_price)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') form.setFieldValue('sell_price', position.current_price)
+                    }}
+                    className={`ml-0.5 font-mono cursor-pointer rounded px-1 -mx-0.5 transition-colors ${
+                      Number(values.sell_price) === Number(position.current_price)
+                        ? 'text-blue-600 font-bold bg-blue-50'
+                        : 'text-blue-600 hover:bg-blue-50 hover:underline'
+                    }`}
+                  >
+                    {fmtPrice(position.current_price, dec)}
+                  </span>
+                </Tooltip>
+              </span>
             )}
           </div>
         )}

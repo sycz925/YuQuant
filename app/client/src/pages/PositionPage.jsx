@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { positionApi } from '../api'
+import Stage2Cell from '../components/Stage2Cell'
 import {
   ACTION_META, MTR_META, fmtPrice, fmtMoney, fmtPct, fmtDate, pnlStyle, assetLabel, ALERT_ACTIONS,
   fmtHoldingSpan,
@@ -17,6 +18,9 @@ import PositionEntryDialog from '../components/position/PositionEntryDialog'
 import SellPositionDialog from '../components/position/SellPositionDialog'
 import PositionDetailDrawer from '../components/position/PositionDetailDrawer'
 import RiskParamsDialog from '../components/position/RiskParamsDialog'
+
+// 风控提醒分组里最多直接列出多少只票名，超出才省略
+const ALERT_NAMES_MAX = 12
 
 const STORAGE_KEY = 'positionAccountId'
 
@@ -33,10 +37,17 @@ function ColTitle({ text, desc }) {
 }
 
 /** 账户看板统计卡 */
-function Stat({ label, value, sub, color, tone }) {
+function Stat({ label, value, sub, color, tone, desc }) {
   return (
     <div className={`rounded-lg border p-2.5 ${tone || 'border-gray-200 bg-white'}`}>
-      <div className="text-[11px] text-gray-500 truncate">{label}</div>
+      <div className="text-[11px] text-gray-500 flex items-center gap-1">
+        <span className="truncate">{label}</span>
+        {desc && (
+          <Tooltip overlayStyle={{ maxWidth: 340 }} title={<div style={{ lineHeight: 1.7, fontSize: 12 }}>{desc}</div>}>
+            <QuestionCircleOutlined className="text-gray-400 cursor-help shrink-0" style={{ fontSize: 10 }} />
+          </Tooltip>
+        )}
+      </div>
       <div className="text-base font-bold font-mono truncate" style={{ color: color || '#111827' }}>{value}</div>
       {sub && <div className="text-[11px] text-gray-400 truncate">{sub}</div>}
     </div>
@@ -51,6 +62,7 @@ function PositionPage() {
   const [paramsOpen, setParamsOpen] = useState(false)
   const [sellTarget, setSellTarget] = useState(null)
   const [detailId, setDetailId] = useState(null)
+  const [alertExpanded, setAlertExpanded] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
   // ---- 账户 ----
@@ -106,6 +118,23 @@ function PositionPage() {
     () => active.filter((p) => ALERT_ACTIONS.has(p.action)),
     [active],
   )
+  // 风控提醒按「动作类型」归纳，按紧急程度排序
+  const alertGroups = useMemo(() => {
+    const ORDER = ['跳空止损', '盘中止损', '收盘止损', '动态止盈', '利润保护参考']
+    const map = new Map()
+    alerts.forEach((a) => {
+      const k = a.action || '其他'
+      if (!map.has(k)) map.set(k, [])
+      map.get(k).push(a)
+    })
+    return [...map.entries()]
+      .sort((x, y) => {
+        const ix = ORDER.indexOf(x[0]); const iy = ORDER.indexOf(y[0])
+        return (ix < 0 ? 99 : ix) - (iy < 0 ? 99 : iy)
+      })
+      .map(([action, list]) => ({ action, list }))
+  }, [alerts])
+
   // 只要有任意一笔活跃持仓发生过部分卖出，才显示「已实现」列
   const hasRealized = useMemo(
     () => active.some((p) => (p.sold_shares ?? 0) > 0),
@@ -133,13 +162,28 @@ function PositionPage() {
     setRefreshing(true)
     try {
       const res = await positionApi.refreshAll(accountId)
-      const synced = res?.data?.synced || []
-      const failed = res?.data?.failed || []
+      const dr = res?.data || {}
+      const synced = dr.synced || []
+      const failed = dr.failed || []
+      const refDay = dr.ref_day || ''
+      const collLast = (dr.market_latest && (dr.market_latest.stock || dr.market_latest.etf)) || ''
+      const latestBars = Object.values(dr.latest_bar || {}).filter(Boolean).sort()
+      const newestHeld = latestBars.length ? latestBars[latestBars.length - 1] : ''
+
       let msg = `已重算 ${res.updated}/${res.total} 笔持仓`
       if (synced.length) msg += `，补齐日线 ${synced.length} 只（${synced.join('、')}）`
       if (failed.length) msg += `，${failed.length} 只补齐失败（${failed.join('、')}）`
-      if (synced.length || failed.length) {
-        message.info(msg, 5)
+
+      if (!synced.length && !failed.length) {
+        msg += `；持仓日线均已最新${newestHeld ? `（${fmtDate(newestHeld)}）` : ''}`
+      }
+      // 全市场日线还没到今天 → 明确告诉用户该跑一键更新，而不是以为刷新没生效
+      if (refDay && collLast && collLast < refDay) {
+        msg += `。注意：全市场日线库还停在 ${fmtDate(collLast)}（今天是 ${fmtDate(refDay)}），`
+          + '今日数据尚未入库，请先跑「一键更新」'
+        message.warning({ content: msg, duration: 10 })
+      } else if (synced.length || failed.length) {
+        message.info(msg, 6)
       } else {
         message.success(msg)
       }
@@ -184,14 +228,13 @@ function PositionPage() {
         </span>
       ),
     },
+    {
+      title: '二阶段', dataIndex: 'is_stage2', key: 'is_stage2', width: 80,
+      render: (v, r) => <Stage2Cell isStage2={v} detail={r.stage2_detail} />,
+    },
     { title: '买入日', dataIndex: 'buy_date', key: 'buy_date', width: 96, render: (v) => fmtDate(v) },
     {
-      title: (
-        <ColTitle
-          text="持股时间"
-          desc="从买入日到最新交易日的持仓时长，按自然日折算为天 / 周 / 月 / 年"
-        />
-      ),
+      title: '持股时间',
       dataIndex: 'holding_calendar_days', key: 'holding', width: 88,
       sorter: (a, b) => (a.holding_calendar_days || 0) - (b.holding_calendar_days || 0),
       render: (v) => (v == null ? <span className="text-gray-300">-</span> : fmtHoldingSpan(v)),
@@ -263,13 +306,39 @@ function PositionPage() {
       render: (v, r) => <span className="font-mono text-green-600">{fmtPrice(v, r.price_dec)}</span>,
     },
     {
-      title: '风险额', dataIndex: 'position_risk_amount', key: 'risk', width: 100,
+      title: (
+        <ColTitle
+          text="风险额"
+          desc="「现在这笔跌到止损价，会亏多少钱」=（前复权成本 − 当前止损）× 剩余股数。止损随价格上移，所以这个数每天都在变，不是建仓时定死的 1R 风险。止损已上移到成本之上时，算式结果为负，界面显示为「锁盈 X」—— 意思是即使跌到止损也是赚 X，利润已经锁定，不会亏钱。"
+        />
+      ),
+      dataIndex: 'position_risk_amount', key: 'risk', width: 116,
       sorter: (a, b) => (a.position_risk_amount || 0) - (b.position_risk_amount || 0),
-      render: (v) => <span className="font-mono" style={{ color: v > 0 ? '#ef5350' : '#9ca3af' }}>{fmtMoney(v)}</span>,
+      render: (v) => {
+        if (v == null) return <span className="text-gray-300">-</span>
+        if (v > 0) return <span className="font-mono" style={{ color: '#ef5350' }}>{fmtMoney(v)}</span>
+        if (v < 0) {
+          return (
+            <span className="font-mono" style={{ color: '#26a69a' }} title="止损已高于成本，跌到止损也是盈利">
+              锁盈 {fmtMoney(-v)}
+            </span>
+          )
+        }
+        return <span className="font-mono text-gray-400">0</span>
+      },
     },
     {
-      title: '盈亏比', dataIndex: 'current_rr', key: 'rr', width: 80,
-      render: (v) => <span className="font-mono" style={pnlStyle(v)}>{v ?? '-'}</span>,
+      title: (
+        <ColTitle
+          text="盈亏比"
+          desc="当前盈亏比 =（现价 − 成本）÷（成本 − 当前止损）。含义是「现在的浮盈，相当于这笔交易当前风险敞口的几倍」。分母 = 跌到止损会亏多少，移动止损上移后分母变小，所以即使股价不动这个数也会慢慢变大。止损已高于成本时分母 ≤ 0、比值无意义，此列显示「-」。"
+        />
+      ),
+      dataIndex: 'current_rr', key: 'rr', width: 92,
+      sorter: (a, b) => (a.current_rr ?? -99) - (b.current_rr ?? -99),
+      render: (v) => (v == null
+        ? <span className="text-gray-300">-</span>
+        : <span className="font-mono" style={pnlStyle(v)}>{v}</span>),
     },
     {
       title: (
@@ -477,16 +546,19 @@ function PositionPage() {
           <Stat label="可用现金" value={fmtMoney(account.current_cash)} />
           <Stat label="持仓市值" value={fmtMoney(account.market_value)} sub={`成本 ${fmtMoney(account.cost_basis)}`} />
           <Stat label="浮动盈亏" value={fmtMoney(account.total_unrealized_pnl)}
-            sub={fmtPct(account.unrealized_return_ratio)} color={account.total_unrealized_pnl >= 0 ? '#ef5350' : '#26a69a'} />
+            sub={fmtPct(account.unrealized_return_ratio)} color={account.total_unrealized_pnl >= 0 ? '#ef5350' : '#26a69a'}
+            desc="所有活跃持仓的未实现盈亏合计 = Σ（最新价 − 前复权成本）× 剩余股数。只算还没卖出的仓位，不含已实现盈亏。下方百分比 = 浮亏 ÷ 持仓成本合计，只看仓位本身，不摊到整个账户。" />
           <Stat label="已实现盈亏" value={fmtMoney(account.total_realized_pnl)}
             color={account.total_realized_pnl >= 0 ? '#ef5350' : '#26a69a'} />
           <Stat label="总风险金额" value={fmtMoney(account.total_position_risk_amount)}
             sub={`占权益 ${((account.total_position_risk_ratio || 0) * 100).toFixed(2)}%`}
+            desc="假设所有活跃持仓同时跌到各自的当前止损价，合计会亏多少钱 = Σ max(0, (成本 − 当前止损) × 剩余股数)。止损已被上移到成本价之上的持仓，该项计 0（说明这笔已经不可能亏钱了，利润已锁定）。超过权益 6% 会标红提醒。" 
             tone={account.total_position_risk_ratio > 0.06 ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-white'} />
           <Stat label="活跃持仓" value={`${account.active_positions_count} 笔`}
             sub={account.locked_profit_amount > 0 ? `已锁定利润 ${fmtMoney(account.locked_profit_amount)}` : '止损均低于成本'} />
           <Stat label="账户收益率" value={fmtPct(account.equity_return_ratio)}
             sub={`单笔风险 ${((account.risk_ratio_per_trade || 0) * 100).toFixed(2)}%`}
+            desc="（当前总权益 − 净投入本金）÷ 净投入本金。净投入本金 = 入金 − 出金，所以出入金不会被误算成盈利或亏损。注意它和「浮动盈亏」的分母不同：那个只除以持仓成本，这个除以整个账户本金，因此仓位较轻时两者会差很多。" 
             color={account.equity_return_ratio >= 0 ? '#ef5350' : '#26a69a'} />
         </div>
       )}
@@ -497,18 +569,66 @@ function PositionPage() {
           className="mb-3"
           type="error"
           showIcon
-          message={`${alerts.length} 笔持仓触发风控提醒`}
-          description={
-            <div className="space-y-0.5">
-              {alerts.slice(0, 5).map((a) => (
-                <div key={a.position_id} className="text-xs">
-                  <Tag color={ACTION_META[a.action]?.color}>{a.action}</Tag>
-                  <span className="font-medium">{a.stock_name}</span>
-                  <span className="text-gray-500 ml-1">{a.action_suggestion}</span>
-                </div>
-              ))}
-              {alerts.length > 5 && <div className="text-xs text-gray-400">…还有 {alerts.length - 5} 笔</div>}
+          message={
+            <div className="flex items-center justify-between gap-2">
+              <span>{alerts.length} 笔持仓触发风控提醒</span>
+              <Button
+                type="link"
+                size="small"
+                className="!px-1 shrink-0"
+                onClick={() => setAlertExpanded((v) => !v)}
+              >
+                {alertExpanded ? '收起明细' : '展开明细'}
+              </Button>
             </div>
+          }
+          description={
+            alertExpanded ? (
+              <div className="space-y-1 max-h-64 overflow-auto pr-1">
+                {alerts.map((a) => (
+                  <div key={a.position_id} className="text-xs flex items-start gap-1.5">
+                    <Tag className="!mr-0 shrink-0" color={ACTION_META[a.action]?.color}>{a.action}</Tag>
+                    <span
+                      className="font-medium cursor-pointer hover:underline shrink-0"
+                      onClick={() => setDetailId(a.position_id)}
+                    >
+                      {a.stock_code} {a.stock_name}
+                    </span>
+                    <span className="text-gray-500">{a.action_suggestion}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {alertGroups.map((g) => (
+                  <div key={g.action} className="text-xs flex items-start gap-1.5">
+                    <Tag className="!mr-0 shrink-0" color={ACTION_META[g.action]?.color}>
+                      {g.action}
+                    </Tag>
+                    <span className="font-semibold shrink-0">{g.list.length} 笔：</span>
+                    <span className="truncate">
+                      {g.list.slice(0, ALERT_NAMES_MAX).map((a, i) => (
+                        <span key={a.position_id}>
+                          {i > 0 && <span className="text-gray-300">、</span>}
+                          <span
+                            className="cursor-pointer hover:underline"
+                            onClick={() => setDetailId(a.position_id)}
+                          >
+                            {a.stock_name}
+                          </span>
+                        </span>
+                      ))}
+                      {g.list.length > ALERT_NAMES_MAX && (
+                        <span className="text-gray-400"> 等 {g.list.length} 只</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+                <div className="text-[11px] text-gray-400 pt-0.5">
+                  点击股票名称查看详情 · 点「展开明细」看每笔的具体建议
+                </div>
+              </div>
+            )
           }
         />
       )}

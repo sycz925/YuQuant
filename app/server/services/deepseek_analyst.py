@@ -6,6 +6,7 @@ import os
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -31,10 +32,31 @@ def is_market_open(trade_date: str = None) -> bool:
     return is_during_trading
 
 
+def is_peak_time(now: datetime) -> bool:
+    """判断给定时间（北京时间）是否处于 DeepSeek 高峰时段
+
+    高峰 = 周一至周五且非法定节假日 的 09:00-12:00、14:00-18:00。
+    纯函数，便于单测。
+    """
+    today = now.strftime('%Y%m%d')
+    t = now.hour * 60 + now.minute
+    try:
+        from app.data.holidays import is_workday
+        trading_day = is_workday(today)  # 周一至周五且非法定节假日
+    except Exception:
+        trading_day = now.weekday() < 5
+    return trading_day and (540 <= t < 720 or 840 <= t < 1080)
+
+
 def is_deepseek_available() -> tuple[bool, str]:
-    """检查当前是否在 DeepSeek API 可用时间窗口内
-    允许时段：12:00-13:00，18:00-23:59
-    如果配置了忽略时间窗口，则始终返回可用
+    """检查当前是否处于 DeepSeek API 的「空闲时段」
+
+    高峰时段（不可用）：北京时间 周一至周五（不含中国法定节假日）
+        9:00-12:00、14:00-18:00
+    空闲时段（可用）：其余全部时间，包括周末与中国法定节假日全天
+
+    若配置 deepseek_time_limit=False，则忽略时间窗口，始终可用。
+
     返回: (available: bool, message: str)
     """
     try:
@@ -46,15 +68,15 @@ def is_deepseek_available() -> tuple[bool, str]:
     except Exception:
         pass
 
-    now = datetime.now()
-    hour, minute = now.hour, now.minute
-    t = hour * 60 + minute
-    if 720 <= t < 780:
-        return True, ""
-    if 1080 <= t <= 1439:
-        return True, ""
+    now = datetime.now(ZoneInfo('Asia/Shanghai'))
 
-    return False, f"DeepSeek API 当前不可用，可用时间为 12:00-13:00 或 18:00-23:59（当前 {now.strftime('%H:%M')}）"
+    if is_peak_time(now):
+        return False, (
+            f"DeepSeek API 当前为高峰时段（工作日 9:00-12:00、14:00-18:00），"
+            f"当前 {now.strftime('%H:%M')}，请在空闲时段使用"
+        )
+
+    return True, ""
 
 
 SYSTEM_PROMPT = """You are a senior quantitative strategy director who strictly adheres to the trading philosophies of William O'Neil (CANSLIM), Mark Minervini (SEPA/VCP), and Jesse Livermore.

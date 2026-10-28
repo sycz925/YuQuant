@@ -53,7 +53,7 @@ class IndustryMapRepository(BaseRepository):
         )
 
     def get_latest_stock_rps(self, codes: List[str]) -> Dict[str, Dict]:
-        """批量读 stock_daily 每个 code 最新（收盘价>0）的 rps_10/rps_50/rps_120"""
+        """批量读 stock_daily 每个 code 最新（收盘价>0）的 rps 与二阶段标记"""
         if not codes:
             return {}
         db = get_db()
@@ -62,7 +62,8 @@ class IndustryMapRepository(BaseRepository):
             doc = db['stock_daily'].find_one(
                 {'stock_code': code, 'close': {'$gt': 0}},
                 sort=[('trade_date', -1)],
-                projection={'rps_10': 1, 'rps_50': 1, 'rps_120': 1, '_id': 0}
+                projection={'rps_10': 1, 'rps_50': 1, 'rps_120': 1,
+                            'is_stage2': 1, 'stage2_detail': 1, '_id': 0}
             )
             if doc:
                 result[code] = doc

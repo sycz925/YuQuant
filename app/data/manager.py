@@ -46,7 +46,7 @@ AFTER_MARKET_START = 15 * 60 + 30  # 15:30 盘后同步开放（留30分钟缓�
 # 修复策略：
 # 1. 全局信号量限制同时进行的数据源请求数，从源头掐断线程爆炸
 # 2. socket.setdefaulttimeout 提供兜底超时，保证请求线程最终会结束
-MAX_SOURCE_CONCURRENCY = 16
+MAX_SOURCE_CONCURRENCY = 24
 _SOURCE_SEMAPHORE = threading.BoundedSemaphore(MAX_SOURCE_CONCURRENCY)
 _SOCKET_TIMEOUT = 30  # 秒，兜底网络超时（线程池内避免阻塞）
 
@@ -238,14 +238,15 @@ class DataManager:
     def _should_full_reload(stored_fp: Optional[str], current_fp: Optional[str]) -> bool:
         """判断是否需要触发该股全量重拉
 
-        语义（指纹约定：None=从未记录，''=已记录但无事件，其他=事件指纹）：
+        语义（指纹约定：None=从未记录/拉取失败/无事件，''=无事件，其他=事件指纹）：
         - stored_fp is None（从未记录）→ 不重拉（首次同步本身就是全量回溯）
-        - stored_fp == current_fp → 无变化，不重拉
-        - 其他情况（有记录且发生变化）→ 触发全量重拉
+        - 归一化后相等（None 与 '' 视为「无除权事件」）→ 不重拉
+        - 其他情况（确有事件变化）→ 触发全量重拉
         """
-        if stored_fp is None:
+        if stored_fp is None or current_fp is None:
             return False
-        return stored_fp != current_fp
+        # '' 与 None 都表示「无除权事件」，不应互相判定为漂移
+        return (stored_fp or '') != (current_fp or '')
 
     def _forward_adjust_records(self, records: List[Dict]) -> List[Dict]:
         """检测除权跳空，对 close/open/high/low 做前复权。
@@ -314,15 +315,6 @@ class DataManager:
             df, source = self.pytdx.get_daily_data(code, start_date, end_date)
         except Exception as e:
             logger.warning(f"{code} 日线拉取异常(pytdx): {e}")
-        if df is None or getattr(df, 'empty', True):
-            try:
-                if asset_type == 'etf':
-                    df, source = self.akshare.get_etf_daily(code, start_date, end_date)
-                else:
-                    df, source = self.akshare.get_daily_data(code, start_date, end_date)
-            except Exception as e:
-                logger.warning(f"{code} 日线拉取异常(akshare): {e}")
-                return 0
         if df is None or getattr(df, 'empty', True):
             logger.warning(f"{code} 日线拉取无数据 ({start_date}~{end_date})")
             return 0
@@ -503,9 +495,9 @@ class DataManager:
 
             def _sync_one(etf: dict) -> bool:
                 code = etf['code']
+                # 单源策略：只用 PyTdX（与个股一致，保证复权口径统一）
                 sources = [
                     (self.pytdx, 'PyTdX'),
-                    (self.akshare, 'AkShare'),
                 ]
                 for source_obj, source_name in sources:
                     try:
@@ -671,7 +663,7 @@ class DataManager:
 
     def _sync_single_stock(self, stock_code: str, stock_name: str, start_date: str, end_date: str, force: bool = False) -> Dict:
         """同步单只股票数据（线程池内调用，不更新任务状态）
-        数据源瀑布：PyTdX → AkShare → BaoStock → yfinance
+        数据源：仅 PyTdX（单源策略，保证复权口径一致；备源会引入口径断层）
         :param force: True 时跳过 latest_date >= end_date 检查，强制同步指定日期
         """
         result = {
@@ -745,13 +737,11 @@ class DataManager:
 # 并通过全局信号量限制并发请求数，防止线程无限累积导致系统资源耗尽。
         import threading
 
-        # yfinance 对 A 股支持极差（DNS 无法解析），且底层无超时，
-        # 是线程残留的最大来源，已从瀑布中移除。
-        # BaoStock 因 IP 被服务端列入黑名单（登录返回"黑名单用户"），
-        # 已从瀑布移除，避免每次同步空耗登录失败。
+        # 单源策略：只用 PyTdX，保证复权口径一致
+        # （曾用 AkShare/BaoStock 回退，但备源会在停牌日补「价格不变、零成交量」的僵尸记录，
+        #   且复权口径与 PyTdX 不同，导致同一只票历史出现价格断层）
         sources = [
             (self.pytdx, 'PyTdX'),
-            (self.akshare, 'AkShare'),
         ]
         failure_reasons = []
 
@@ -1148,31 +1138,16 @@ class DataManager:
                 if existing:
                     return
 
-                # 根据source获取数据：东方财富用akshare，通达信用pytdx
+                # 单源策略：只用 pytdx 拉板块指数日线（保证复权口径一致）
+                # 曾对「东方财富」来源的板块用 akshare、并在 pytdx 失败时回退 akshare，
+                # 但 akshare 与 pytdx 口径/单位不同，会造成同只票历史断层，故移除。
                 kline = None
-                if source == '东方财富':
-                    # 东方财富行业板块：用akshare获取
-                    try:
-                        kline = self.akshare.get_industry_hist(sector_code, prev_day, day)
-                    except Exception as e:
-                        logger.warning(f"akshare获取东方财富行业 {sector_code} 失败: {e}")
-                else:
-                    # 通达信概念板块：先用pytdx获取
-                    try:
-                        kline = self.pytdx.get_tdx_index_daily(
-                            tdx_code, market=1, start_date=prev_day, end_date=day, max_bars=5
-                        )
-                    except Exception as e:
-                        logger.warning(f"pytdx获取通达信板块 {sector_code} 失败: {e}")
-
-                    # pytdx失败时回退到东方财富概念板块（用akshare通过板块名称获取）
-                    if kline is None or len(kline) == 0:
-                        sector_name = sec.get('name', '')
-                        if sector_name:
-                            try:
-                                kline = self.akshare.get_concept_hist(sector_name, prev_day, day)
-                            except Exception as e:
-                                logger.warning(f"akshare回退获取概念板块 {sector_name}({sector_code}) 失败: {e}")
+                try:
+                    kline = self.pytdx.get_tdx_index_daily(
+                        tdx_code, market=1, start_date=prev_day, end_date=day, max_bars=5
+                    )
+                except Exception as e:
+                    logger.warning(f"pytdx 获取板块 {sector_code}({sec.get('name', '')}) 日线失败: {e}")
 
                 if kline is not None and len(kline) > 0:
                     new_records = []
@@ -1185,11 +1160,8 @@ class DataManager:
                                 'high': float(r.get('high', 0)),
                                 'low': float(r.get('low', 0)),
                                 'amount': float(r.get('amount', 0)),
+                                'vol': float(r.get('vol', 0) or 0),  # pytdx 返回的已是「股」
                             }
-                            # akshare返回volume单位是"手"，转为"股"与pytdx一致
-                            vol = float(r.get('volume', 0) or 0)
-                            if vol > 0:
-                                record['vol'] = vol * 100
                             new_records.append(record)
                     if new_records:
                         from app.data.db import bulk_upsert_daily_data

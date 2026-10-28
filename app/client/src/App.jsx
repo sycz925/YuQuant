@@ -20,11 +20,13 @@ import SectorDetail from './pages/SectorDetail'
 import RestrictedRelease from './pages/RestrictedRelease'
 import IndustryMap from './pages/IndustryMap'
 import ErrorBoundary from './components/ErrorBoundary'
+import TaskIndicator from './components/TaskIndicator'
+import { TaskCenterProvider } from './contexts/TaskCenter'
 import { healthApi, oneClickUpdateApi, alertApi, positionApi } from './api'
 import useOneClickUpdate from './hooks/useOneClickUpdate'
 import usePolling from './hooks/usePolling'
 
-function App() {
+function AppShell() {
   const location = useLocation()
   const navigate = useNavigate()
   const [isHealthy, setIsHealthy] = useState(false)
@@ -182,6 +184,9 @@ function App() {
                 </Button>
               </Tooltip>
 
+              {/* 全局任务指示器（切页面不中断） */}
+              <TaskIndicator />
+
               {/* 一键更新按钮 */}
               <Tooltip title={
                 oneClickRunning ? '更新进行中...' :
@@ -243,4 +248,10 @@ function App() {
   )
 }
 
-export default App
+export default function App() {
+  return (
+    <TaskCenterProvider>
+      <AppShell />
+    </TaskCenterProvider>
+  )
+}

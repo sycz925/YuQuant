@@ -325,6 +325,11 @@ def ensure_position_data(positions: Optional[List[Dict[str, Any]]] = None,
         'skipped': skipped,
         'full': {k: v for k, v in full_req.items() if v},
         'incremental': {k: v for k, v in inc_req.items() if v},
+        # 供前端解释「为什么没补数据」
+        'ref_day': ref_day,
+        'market_latest': dict(market_latest),
+        'latest_bar': {code: str((ranges.get((at, code)) or {}).get('last') or '')
+                       for (at, code) in needs},
     }
     if not (any(full_req.values()) or any(inc_req.values())):
         return summary
@@ -502,8 +507,9 @@ def update_account(account_id: str, account_name: Optional[str] = None,
         if new_cash < 0:
             raise PositionError('出入金后可用现金不能为负')
         fields['current_cash'] = round(new_cash, 2)
-        if delta > 0:
-            fields['initial_capital'] = round(float(acct.get('initial_capital', 0)) + delta, 2)
+        # 出入金必须同向调整「净投入本金」：
+        #   只加不减的话，出金会让权益凭空减少，被 equity_return_ratio 算成亏损
+        fields['initial_capital'] = round(float(acct.get('initial_capital', 0)) + delta, 2)
 
     if fields:
         repo.update_account(account_id, fields)
@@ -651,6 +657,16 @@ def get_bar_info(stock_code: str, trade_date: Any) -> Dict[str, Any]:
         raise PositionError(f'{date} 的行情尚未同步，请手动填写价格（刷新监控后会自动补齐）', 404)
     dec = _price_dec(asset['asset_type'])
     rnd = lambda v: None if v is None else round(float(v), dec)  # noqa: E731
+
+    # 二阶段：建仓日若无（如历史日期），回退取最新日线的标记
+    is_stage2 = bar.get('is_stage2')
+    stage2_detail = bar.get('stage2_detail')
+    if is_stage2 is None:
+        latest_bar = repo.get_latest_bar(asset['code'], asset['asset_type'])
+        if latest_bar:
+            is_stage2 = latest_bar.get('is_stage2')
+            stage2_detail = latest_bar.get('stage2_detail')
+
     return {
         'stock_code': asset['code'],
         'stock_name': asset['name'],
@@ -661,6 +677,8 @@ def get_bar_info(stock_code: str, trade_date: Any) -> Dict[str, Any]:
         'high': rnd(bar['high']),
         'low': rnd(bar['low']),
         'close': rnd(bar['close']),
+        'is_stage2': is_stage2,
+        'stage2_detail': stage2_detail,
     }
 
 
@@ -1093,6 +1111,17 @@ def _enrich(pos: Dict[str, Any], quotes: Optional[Dict] = None) -> Dict[str, Any
             'holding_days': None,
             'error': str(e),
         })
+
+    # ---- 二阶段标记（取最新日线，quotes 优先以避免额外查询）----
+    bar = (quotes or {}).get((asset_type, pos['stock_code']))
+    if bar is None:
+        try:
+            bar = get_position_repo().get_latest_bar(pos['stock_code'], asset_type)
+        except Exception:
+            bar = None
+    out['is_stage2'] = (bar or {}).get('is_stage2')
+    out['stage2_detail'] = (bar or {}).get('stage2_detail')
+
     return out
 
 

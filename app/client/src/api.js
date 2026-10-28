@@ -61,6 +61,8 @@ export const factorApi = {
     api.get(`/factors/sectors/${code}/daily`, { params: { start_date: startDate, end_date: endDate, limit } }),
   getSectorStocks: (code, params = {}) =>
     api.get(`/factors/sectors/${code}/stocks`, { params }),
+  getStage2Status: (code, type = 'stock') =>
+    api.get(`/factors/stage2/${code}`, { params: { type } }),
   clearTasks: () =>
     api.post('/factors/tasks/clear'),
   clearRps: (params = {}) =>
@@ -162,7 +164,9 @@ export const oneClickUpdateApi = {
 
 // 通用任务查询（/calendar/task/:id 全项目唯一入口，勿在其他命名空间重复声明）
 export const taskApi = {
-  getStatus: (taskId) => api.get(`/calendar/task/${taskId}`)
+  getStatus: (taskId) => api.get(`/calendar/task/${taskId}`),
+  // 全局任务中心：列出后端仍在运行的任务（切页面/刷新后接管进度）
+  getRunning: () => api.get('/calendar/tasks/running'),
 }
 
 export const etfApi = {

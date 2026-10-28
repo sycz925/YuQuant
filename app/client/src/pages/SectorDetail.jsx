@@ -4,6 +4,7 @@ import { ArrowLeftOutlined, TeamOutlined } from '@ant-design/icons'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { factorApi, marketReviewApi } from '../api'
+import Stage2Cell from '../components/Stage2Cell'
 
 const COLORS = {
   red: '#ef4444',
@@ -85,7 +86,7 @@ function SectorDetail() {
       title: '日涨幅', dataIndex: 'change_pct', width: 90, sorter: (a, b) => (a.change_pct || 0) - (b.change_pct || 0), sortOrder: sorterOrder('change_pct'),
       render: v => <span style={{ color: v > 0 ? COLORS.red : v < 0 ? COLORS.green : COLORS.gray }}>{v > 0 ? '+' : ''}{v?.toFixed(2)}%</span>,
     },
-    ...['5d', '10d', '20d', '50d', '120d'].map(d => ({
+    ...['5d',  '20d', '50d', '120d'].map(d => ({
       title: `${d === '5d' ? '5' : d === '10d' ? '10' : d === '20d' ? '20' : d === '50d' ? '50' : '120'}日涨幅`,
       dataIndex: `chg_${d}`,
       width: 90,
@@ -101,6 +102,10 @@ function SectorDetail() {
       sortOrder: sorterOrder(`rps_${d}`),
       render: v => v != null ? <span className="text-xs font-bold" style={{ color: rpsColor(v) }}>{v}</span> : '-',
     })),
+    {
+      title: '二阶段', dataIndex: 'is_stage2', width: 80,
+      render: (v, r) => <Stage2Cell isStage2={v} detail={r.stage2_detail} />,
+    },
   ]
 
   return (

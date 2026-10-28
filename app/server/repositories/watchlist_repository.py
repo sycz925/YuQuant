@@ -10,7 +10,8 @@ from app.server.repositories.base import BaseRepository
 # 列表行情字段投影（与 /etf 一致；路由层不再持有该常量）
 _QUOTE_FIELDS = {
     'close': 1, 'chg_pct': 1, 'chg_5d': 1, 'chg_10d': 1, 'chg_20d': 1,
-    'chg_50d': 1, 'chg_120d': 1, 'rps_10': 1, 'rps_50': 1, 'rps_120': 1, '_id': 0,
+    'chg_50d': 1, 'chg_120d': 1, 'rps_10': 1, 'rps_50': 1, 'rps_120': 1,
+    'is_stage2': 1, 'stage2_detail': 1, '_id': 0,
 }
 
 
@@ -51,7 +52,8 @@ class WatchlistRepository(BaseRepository):
         if latest:
             result['close'] = latest.get('close')
             result['change_pct'] = latest.get('chg_pct')  # DB 字段 chg_pct → 模型字段 change_pct
-            for k in ('chg_5d', 'chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'rps_10', 'rps_50', 'rps_120'):
+            for k in ('chg_5d', 'chg_10d', 'chg_20d', 'chg_50d', 'chg_120d', 'rps_10', 'rps_50', 'rps_120',
+                      'is_stage2', 'stage2_detail'):
                 result[k] = latest.get(k)
         return result
 

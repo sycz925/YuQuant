@@ -96,6 +96,44 @@ class StockRepository(BaseRepository):
             {'stock_code': {'$in': list(codes)}, 'trade_date': trade_date, 'close': {'$gt': 0}},
             projection
         ))
+
+    def get_stage2_codes(self, trade_date: str, is_stage2: bool = True) -> List[str]:
+        """获取某交易日二阶段状态为 is_stage2 的股票代码"""
+        return [
+            d['stock_code'] for d in self.daily.find(
+                {'trade_date': trade_date, 'is_stage2': is_stage2},
+                {'_id': 0, 'stock_code': 1},
+            )
+        ]
+
+    def get_latest_stage2_codes(self, is_stage2: bool = True) -> List[str]:
+        """获取最新交易日二阶段状态为 is_stage2 的股票代码"""
+        latest = self.get_latest_trade_date()
+        if not latest:
+            return []
+        return self.get_stage2_codes(latest, is_stage2)
+
+    def get_latest_stage2_map(self) -> Dict[str, bool]:
+        """获取最新交易日的二阶段映射 {stock_code: is_stage2}"""
+        latest = self.get_latest_trade_date()
+        if not latest:
+            return {}
+        return {
+            d['stock_code']: bool(d.get('is_stage2'))
+            for d in self.daily.find(
+                {'trade_date': latest, 'is_stage2': {'$exists': True}},
+                {'_id': 0, 'stock_code': 1, 'is_stage2': 1},
+            )
+        }
+
+    def get_latest_stage2(self, code: str) -> Optional[Dict]:
+        """获取个股最新一根日线的二阶段标记与明细"""
+        return self.daily.find_one(
+            {'stock_code': code, 'close': {'$gt': 0}},
+            sort=[('trade_date', -1)],
+            projection={'_id': 0, 'trade_date': 1, 'close': 1,
+                        'is_stage2': 1, 'stage2_detail': 1},
+        )
     
     def get_stock_names(self, codes: List[str]) -> Dict[str, str]:
         """获取股票名映射 {stock_code: stock_name}"""

@@ -57,14 +57,14 @@ def _start_alert_scheduler():
     """启动ENE预警定时器（每5分钟）"""
     import threading
     import time
-    from app.engine.ene_alert import check_latest, backfill_alerts
+    from app.engine.ene_alert import check_latest, backfill_missing
 
-    # 首次启动时回刷历史
-    logger.info("[ENE预警] 首次启动，回刷历史数据...")
+    # 首次启动只为「尚未回刷过」的 ETF 补历史（新增标的），避免每次重启全量重算
+    logger.info("[ENE预警] 启动检查：补算缺失的历史预警...")
     try:
-        backfill_alerts()
+        backfill_missing()
     except Exception as e:
-        logger.error(f"[ENE预警] 回刷失败: {e}")
+        logger.error(f"[ENE预警] 补算失败: {e}")
 
     def _loop():
         logger.info("[ENE预警] 定时器已启动，每5分钟检查最新数据")

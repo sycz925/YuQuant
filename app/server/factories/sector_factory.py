@@ -23,7 +23,8 @@ class SectorFactory:
                         keyword: Optional[str] = None, filter_mode: Optional[str] = None,
                         limit: Optional[int] = None, min_stock_count: int = 0,
                         sort_by: Optional[str] = None, sort_order: str = 'desc',
-                        rps_red: Optional[str] = None) -> Dict[str, Any]:
+                        rps_red: Optional[str] = None,
+                        stage2: Optional[str] = None) -> Dict[str, Any]:
         """获取板块列表（含最新行情数据）"""
         from app.data.db import get_db
         
@@ -53,7 +54,7 @@ class SectorFactory:
                 {'trade_date': latest_date},
                 {'_id': 0, 'stock_code': 1, 'close': 1, 'chg_pct': 1,
                  'chg_5d': 1, 'chg_10d': 1, 'chg_20d': 1, 'chg_50d': 1, 'chg_120d': 1,
-                 'rps_10': 1, 'rps_50': 1, 'rps_120': 1},
+                 'rps_10': 1, 'rps_50': 1, 'rps_120': 1, 'is_stage2': 1},
             )
             daily_map = {d['stock_code']: d for d in daily_cursor}
             for item in items:
@@ -68,6 +69,7 @@ class SectorFactory:
                 item['rps_10'] = daily.get('rps_10')
                 item['rps_50'] = daily.get('rps_50')
                 item['rps_120'] = daily.get('rps_120')
+                item['is_stage2'] = daily.get('is_stage2')
                 item['exclude_sync'] = item.get('is_disable', False)
         
         # 关键词搜索
@@ -107,7 +109,14 @@ class SectorFactory:
                 elif rps_red == 'three' and red_count >= 3:
                     filtered.append(item)
             items = filtered
-        
+
+        # 二阶段筛选（「否」= 非二阶段，含未计算的板块）
+        if stage2 in ('yes', 'no'):
+            if stage2 == 'yes':
+                items = [i for i in items if i.get('is_stage2') is True]
+            else:
+                items = [i for i in items if i.get('is_stage2') is not True]
+
         total = len(items)
         if limit and page is None:
             items = items[:limit]

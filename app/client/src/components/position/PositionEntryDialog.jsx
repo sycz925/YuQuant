@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react'
 import {
   Modal, Form, Input, InputNumber, DatePicker, Select, Alert, Row, Col,
-  Tag, Descriptions, Spin, Button, message, Space,
+  Tag, Descriptions, Spin, Button, message, Space, Tooltip,
 } from 'antd'
 import { WalletOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { positionApi } from '../../api'
+import Stage2Cell from '../Stage2Cell'
 import { RISK_META, fmtPrice, fmtMoney, assetLabel } from './utils'
 
 const { TextArea } = Input
@@ -68,7 +69,8 @@ export default function PositionEntryDialog({ open, defaultAccountId, accounts =
     if (!open) return
     const code = (values.stock_code || '').trim()
     const date = values.buy_date
-    if (!code || !date) {
+    // 代码必须是 6 位数字才去查行情，避免输入过程中反复发请求
+    if (!/^\d{6}$/.test(code) || !date) {
       setBarInfo(null)
       setBarError(null)
       return
@@ -98,6 +100,11 @@ export default function PositionEntryDialog({ open, defaultAccountId, accounts =
   useEffect(() => {
     if (!open) return
     const { account_id, stock_code, buy_date, buy_price, buy_shares } = values
+    if (!/^\d{6}$/.test((stock_code || '').trim())) {
+      setPreview(null)
+      setError(null)
+      return
+    }
     if (!account_id || !stock_code || !buy_date || !buy_price || !buy_shares) {
       setPreview(null)
       setError(null)
@@ -166,8 +173,59 @@ export default function PositionEntryDialog({ open, defaultAccountId, accounts =
     }
   }, [form, onOk])
 
+  // Cmd/Ctrl + Enter 直接提交
+  useEffect(() => {
+    if (!open) return undefined
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault()
+        handleCreate(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, handleCreate])
+
   const dec = preview?.price_dec ?? 2
   const riskMeta = preview ? RISK_META[preview.risk_check_status] : null
+
+  // 买入价是否明显偏离当日行情（防手滑填错）
+  const priceWarn = useMemo(() => {
+    if (!barInfo || !preview?.buy_price) return null
+    const p = Number(preview.buy_price)
+    const hi = Number(barInfo.high)
+    const lo = Number(barInfo.low)
+    if (!isFinite(p) || !isFinite(hi) || !isFinite(lo)) return null
+    if (hi > 0 && p > hi * 1.02) {
+      return `买入价 ${fmtPrice(p, dec)} 高于当日最高价 ${fmtPrice(hi, dec)} 2% 以上，请确认是否填错`
+    }
+    if (lo > 0 && p < lo * 0.98) {
+      return `买入价 ${fmtPrice(p, dec)} 低于当日最低价 ${fmtPrice(lo, dec)} 2% 以上，请确认是否填错`
+    }
+    return null
+  }, [barInfo, preview, dec])
+
+  // 关键结论：最大亏损额 / 占权益 / 盈亏比
+  const keyStats = useMemo(() => {
+    if (!preview) return null
+    const buy = Number(preview.buy_price) || 0
+    const stop = Number(preview.initial_stop_loss_price) || 0
+    const tp = Number(preview.take_profit_reference_price) || 0
+    const shares = Number(values.buy_shares) || 0
+    const riskPs = Number(preview.risk_per_share) || 0
+    const equity = Number(preview.current_equity) || 0
+    const maxLoss = Math.max(buy - stop, 0) * shares
+    return {
+      maxLoss,
+      lossPct: equity > 0 ? (maxLoss / equity) * 100 : 0,
+      rr: riskPs > 0 ? (tp - buy) / riskPs : null,
+      stopPct: buy > 0 ? ((stop - buy) / buy) * 100 : null,
+      tpPct: buy > 0 ? ((tp - buy) / buy) * 100 : null,
+      downRatio: buy > stop && tp > buy
+        ? Math.min(Math.max((buy - stop) / ((buy - stop) + (tp - buy)) * 100, 8), 92)
+        : 50,
+    }
+  }, [preview, values.buy_shares])
 
   return (
     <Modal
@@ -190,6 +248,7 @@ export default function PositionEntryDialog({ open, defaultAccountId, accounts =
           loading={creating}
           disabled={!preview || !!error}
           onClick={() => handleCreate(false)}
+          title="Cmd/Ctrl + Enter"
         >
           确认建仓
         </Button>,
@@ -199,59 +258,74 @@ export default function PositionEntryDialog({ open, defaultAccountId, accounts =
         {/* 左：表单 */}
         <Col xs={24} md={11}>
           <Form form={form} layout="vertical" preserve={false} initialValues={initialValues}>
-            {/* 账户：只有一个账户时直接显示，不再让用户重复选择 */}
+            {/* 账户：隐藏字段负责校验，可见部分压缩成一行，不再占 label+extra 三行高度 */}
             <Form.Item name="account_id" hidden rules={[{ required: true, message: '请选择账户' }]}>
               <Input />
             </Form.Item>
-            {singleAccount ? (
-              <Form.Item label="账户" extra="使用当前页面选中的账户">
-                <div className="flex items-center gap-2 h-8">
-                  <WalletOutlined className="text-blue-600" />
-                  <span className="font-medium">{accounts[0].account_name}</span>
-                  <span className="text-xs text-gray-400">
-                    权益 {fmtMoney(accounts[0].current_equity)}
+            <div className="flex items-center gap-1.5 mb-3 text-xs text-gray-500">
+              <WalletOutlined className="text-blue-600" />
+              <span className="shrink-0">账户</span>
+              {singleAccount ? (
+                <>
+                  <span className="font-medium text-[13px] text-gray-800 truncate">
+                    {accounts[0].account_name}
                   </span>
-                </div>
-              </Form.Item>
-            ) : (
-              <Form.Item
-                label="账户"
-                extra="默认使用当前页面选中的账户，可切换"
-              >
+                  <span className="text-gray-400 shrink-0">
+                    · 权益 {fmtMoney(accounts[0].current_equity)}
+                  </span>
+                </>
+              ) : (
                 <Select
+                  size="small"
+                  variant="borderless"
                   value={values.account_id}
                   placeholder="选择账户"
                   options={accountOptions}
+                  style={{ minWidth: 220, maxWidth: '100%' }}
+                  popupMatchSelectWidth={false}
                   onChange={(v) => form.setFieldValue('account_id', v)}
                 />
+              )}
+            </div>
+
+            <Row gutter={12}>
+              <Col span={13}>
+              <Form.Item
+                name="stock_code"
+                label="代码（个股 / ETF）"
+                rules={[
+                  { required: true, message: '请输入代码' },
+                  { pattern: /^\d{6}$/, message: '代码必须是 6 位数字' },
+                ]}
+                extra={(() => {
+                  const c = (values.stock_code || '').trim()
+                  if (c.length > 0 && !/^\d{6}$/.test(c)) {
+                    return `代码需为 6 位数字，当前 ${c.length} 位`
+                  }
+                  if (barInfo) return `${barInfo.stock_name}（${assetLabel(barInfo.asset_type)}）`
+                  return barError || '输入完整的 6 位代码后自动带出当日收盘价'
+                })()}
+              >
+                <Input placeholder="如 000001 / 510300" maxLength={6} />
               </Form.Item>
-            )}
-
-            <Form.Item
-              name="stock_code"
-              label="代码（个股 / ETF）"
-              rules={[{ required: true, message: '请输入代码' }]}
-              extra={barInfo
-                ? `${barInfo.stock_name}（${assetLabel(barInfo.asset_type)}）`
-                : (barError || '输入代码与日期后自动带出当日收盘价')}
-            >
-              <Input placeholder="如 000001 / 510300" maxLength={6} />
-            </Form.Item>
-
-            <Form.Item
-              name="buy_date"
-              label="买入日期"
-              rules={[{ required: true, message: '请选择买入日期' }]}
-              extra="默认今天，可改成任意历史交易日（不能选未来）"
-            >
-              <DatePicker
-                style={{ width: '100%' }}
-                allowClear={false}
-                inputReadOnly={false}
-                format="YYYY-MM-DD"
-                disabledDate={(d) => d && d.isAfter(dayjs(), 'day')}
-              />
-            </Form.Item>
+              </Col>
+              <Col span={11}>
+              <Form.Item
+                name="buy_date"
+                label="买入日期"
+                rules={[{ required: true, message: '请选择买入日期' }]}
+                extra="默认今天，可改成任意历史交易日（不能选未来）"
+              >
+                <DatePicker
+                  style={{ width: '100%' }}
+                  allowClear={false}
+                  inputReadOnly={false}
+                  format="YYYY-MM-DD"
+                  disabledDate={(d) => d && d.isAfter(dayjs(), 'day')}
+                />
+              </Form.Item>
+              </Col>
+            </Row>
 
             <Row gutter={12}>
               <Col span={12}>
@@ -271,15 +345,59 @@ export default function PositionEntryDialog({ open, defaultAccountId, accounts =
               </Col>
             </Row>
 
-            {barInfo && (
-              <div className="text-xs text-gray-500 -mt-2 mb-3">
-                {barInfo.trade_date} 行情：开 {fmtPrice(barInfo.open, barInfo.price_dec)}
-                {' · '}高 {fmtPrice(barInfo.high, barInfo.price_dec)}
-                {' · '}低 {fmtPrice(barInfo.low, barInfo.price_dec)}
-                {' · '}收 <span className="font-mono">{fmtPrice(barInfo.close, barInfo.price_dec)}</span>
-                <Button type="link" size="small" onClick={() => form.setFieldValue('buy_price', barInfo.close)}>
-                  用收盘价
+            {/* 股数快捷：建议值 + 常用手数 */}
+            <div className="flex items-center flex-wrap gap-1 -mt-2 mb-2">
+              {preview?.suggested_max_shares > 0 && (
+                <Button
+                  size="small"
+                  type={Number(values.buy_shares) === preview.suggested_max_shares ? 'primary' : 'default'}
+                  onClick={() => form.setFieldValue('buy_shares', preview.suggested_max_shares)}
+                >
+                  建议 {preview.suggested_max_shares.toLocaleString()} 股
                 </Button>
+              )}
+              {[1, 3, 5, 10].map((k) => (
+                <Button
+                  key={k}
+                  size="small"
+                  onClick={() => form.setFieldValue('buy_shares', k * 100)}
+                >
+                  {k} 手
+                </Button>
+              ))}
+            </div>
+
+            {barInfo && (
+              <div className="text-xs text-gray-500 -mt-2 mb-3 flex items-center flex-wrap gap-x-1">
+                <span>{barInfo.trade_date} 行情：</span>
+                {[['开', barInfo.open], ['高', barInfo.high], ['低', barInfo.low], ['收', barInfo.close]]
+                  .map(([label, val], i) => {
+                    const picked = Number(values.buy_price) === Number(val)
+                    return (
+                      <span key={label} className="inline-flex items-center">
+                        {i > 0 && <span className="mx-1 text-gray-300">·</span>}
+                        <span>{label}</span>
+                        <Tooltip title={`点击填入买入价 ${fmtPrice(val, barInfo.price_dec)}`}>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => form.setFieldValue('buy_price', val)}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') form.setFieldValue('buy_price', val) }}
+                            className={`ml-0.5 font-mono cursor-pointer rounded px-1 -mx-0.5 transition-colors ${
+                              picked
+                                ? 'text-blue-600 font-bold bg-blue-50'
+                                : 'text-blue-600 hover:bg-blue-50 hover:underline'
+                            }`}
+                          >
+                            {fmtPrice(val, barInfo.price_dec)}
+                          </span>
+                        </Tooltip>
+                      </span>
+                    )
+                  })}
+                <span className="mx-2 text-gray-300">|</span>
+                <span>二阶段</span>
+                <Stage2Cell isStage2={barInfo.is_stage2} detail={barInfo.stage2_detail} />
               </div>
             )}
 
@@ -314,6 +432,43 @@ export default function PositionEntryDialog({ open, defaultAccountId, accounts =
                   {riskMeta && <Tag color={riskMeta.color}>{riskMeta.label}</Tag>}
                 </div>
 
+                {/* 关键结论：一眼看到会亏多少、赚多少 */}
+                {keyStats && (
+                  <div className="mb-2 rounded-md border border-gray-200 bg-white px-2.5 py-2">
+                    <div className="flex items-baseline justify-between mb-1.5">
+                      <span className="text-xs text-gray-500">
+                        若触发止损，本笔亏损
+                      </span>
+                      <span className="font-mono text-sm font-bold" style={{ color: '#26a69a' }}>
+                        {fmtMoney(keyStats.maxLoss)}
+                        <span className="text-[11px] font-normal text-gray-400 ml-1">
+                          （占权益 {keyStats.lossPct.toFixed(2)}%）
+                        </span>
+                      </span>
+                    </div>
+
+                    {/* 价格阶梯：止损 — 买入价 — 止盈参考 */}
+                    <div className="flex justify-between text-[11px] font-mono mb-0.5">
+                      <span style={{ color: '#26a69a' }}>{fmtPrice(preview.initial_stop_loss_price, dec)}</span>
+                      <span className="font-bold text-gray-800">{fmtPrice(preview.buy_price, dec)}</span>
+                      <span style={{ color: '#ef5350' }}>{fmtPrice(preview.take_profit_reference_price, dec)}</span>
+                    </div>
+                    <div className="flex h-1.5 rounded-full overflow-hidden bg-gray-100">
+                      <div style={{ width: `${keyStats.downRatio}%`, background: '#26a69a' }} />
+                      <div style={{ width: `${100 - keyStats.downRatio}%`, background: '#ef5350' }} />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-gray-400 mt-0.5">
+                      <span>
+                        止损 {keyStats.stopPct != null ? keyStats.stopPct.toFixed(2) : '-'}%
+                      </span>
+                      <span>
+                        止盈 {keyStats.tpPct != null ? `+${keyStats.tpPct.toFixed(2)}` : '-'}%
+                        {keyStats.rr != null && ` · 盈亏比 ${keyStats.rr.toFixed(2)}`}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 <Descriptions size="small" column={2} bordered
                   styles={{ label: { width: 96, fontSize: 12 }, content: { fontSize: 12 } }}>
                   <Descriptions.Item label={`ATR(${preview.atr_period})`}>{fmtPrice(preview.atr_entry, dec)}</Descriptions.Item>
@@ -330,13 +485,9 @@ export default function PositionEntryDialog({ open, defaultAccountId, accounts =
                   <Descriptions.Item label="可承受亏损">{fmtMoney(preview.max_loss_per_trade)}</Descriptions.Item>
                 </Descriptions>
 
-                <div className="mt-2 text-xs text-gray-500">
-                  止损距买入价 {preview.buy_price ? ((preview.initial_stop_loss_price / preview.buy_price - 1) * 100).toFixed(2) : '-'}%
-                  {' · '}止盈参考距买入价 {preview.buy_price ? ((preview.take_profit_reference_price / preview.buy_price - 1) * 100).toFixed(2) : '-'}%
-                  {' · '}盈亏比 {preview.risk_per_share > 0
-                    ? ((preview.take_profit_reference_price - preview.buy_price) / preview.risk_per_share).toFixed(2)
-                    : '-'}
-                </div>
+                    {priceWarn && (
+                  <Alert className="mt-2" showIcon type="warning" message={priceWarn} />
+                )}
 
                 {preview.data_pending && (
                   <Alert

@@ -33,10 +33,12 @@ const dash = (v) => v === null || v === undefined || v === '' || Number.isNaN(Nu
 
 export const fmtPrice = (v, dec = 2) => (dash(v) ? '-' : Number(v).toFixed(dec))
 
+/** 金额：保留 2 位小数，但整数不显示 .00（1234.00 → 1,234） */
 export const fmtMoney = (v) => {
   if (dash(v)) return '-'
   const n = Number(v)
-  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const s = n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return Number.isInteger(n) ? s.replace(/\.00$/, '') : s
 }
 
 /** v 为比例（0.0523 → +5.23%） */
@@ -61,14 +63,16 @@ export const pnlStyle = (v) => {
   return { color: n > 0 ? '#ef5350' : n < 0 ? '#26a69a' : '#6b7280' }
 }
 
-/** 自然日数 → 更直观的时长（天 / 周 / 月 / 年） */
+/** 自然日数 → 更直观的时长（天 / 周 / 月 / 年），整数不带 .0 */
 export const fmtHoldingSpan = (calendarDays) => {
   const d = Number(calendarDays)
   if (!isFinite(d) || d <= 0) return ''
+  // 保留 1 位小数，但 7.0 → 7、2.0 → 2（整数不显示 .0）
+  const trim = (n) => String(Number(n.toFixed(1)))
   if (d < 7) return `${d} 天`
-  if (d < 60) return `${(d / 7).toFixed(1)} 周`
-  if (d < 365) return `${(d / 30).toFixed(1)} 个月`
-  return `${(d / 365).toFixed(1)} 年`
+  if (d < 60) return `${trim(d / 7)} 周`
+  if (d < 365) return `${trim(d / 30)} 月`
+  return `${trim(d / 365)} 年`
 }
 
 export const assetLabel = (t) => (t === 'etf' ? 'ETF' : '个股')

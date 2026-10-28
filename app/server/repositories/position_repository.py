@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 POSITION_PARAM_KEY = 'position_risk_params'
 
 # 日线读取字段
-_BAR_FIELDS = {'_id': 0, 'trade_date': 1, 'open': 1, 'high': 1, 'low': 1, 'close': 1}
+_BAR_FIELDS = {'_id': 0, 'trade_date': 1, 'open': 1, 'high': 1, 'low': 1, 'close': 1,
+               'is_stage2': 1, 'stage2_detail': 1}
 
 
 def _new_id(prefix: str) -> str:

@@ -16,6 +16,15 @@ class SectorRepository(BaseRepository):
         """获取日线数据集合"""
         from app.data.db import get_db
         return get_db()['sector_daily']
+
+    def get_latest_stage2(self, code: str) -> Optional[Dict]:
+        """获取板块最新一根日线的二阶段标记与明细"""
+        return self.daily.find_one(
+            {'stock_code': code, 'close': {'$gt': 0}},
+            sort=[('trade_date', -1)],
+            projection={'_id': 0, 'trade_date': 1, 'close': 1,
+                        'is_stage2': 1, 'stage2_detail': 1},
+        )
     
     def get_enabled_codes(self) -> List[str]:
         """获取所有启用的板块代码"""

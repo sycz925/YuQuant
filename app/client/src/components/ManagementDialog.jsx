@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
-import { Modal, Table, Switch, Button, Space, Input, Select, message, Form } from 'antd'
+import { Modal, Table, Switch, Button, Space, Input, Select, message, Form, Tag } from 'antd'
 import { SearchOutlined, ReloadOutlined, PlusOutlined } from '@ant-design/icons'
-import { stockApi, factorApi } from '../api'
+import { stockApi, factorApi, etfApi } from '../api'
 
 export default function ManagementDialog({ open, onClose, category, title }) {
   const [loading, setLoading] = useState(false)
@@ -13,6 +13,7 @@ export default function ManagementDialog({ open, onClose, category, title }) {
   const [currentPage, setCurrentPage] = useState(1)
   const [importLoading, setImportLoading] = useState(false)
   const [filterMode, setFilterMode] = useState('enabled')
+  const [stage2Filter, setStage2Filter] = useState('all')
   const [changedItems, setChangedItems] = useState({})
   const [addVisible, setAddVisible] = useState(false)
   const [addLoading, setAddLoading] = useState(false)
@@ -21,6 +22,7 @@ export default function ManagementDialog({ open, onClose, category, title }) {
   const resetConditions = () => {
     setSearchText('')
     setFilterMode('enabled')
+    setStage2Filter('all')
     setCurrentPage(1)
     setChangedItems({})
     setData([])
@@ -48,16 +50,27 @@ export default function ManagementDialog({ open, onClose, category, title }) {
     setChangedItems({})
   }, [category])
 
-  const loadData = async (page, size, keyword, filter) => {
+  const loadData = async (page, size, keyword, filter, stage2 = 'all') => {
     setLoading(true)
     try {
       let res
       if (category === 'index') {
         res = await factorApi.getIndices({ page, page_size: size, keyword, filter_mode: filter })
       } else if (category === 'sector') {
-        res = await factorApi.getSectors({ page, page_size: size, keyword, filter_mode: filter })
+        res = await factorApi.getSectors({
+          page, page_size: size, keyword, filter_mode: filter,
+          stage2: stage2 === 'all' ? undefined : stage2,
+        })
       } else if (category === 'stock') {
-        res = await stockApi.getStockList({ page, page_size: size, keyword, filter_mode: filter })
+        res = await stockApi.getStockList({
+          page, page_size: size, keyword, filter_mode: filter,
+          stage2: stage2 === 'all' ? undefined : stage2,
+        })
+      } else if (category === 'etf') {
+        res = await etfApi.getList({
+          keyword,
+          stage2: stage2 === 'all' ? undefined : stage2,
+        })
       }
       setData(res?.items || res?.data || [])
       setTotal(res?.total || 0)
@@ -95,11 +108,17 @@ export default function ManagementDialog({ open, onClose, category, title }) {
 
   const handleSearch = () => {
     setCurrentPage(1)
-    loadData(1, pageSize, searchText, filterMode)
+    loadData(1, pageSize, searchText, filterMode, stage2Filter)
   }
 
   const handleFilterChange = (value) => {
     setFilterMode(value)
+    setCurrentPage(1)
+  }
+
+  // 筛选条件只记状态，统一由「搜索」按钮触发请求（与关键词、启用/禁用一致）
+  const handleStage2Change = (value) => {
+    setStage2Filter(value)
     setCurrentPage(1)
   }
 
@@ -148,7 +167,20 @@ export default function ManagementDialog({ open, onClose, category, title }) {
       { title: '成分股数', dataIndex: 'stock_count', key: 'stock_count', width: 100 },
     ] : []),
     ...(category === 'index' ? [{ title: 'TDX代码', dataIndex: 'tdx_code', key: 'tdx_code', width: 100, render: (t) => <span className="font-mono text-xs">{t}</span> }] : []),
-    {
+    ...(category !== 'index' ? [{
+      title: '二阶段',
+      dataIndex: 'is_stage2',
+      key: 'is_stage2',
+      width: 90,
+      render: (v) => (
+        v === true
+          ? <Tag color="green">是</Tag>
+          : v === false
+            ? <span className="text-xs text-gray-400">否</span>
+            : <span className="text-xs text-gray-300">-</span>
+      )
+    }] : []),
+    ...(category !== 'etf' ? [{
       title: '禁用',
       key: 'disabled',
       width: 80,
@@ -164,7 +196,7 @@ export default function ManagementDialog({ open, onClose, category, title }) {
           />
         )
       }
-    }
+    }] : [])
   ]
 
   return (
@@ -177,8 +209,15 @@ export default function ManagementDialog({ open, onClose, category, title }) {
               <Select.Option value="enabled">已启用</Select.Option>
               <Select.Option value="disabled">已禁用</Select.Option>
             </Select>
+            {category !== 'index' && (
+              <Select value={stage2Filter} onChange={handleStage2Change} size="small" style={{ width: 120 }}>
+                <Select.Option value="all">二阶段：全部</Select.Option>
+                <Select.Option value="yes">二阶段：是</Select.Option>
+                <Select.Option value="no">二阶段：否</Select.Option>
+              </Select>
+            )}
             <Button size="small" onClick={handleSearch}>搜索</Button>
-            <Button size="small" icon={<ReloadOutlined />} onClick={() => loadData(currentPage, pageSize, searchText, filterMode)} />
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => loadData(currentPage, pageSize, searchText, filterMode, stage2Filter)} />
           </Space>
           <Space>
             {(category === 'sector' || category === 'index') && (
@@ -186,7 +225,7 @@ export default function ManagementDialog({ open, onClose, category, title }) {
                 新增
               </Button>
             )}
-            {Object.keys(changedItems).length > 0 && (
+            {category !== 'etf' && Object.keys(changedItems).length > 0 && (
               <Button type="primary" size="small" loading={saving} onClick={handleSave}>
                 保存 ({Object.keys(changedItems).length})
               </Button>
@@ -195,7 +234,7 @@ export default function ManagementDialog({ open, onClose, category, title }) {
         </div>
 
         <Table columns={columns} dataSource={data} rowKey={(r) => r.code || r.stock_code} loading={loading} size="small"
-          pagination={{ current: currentPage, pageSize, total, onChange: (p, s) => { setCurrentPage(p); setPageSize(s); loadData(p, s, searchText, filterMode) } }}
+          pagination={{ current: currentPage, pageSize, total, onChange: (p, s) => { setCurrentPage(p); setPageSize(s); loadData(p, s, searchText, filterMode, stage2Filter) } }}
         />
       </div>
 

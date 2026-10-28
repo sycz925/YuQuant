@@ -302,7 +302,7 @@ def _match_stock_codes(result: Dict[str, Any], repo) -> None:
 
 
 def _attach_stock_rps(result: Dict[str, Any], repo) -> None:
-    """遍历个股，回填 stock_daily 最新 rps_10/rps_50/rps_120（动态数据，不落库）"""
+    """遍历个股，回填 stock_daily 最新 rps_10/rps_50/rps_120 与二阶段标记（动态数据，不落库）"""
     codes = []
     for stage in result.get('chain', []):
         for cat in stage.get('categories', []):
@@ -324,6 +324,8 @@ def _attach_stock_rps(result: Dict[str, Any], repo) -> None:
                         comp['rps_10'] = rps.get('rps_10')
                         comp['rps_50'] = rps.get('rps_50')
                         comp['rps_120'] = rps.get('rps_120')
+                        comp['is_stage2'] = rps.get('is_stage2')
+                        comp['stage2_detail'] = rps.get('stage2_detail')
 
 
 def get_industry_intersection(keywords: List[str]) -> List[Dict[str, Any]]:
@@ -367,6 +369,8 @@ def get_industry_intersection(keywords: List[str]) -> List[Dict[str, Any]]:
                             'rps_10': comp.get('rps_10'),
                             'rps_50': comp.get('rps_50'),
                             'rps_120': comp.get('rps_120'),
+                            'is_stage2': comp.get('is_stage2'),
+                            'stage2_detail': comp.get('stage2_detail'),
                             'stage': stage.get('stage'),
                             'category': cat.get('name'),
                             'subcategory': sub.get('name'),

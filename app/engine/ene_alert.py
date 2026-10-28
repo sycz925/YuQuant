@@ -179,6 +179,49 @@ def backfill_alerts() -> int:
     return total_new
 
 
+def backfill_missing() -> int:
+    """只为「尚未做过全量回刷」的 ETF 计算历史预警（新增标的），返回新增数。
+
+    已回刷过的 ETF 由 check_latest() 做增量覆盖，避免每次同步都全量重算历史
+    （全量回刷需读取每个 ETF 的全部日线，213 只约 50 万条，耗时一分钟以上）。
+    回刷完成后在 etf_basics 写入 ene_backfilled 水位标记。
+    """
+    from app.data.db import get_db, get_collection
+    db = get_db()
+    etf_coll = get_collection('etf')
+    alert_coll = db[ALERT_COLL]
+    basics_coll = db['etf_basics']
+
+    pending = [d['code'] for d in basics_coll.find(
+        {'ene_backfilled': {'$ne': True}}, {'code': 1, '_id': 0})]
+    if not pending:
+        logger.info('[ENE补算] 无待补 ETF，跳过')
+        return 0
+
+    name_map = {d['code']: d['name'] for d in basics_coll.find({}, {'code': 1, 'name': 1})}
+
+    total_new = 0
+    for code in pending:
+        try:
+            docs = list(etf_coll.find(
+                {'stock_code': code, 'close': {'$gt': 0}},
+                {'_id': 0, 'trade_date': 1, 'close': 1, 'open': 1, 'close_raw': 1, 'amount': 1, 'chg_pct': 1}
+            ).sort('trade_date', ASCENDING))
+            if len(docs) < ENE_N:
+                basics_coll.update_one({'code': code}, {'$set': {'ene_backfilled': True}})
+                continue
+            new_count = _check_one_etf(code, docs, name_map, alert_coll)
+            total_new += new_count
+            basics_coll.update_one({'code': code}, {'$set': {'ene_backfilled': True}})
+            if new_count:
+                logger.info(f'[ENE补算] {code} 新增{new_count}条预警')
+        except Exception as e:
+            logger.error(f'[ENE补算] 处理{code}失败: {e}')
+
+    logger.info(f'[ENE补算] 完成，待补 {len(pending)} 只，总新增{total_new}条预警')
+    return total_new
+
+
 def check_latest(max_dates: int = 5) -> int:
     """检查所有ETF最近N个交易日（击穿ENE下轨），返回新增预警数"""
     from app.data.db import get_db, get_collection

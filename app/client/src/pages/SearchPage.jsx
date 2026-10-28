@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Input, Spin, Empty } from 'antd'
 import { SearchOutlined, ArrowLeftOutlined, AppstoreOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { searchApi } from '../api'
+import { searchApi, factorApi } from '../api'
 import StockAnalysis from './StockAnalysis'
+import Stage2Cell from '../components/Stage2Cell'
 
 function SearchPage() {
   const navigate = useNavigate()
@@ -12,6 +13,7 @@ function SearchPage() {
   const [searching, setSearching] = useState(false)
   const [results, setResults] = useState({ stocks: [], sectors: [], etfs: [] })
   const [selectedItem, setSelectedItem] = useState(null)
+  const [stage2, setStage2] = useState(null)
   const inputRef = useRef(null)
 
   // 从URL参数恢复状态
@@ -41,6 +43,23 @@ function SearchPage() {
       inputRef.current?.focus()
     }
   }, [selectedItem])
+
+  // 加载该标的的二阶段状态（个股/板块/ETF）
+  useEffect(() => {
+    if (!selectedItem?.code) {
+      setStage2(null)
+      return
+    }
+    let cancelled = false
+    factorApi.getStage2Status(selectedItem.code, selectedItem.type)
+      .then((res) => {
+        if (!cancelled) setStage2(res?.success ? res : null)
+      })
+      .catch(() => {
+        if (!cancelled) setStage2(null)
+      })
+    return () => { cancelled = true }
+  }, [selectedItem?.code, selectedItem?.type])
 
   useEffect(() => {
     if (keyword.trim()) {
@@ -120,6 +139,11 @@ function SearchPage() {
             <span className="text-sm font-medium text-gray-700">
               {selectedItem.name}
             </span>
+            <Stage2Cell
+              isStage2={stage2?.is_stage2}
+              detail={stage2?.stage2_detail}
+              labelPrefix="二阶段"
+            />
             {/* 板块情况按钮 */}
             {selectedItem.type === 'sector' && (
               <button 
